@@ -628,11 +628,14 @@ private fun PostponeTicketDialog(
                     )
                     AssistChip(
                         onClick = {
-                            val extraWork = BelarusWorkCalendar.parseDateSet(appSettings.extraWorkingDates)
-                            val extraHol = BelarusWorkCalendar.parseDateSet(appSettings.extraHolidayDates)
                             var candidate = LocalDate.now().plusDays(1)
                             for (i in 0..14) {
-                                if (BelarusWorkCalendar.isWorkingDay(candidate, extraWork, extraHol).first) break
+                                val isWork = BelarusWorkCalendar.isWorkingDay(
+                                    candidate,
+                                    appSettings.extraWorkingDates,
+                                    appSettings.extraHolidayDates
+                                ).first
+                                if (isWork) break
                                 candidate = candidate.plusDays(1)
                             }
                             dateText = candidate.format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
@@ -1072,17 +1075,17 @@ private fun PhoneAndMessengerSection(
                         ) {
                             MessengerActionChip(
                                 app = MessengerApp.TELEGRAM,
-                                label = "Telegram",
+                                customLabel = "Telegram",
                                 onClick = { MessengerLauncher.openTelegramByPhone(context, phone.e164) }
                             )
                             MessengerActionChip(
                                 app = MessengerApp.VIBER,
-                                label = "Viber",
+                                customLabel = "Viber",
                                 onClick = { MessengerLauncher.openViberByPhone(context, phone.e164) }
                             )
                             MessengerActionChip(
                                 app = MessengerApp.WHATSAPP,
-                                label = "WhatsApp",
+                                customLabel = "WhatsApp",
                                 onClick = { MessengerLauncher.openWhatsAppByPhone(context, phone.e164) }
                             )
                         }
@@ -1099,7 +1102,7 @@ private fun PhoneAndMessengerSection(
                     telegramHandles.forEach { handle ->
                         MessengerActionChip(
                             app = MessengerApp.TELEGRAM,
-                            label = "Telegram $handle",
+                            customLabel = "Telegram $handle",
                             onClick = { MessengerLauncher.openTelegramByUsername(context, handle) }
                         )
                     }

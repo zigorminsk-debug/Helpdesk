@@ -711,7 +711,7 @@ private fun TicketListCard(
                         ticket.telegramHandles.take(2).forEach { handle ->
                             MessengerActionChip(
                                 app = MessengerApp.TELEGRAM,
-                                label = handle,
+                                customLabel = handle,
                                 onClick = { MessengerLauncher.openTelegramByUsername(context, handle) }
                             )
                         }

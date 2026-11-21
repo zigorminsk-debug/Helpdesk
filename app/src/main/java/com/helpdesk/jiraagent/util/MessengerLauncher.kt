@@ -52,6 +52,22 @@ object MessengerLauncher {
         }
     }
 
+    fun openTelegramByPhone(context: Context, phoneE164: String) {
+        openChatByPhone(context, MessengerApp.TELEGRAM, phoneE164)
+    }
+
+    fun openViberByPhone(context: Context, phoneE164: String) {
+        openChatByPhone(context, MessengerApp.VIBER, phoneE164)
+    }
+
+    fun openWhatsAppByPhone(context: Context, phoneE164: String) {
+        openChatByPhone(context, MessengerApp.WHATSAPP, phoneE164)
+    }
+
+    fun openTelegramByUsername(context: Context, handle: String) {
+        openTelegramUsername(context, handle)
+    }
+
     /**
      * Opens Telegram directly on a `@username` or `t.me/username` handle found in a ticket.
      */
