@@ -61,7 +61,7 @@ data class SysadminEntities(
 object SysadminEntityExtractor {
 
     private val LABELED_REMOTE_REGEX = Regex(
-        """(?i)\b(anydesk|анидеск|энидеск|rustdesk|растдеск|teamviewer|тимвьюер|удаленк[аиеу]|id\s*подключен\w*)\s*[:#\-–=]?\s*(\d[\d\s\-]{7,13}\d)"""
+        """(?iu)\b(anydesk|анидеск|энидеск|rustdesk|растдеск|teamviewer|тимвьюер|удаленк[аиеу]|id\s*подключен\w*)\s*[:#\-–=]?\s*(\d[\d\s\-]{7,13}\d)"""
     )
 
     private val GROUPED_NINE_DIGIT_REGEX = Regex(
@@ -78,15 +78,15 @@ object SysadminEntityExtractor {
 
     // Standard MAC (AA:BB:CC:DD:EE:FF or AA-BB-CC-DD-EE-FF) and Cisco MAC (AABB.CCDD.EEFF)
     private val MAC_COLON_DASH_REGEX = Regex(
-        """(?i)(?<![0-9A-F:])((?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2})(?![0-9A-F:])"""
+        """(?i)(?<![0-9A-F:])((?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2})(?![0-9A-F]|:[0-9A-F])"""
     )
     private val MAC_CISCO_REGEX = Regex(
-        """(?i)(?<![0-9A-F.])([0-9A-F]{4}\.[0-9A-F]{4}\.[0-9A-F]{4})(?![0-9A-F.])"""
+        """(?i)(?<![0-9A-F])([0-9A-F]{4}\.[0-9A-F]{4}\.[0-9A-F]{4})(?![0-9A-F]|\.[0-9A-F])"""
     )
 
     // Street / office address patterns (RU/BY)
     private val LABELED_ADDRESS_REGEX = Regex(
-        """(?im)^\s*(?:адрес(?:\s+выезда|\s+объекта)?|местонахождение|выезд\s+по\s+адресу)\s*[:\-–]\s*([^\r\n]{6,95})"""
+        """(?imu)^\s*(?:адрес(?:\s+выезда|\s+объекта)?|местонахождение|выезд\s+по\s+адресу)\s*[:\-–]\s*([^\r\n]{6,95})"""
     )
     private val STREET_ADDRESS_REGEX = Regex(
         """(?iu)((?:г\.?\s*[А-ЯЁІЎа-яёіў\-]{3,20}\s*,\s*)?(?:ул\.|улица|пр-т|пр\.|проспект|пер\.|переулок|тракт|б-р|бульвар|шоссе|пл\.)\s*[А-ЯЁІЎа-яёіў0-9][А-ЯЁІЎа-яёіў0-9\s.\-]{2,34}?,?\s*(?:д\.?\s*|дом\s*)?\d{1,4}[А-Яа-яA-Za-z0-9/\-]*(?:\s*,\s*(?:к\.|корп\.|оф\.|офис|каб\.)\s*\d+[А-Яа-яA-Za-z0-9\-]*)?)"""
