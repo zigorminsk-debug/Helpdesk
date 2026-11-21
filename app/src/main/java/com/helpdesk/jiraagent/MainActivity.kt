@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.helpdesk.jiraagent.notification.NotificationHelper
@@ -109,6 +110,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val selectedTicketKey by viewModel.selectedTicketKey.collectAsStateWithLifecycle()
     val isLoadingDetail by viewModel.isLoadingTicketDetail.collectAsStateWithLifecycle()
+    val ticketActionState by viewModel.ticketActionState.collectAsStateWithLifecycle()
     val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
@@ -136,7 +138,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             ticket = activeTicket,
             ticketKey = activeKey,
             isLoading = isLoadingDetail,
+            actionState = ticketActionState,
             appSettings = appSettings,
+            onExecuteAction = { action, comment, transitionId ->
+                viewModel.executeTicketAction(activeKey, action, comment, transitionId)
+            },
+            onDismissActionMessage = { viewModel.dismissTicketActionFeedback() },
             onBack = { viewModel.closeTicketDetail() }
         )
         return
@@ -162,7 +169,9 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Jira Helpdesk Агент",
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
@@ -181,19 +190,19 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     selected = currentTab == BottomDestination.TICKETS,
                     onClick = { currentTab = BottomDestination.TICKETS },
                     icon = { Icon(Icons.Default.SupportAgent, contentDescription = null) },
-                    label = { Text(BottomDestination.TICKETS.label) }
+                    label = { Text(BottomDestination.TICKETS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.FILTER,
                     onClick = { currentTab = BottomDestination.FILTER },
                     icon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                    label = { Text(BottomDestination.FILTER.label) }
+                    label = { Text(BottomDestination.FILTER.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.SETTINGS,
                     onClick = { currentTab = BottomDestination.SETTINGS },
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text(BottomDestination.SETTINGS.label) }
+                    label = { Text(BottomDestination.SETTINGS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
             }
         }

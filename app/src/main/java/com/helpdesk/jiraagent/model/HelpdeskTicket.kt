@@ -93,6 +93,7 @@ data class HelpdeskTicket(
     val updatedEpochMillis: Long = 0L,
     val labels: List<String>,
     val phoneNumbers: List<PhoneMatch>,
+    val telegramHandles: List<String>? = emptyList(),
     val comments: List<TicketComment>,
     val webUrl: String,
     val isClientTicket: Boolean = true,

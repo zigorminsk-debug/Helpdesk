@@ -1,10 +1,14 @@
 package com.helpdesk.jiraagent.ui
 
 import android.app.Application
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.helpdesk.jiraagent.data.JiraApiClient
+import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.data.TicketWorkflowAction
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
@@ -26,6 +30,15 @@ data class ConnectionTestState(
     val message: String? = null
 )
 
+data class TicketActionUiState(
+    val isBusy: Boolean = false,
+    val statusMessage: String? = null,
+    val isError: Boolean = false,
+    val manualTransitionPrompt: Boolean = false,
+    val pendingAction: TicketWorkflowAction? = null,
+    val availableTransitions: List<JiraTransitionOption> = emptyList()
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
@@ -43,6 +56,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoadingTicketDetail = MutableStateFlow(false)
     val isLoadingTicketDetail: StateFlow<Boolean> = _isLoadingTicketDetail.asStateFlow()
 
+    private val _ticketActionState = MutableStateFlow(TicketActionUiState())
+    val ticketActionState: StateFlow<TicketActionUiState> = _ticketActionState.asStateFlow()
+
     private val _connectionTest = MutableStateFlow(ConnectionTestState())
     val connectionTest: StateFlow<ConnectionTestState> = _connectionTest.asStateFlow()
 
@@ -52,6 +68,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openTicket(ticketKey: String) {
         _selectedTicketKey.value = ticketKey
+        _ticketActionState.value = TicketActionUiState()
         val settings = appSettings.value
         if (!settings.isConfigured || ticketKey.startsWith("DEMO-")) return
 
@@ -67,6 +84,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeTicketDetail() {
         _selectedTicketKey.value = null
+        _ticketActionState.value = TicketActionUiState()
+    }
+
+    fun dismissTicketActionFeedback() {
+        _ticketActionState.value = TicketActionUiState()
+    }
+
+    fun executeTicketAction(
+        ticketKey: String,
+        action: TicketWorkflowAction,
+        commentText: String? = null,
+        explicitTransitionId: String? = null
+    ) {
+        val settings = appSettings.value
+
+        // Handle local DEMO tickets offline for quick UI verification
+        if (ticketKey.startsWith("DEMO-")) {
+            val existing = tickets.value.firstOrNull { it.key == ticketKey } ?: return
+            val nowMillis = System.currentTimeMillis()
+            val nowIso = Instant.ofEpochMilli(nowMillis).toString()
+            val agentDisplay = syncStatus.value.connectedUser
+                ?: settings.usernameOrEmail.ifBlank { "Текущий агент" }
+            val updated = when (action) {
+                TicketWorkflowAction.TAKE_IN_WORK -> existing.copy(
+                    status = "В работе",
+                    statusCategoryKey = "indeterminate",
+                    assigneeName = agentDisplay,
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMillis
+                )
+                TicketWorkflowAction.COMPLETE -> existing.copy(
+                    status = "Выполнена",
+                    statusCategoryKey = "done",
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMillis
+                )
+                TicketWorkflowAction.REJECT -> existing.copy(
+                    status = "Отклонена",
+                    statusCategoryKey = "done",
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMillis
+                )
+            }
+            repository.upsertSingleTicket(updated)
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = when (action) {
+                    TicketWorkflowAction.TAKE_IN_WORK -> "Взята в работу · Исполнитель: $agentDisplay"
+                    TicketWorkflowAction.COMPLETE -> "Заявка завершена"
+                    TicketWorkflowAction.REJECT -> "Заявка отклонена"
+                },
+                isError = false
+            )
+            return
+        }
+
+        if (!settings.isConfigured) {
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = "Сначала настройте подключение к Jira",
+                isError = true
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(isBusy = true)
+            apiClient.performWorkflowAction(
+                issueKey = ticketKey,
+                action = action,
+                commentText = commentText,
+                explicitTransitionId = explicitTransitionId,
+                settings = settings,
+                filterSettings = filterSettings.value
+            ).onSuccess { outcome ->
+                outcome.updatedTicket?.let { repository.upsertSingleTicket(it) }
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = outcome.statusMessage,
+                    isError = false,
+                    manualTransitionPrompt = outcome.needsManualTransitionChoice,
+                    pendingAction = outcome.pendingAction,
+                    availableTransitions = outcome.availableTransitions
+                )
+            }.onFailure { err ->
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = err.message ?: "Не удалось выполнить действие в Jira",
+                    isError = true
+                )
+            }
+        }
     }
 
     fun refreshNow() {
@@ -79,8 +188,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.updateSyncStatus { it.copy(isSyncing = true) }
                 apiClient.fetchRecentTickets(settings, filterSettings.value)
                     .onSuccess { fetched ->
-                        val newOnes = repository.processPolledTicketsAndFindNewClientOnes(fetched)
-                        newOnes.forEach { NotificationHelper.showClientTicketBanner(appContext, it) }
+                        val allowedNow = BelarusWorkCalendar.isWorkingTimeNow(settings)
+                        val newOnes = repository.processPolledTicketsAndFindNewClientOnes(
+                            polled = fetched,
+                            isNotificationWindowOpen = allowedNow
+                        )
+                        if (allowedNow) {
+                            newOnes.forEach { NotificationHelper.showClientTicketBanner(appContext, it) }
+                        }
                         repository.updateSyncStatus {
                             it.copy(
                                 isSyncing = false,
@@ -139,10 +254,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _connectionTest.value = ConnectionTestState()
     }
 
-    /**
-     * Generates a test client ticket with a local phone number converted to international format
-     * and fires a real Android Heads-Up Notification Banner so the agent can verify banners & dialing.
-     */
     fun triggerTestBannerNotification() {
         val settings = appSettings.value
         val sampleRawPhone = "8 (029) 654-32-10"
@@ -160,12 +271,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             key = demoKey,
             summary = "Не работает вход в личный кабинет клиента",
             description = "Добрый день! Прошу связаться со мной по телефону $sampleRawPhone " +
-                "или резервному номеру 8 (916) 555-01-99. Срочная заявка от клиента.",
+                "или в Telegram @ivan_belarus. Срочная заявка от клиента.",
             issueType = "Обращение клиента",
             isSubtask = false,
             customerRequestType = "Техническая поддержка",
             hasCustomerPortalInfo = true,
-            status = "Открыта",
+            status = "Ожидание поддержки",
             statusCategoryKey = "new",
             priority = "Высокий",
             projectKey = "DEMO",
@@ -176,6 +287,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             createdIso = Instant.ofEpochMilli(nowMillis).toString(),
             createdEpochMillis = nowMillis,
             updatedIso = Instant.ofEpochMilli(nowMillis).toString(),
+            updatedEpochMillis = nowMillis,
             labels = listOf("клиент"),
             phoneNumbers = listOf(
                 PhoneMatch(
@@ -183,19 +295,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     e164 = normalized.first,
                     formattedDisplay = normalized.second,
                     source = "Поле «Телефон клиента»"
-                ),
-                PhoneMatch(
-                    raw = "8 (916) 555-01-99",
-                    e164 = "+79165550199",
-                    formattedDisplay = "+7 916 555-01-99",
-                    source = "Описание"
                 )
             ),
+            telegramHandles = listOf("@ivan_belarus"),
             comments = listOf(
                 TicketComment(
                     id = "1",
                     author = "Иван Петров (Клиент)",
-                    body = "Жду звонка на $sampleRawPhone, спасибо!",
+                    body = "Жду звонка или сообщения в мессенджер на $sampleRawPhone, спасибо!",
                     createdIso = Instant.ofEpochMilli(nowMillis).toString()
                 )
             ),
@@ -205,6 +312,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         repository.upsertSingleTicket(demoTicket)
-        NotificationHelper.showClientTicketBanner(appContext, demoTicket)
+
+        val schedule = BelarusWorkCalendar.evaluate(settings, Instant.ofEpochMilli(nowMillis))
+        if (schedule.isAllowedNow) {
+            NotificationHelper.showClientTicketBanner(appContext, demoTicket, bypassWorkSchedule = false)
+            Toast.makeText(appContext, "Тестовый баннер и звук отправлены", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                appContext,
+                "Тестовая заявка $demoKey создана во вкладке «Новые». ${schedule.statusTitle} — звук и баннер подавлены по календарю РБ.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 }

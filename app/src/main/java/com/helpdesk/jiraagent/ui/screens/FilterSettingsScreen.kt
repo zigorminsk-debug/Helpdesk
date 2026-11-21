@@ -223,7 +223,7 @@ fun FilterSettingsScreen(
             ) {
                 Icon(Icons.Default.RestartAlt, contentDescription = null)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Сброс")
+                Text("Сброс", maxLines = 1)
             }
 
             Button(
@@ -235,7 +235,7 @@ fun FilterSettingsScreen(
             ) {
                 Icon(Icons.Default.Save, contentDescription = null)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Сохранить")
+                Text("Сохранить", maxLines = 1)
             }
         }
 

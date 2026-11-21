@@ -160,6 +160,12 @@ object JiraJsonParser {
             comments = comments,
             appSettings = appSettings
         )
+        val tgHandles = extractTelegramHandles(
+            fields = fields,
+            summary = summary,
+            description = description,
+            comments = comments
+        )
 
         val cleanBaseUrl = appSettings.serverUrl.trim().trimEnd('/')
         val webUrl = if (cleanBaseUrl.isNotEmpty()) "$cleanBaseUrl/browse/$key" else ""
@@ -187,6 +193,7 @@ object JiraJsonParser {
             updatedEpochMillis = updatedMillis,
             labels = labels,
             phoneNumbers = phones,
+            telegramHandles = tgHandles,
             comments = comments,
             webUrl = webUrl
         )
@@ -421,6 +428,39 @@ object JiraJsonParser {
             .recoverCatching { OffsetDateTime.parse(iso, JIRA_OFFSET_FORMATTER).toInstant().toEpochMilli() }
             .recoverCatching { OffsetDateTime.parse(iso, JIRA_OFFSET_NO_MS_FORMATTER).toInstant().toEpochMilli() }
             .getOrDefault(0L)
+    }
+
+    private val TG_LINK_REGEX = Regex("""(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{3,31})\b""", RegexOption.IGNORE_CASE)
+    private val TG_AT_REGEX = Regex("""(?<![A-Za-z0-9._%+-])@([A-Za-z][A-Za-z0-9_]{4,31})(?![A-Za-z0-9_.]|\.[A-Za-z])""")
+
+    private fun extractTelegramHandles(
+        fields: JsonObject,
+        summary: String,
+        description: String,
+        comments: List<TicketComment>
+    ): List<String> {
+        val found = LinkedHashSet<String>()
+        val texts = mutableListOf(summary, description)
+        comments.forEach { texts.add(it.body) }
+        for ((fieldKey, fieldValue) in fields.entrySet()) {
+            if (fieldValue == null || fieldValue.isJsonNull || fieldKey in SYSTEM_SKIP_FIELDS) continue
+            texts.addAll(extractCustomFieldStrings(fieldValue))
+        }
+        for (txt in texts) {
+            TG_LINK_REGEX.findAll(txt).forEach { m ->
+                val handle = m.groupValues[1]
+                if (!handle.equals("share", ignoreCase = true) && !handle.equals("joinchat", ignoreCase = true)) {
+                    found.add("@$handle")
+                }
+            }
+            TG_AT_REGEX.findAll(txt).forEach { m ->
+                val handle = m.groupValues[1]
+                if (!handle.equals("user", ignoreCase = true)) {
+                    found.add("@$handle")
+                }
+            }
+        }
+        return found.toList()
     }
 
     private fun JsonObject.getStringOrNull(key: String): String? {

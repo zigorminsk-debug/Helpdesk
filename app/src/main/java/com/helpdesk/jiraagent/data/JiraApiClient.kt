@@ -29,6 +29,37 @@ import javax.net.ssl.X509TrustManager
 
 class JiraApiException(message: String, val httpCode: Int? = null) : Exception(message)
 
+enum class TicketWorkflowAction {
+    TAKE_IN_WORK,
+    COMPLETE,
+    REJECT
+}
+
+data class JiraTransitionOption(
+    val id: String,
+    val name: String,
+    val toStatusName: String,
+    val toCategoryKey: String,
+    val hasResolutionField: Boolean = false,
+    val resolutionRequired: Boolean = false,
+    val allowedResolutions: List<Pair<String, String>> = emptyList()
+)
+
+data class WorkflowActionOutcome(
+    val updatedTicket: HelpdeskTicket?,
+    val statusMessage: String,
+    val needsManualTransitionChoice: Boolean = false,
+    val pendingAction: TicketWorkflowAction? = null,
+    val availableTransitions: List<JiraTransitionOption> = emptyList()
+)
+
+private data class AuthenticatedJiraUser(
+    val name: String?,
+    val accountId: String?,
+    val key: String?,
+    val displayName: String
+)
+
 class JiraApiClient {
 
     private val standardClient: OkHttpClient = buildClient(trustAllSsl = false)
@@ -232,6 +263,507 @@ class JiraApiClient {
         }
     }
 
+    /**
+     * Executes Helpdesk workflow actions on [issueKey]:
+     * - [TicketWorkflowAction.TAKE_IN_WORK]: assigns the currently logged-in Jira user as assignee
+     *   and transitions the ticket into "В работе" (In Progress).
+     * - [TicketWorkflowAction.COMPLETE]: posts optional comment and transitions ticket to completed/resolved/closed.
+     * - [TicketWorkflowAction.REJECT]: posts optional comment and transitions ticket to rejected/cancelled/declined.
+     */
+    suspend fun performWorkflowAction(
+        issueKey: String,
+        action: TicketWorkflowAction,
+        commentText: String? = null,
+        explicitTransitionId: String? = null,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<WorkflowActionOutcome> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+
+            var assignedDisplayName: String? = null
+
+            // 1. For "В работу", always assign the currently logged-in user first
+            if (action == TicketWorkflowAction.TAKE_IN_WORK) {
+                val me = fetchAuthenticatedUser(baseUrl, preferCloud, settings)
+                assignIssueToUser(baseUrl, preferCloud, issueKey, me, settings)
+                assignedDisplayName = me.displayName
+            }
+
+            // 2. Post optional comment if provided
+            val cleanComment = commentText?.trim().orEmpty()
+            if (cleanComment.isNotEmpty()) {
+                addCommentToIssue(baseUrl, preferCloud, issueKey, cleanComment, settings)
+            }
+
+            // 3. Fetch available Jira workflow transitions for this issue
+            val transitions = fetchAvailableTransitions(baseUrl, preferCloud, issueKey, settings)
+
+            val chosenTransition: JiraTransitionOption? = if (explicitTransitionId != null) {
+                transitions.firstOrNull { it.id == explicitTransitionId }
+            } else {
+                selectBestTransition(transitions, action)
+            }
+
+            if (chosenTransition != null) {
+                // If rejecting via a generic "Close/Resolve" transition and user left comment blank,
+                // leave a concise audit comment so rejection is clear in Jira history.
+                if (action == TicketWorkflowAction.REJECT &&
+                    cleanComment.isEmpty() &&
+                    !containsAnyKeyword(
+                        "${chosenTransition.name} ${chosenTransition.toStatusName}",
+                        REJECT_KEYWORDS
+                    )
+                ) {
+                    runCatching {
+                        addCommentToIssue(baseUrl, preferCloud, issueKey, "Заявка отклонена.", settings)
+                    }
+                }
+
+                executeTransition(baseUrl, preferCloud, issueKey, chosenTransition, action, settings)
+
+                val refreshed = fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+                val statusLabel = refreshed?.status ?: chosenTransition.toStatusName
+                val msg = when (action) {
+                    TicketWorkflowAction.TAKE_IN_WORK ->
+                        "Взята в работу · Исполнитель: ${assignedDisplayName ?: "назначен"} ($statusLabel)"
+                    TicketWorkflowAction.COMPLETE ->
+                        "Заявка завершена ($statusLabel)"
+                    TicketWorkflowAction.REJECT ->
+                        "Заявка отклонена ($statusLabel)"
+                }
+                return@runCatching WorkflowActionOutcome(
+                    updatedTicket = refreshed,
+                    statusMessage = msg
+                )
+            }
+
+            // If "В работу" was clicked and ticket is ALREADY in progress (or has no further transitions needed),
+            // assignment already succeeded!
+            val refreshedAfterAssign = fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+            if (action == TicketWorkflowAction.TAKE_IN_WORK &&
+                refreshedAfterAssign?.stage == com.helpdesk.jiraagent.model.TicketStage.IN_PROGRESS
+            ) {
+                return@runCatching WorkflowActionOutcome(
+                    updatedTicket = refreshedAfterAssign,
+                    statusMessage = "Назначен исполнитель: ${assignedDisplayName ?: "вы"} (${refreshedAfterAssign.status})"
+                )
+            }
+
+            // If transitions exist in Jira with custom names, let the user tap the desired Jira transition
+            if (transitions.isNotEmpty()) {
+                val prefix = if (assignedDisplayName != null) {
+                    "Исполнитель $assignedDisplayName назначен. Выберите переход статуса Jira:"
+                } else {
+                    "Выберите доступный переход статуса в вашем процессе Jira:"
+                }
+                return@runCatching WorkflowActionOutcome(
+                    updatedTicket = refreshedAfterAssign,
+                    statusMessage = prefix,
+                    needsManualTransitionChoice = true,
+                    pendingAction = action,
+                    availableTransitions = transitions
+                )
+            }
+
+            if (action == TicketWorkflowAction.TAKE_IN_WORK && assignedDisplayName != null) {
+                return@runCatching WorkflowActionOutcome(
+                    updatedTicket = refreshedAfterAssign,
+                    statusMessage = "Назначен исполнитель: $assignedDisplayName (доступных переходов статуса нет)"
+                )
+            }
+
+            throw JiraApiException(
+                "Для заявки $issueKey в текущем статусе нет доступных переходов в Jira"
+            )
+        }
+    }
+
+    private fun fetchAuthenticatedUser(
+        baseUrl: String,
+        preferCloud: Boolean,
+        settings: AppSettings
+    ): AuthenticatedJiraUser {
+        val endpoints = if (preferCloud) {
+            listOf("$baseUrl/rest/api/3/myself", "$baseUrl/rest/api/2/myself")
+        } else {
+            listOf("$baseUrl/rest/api/2/myself", "$baseUrl/rest/api/3/myself")
+        }
+
+        var lastErr: Exception? = null
+        for (url in endpoints) {
+            try {
+                val req = Request.Builder().url(url).get().applyAuth(settings).build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val json = JsonParser.parseString(bodyStr).asJsonObject
+                        val name = json.takeString("name")
+                        val accountId = json.takeString("accountId")
+                        val key = json.takeString("key")
+                        val display = json.takeString("displayName")
+                            ?: name
+                            ?: json.takeString("emailAddress")
+                            ?: settings.usernameOrEmail.ifBlank { "Исполнитель" }
+                        return AuthenticatedJiraUser(
+                            name = name,
+                            accountId = accountId,
+                            key = key,
+                            displayName = display
+                        )
+                    } else {
+                        lastErr = mapHttpError(resp.code, bodyStr)
+                    }
+                }
+            } catch (e: Exception) {
+                lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+        }
+        throw (lastErr ?: JiraApiException("Не удалось получить профиль текущего пользователя Jira"))
+    }
+
+    private fun assignIssueToUser(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        user: AuthenticatedJiraUser,
+        settings: AppSettings
+    ) {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val candidates = mutableListOf<Pair<String, JsonObject>>()
+
+        if (preferCloud) {
+            if (!user.accountId.isNullOrBlank()) {
+                candidates.add(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/assignee" to
+                        JsonObject().apply { addProperty("accountId", user.accountId) }
+                )
+            }
+            if (!user.name.isNullOrBlank()) {
+                candidates.add(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/assignee" to
+                        JsonObject().apply { addProperty("name", user.name) }
+                )
+            }
+        } else {
+            val loginName = user.name ?: settings.usernameOrEmail.trim().takeIf { it.isNotEmpty() }
+            if (!loginName.isNullOrBlank()) {
+                candidates.add(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/assignee" to
+                        JsonObject().apply { addProperty("name", loginName) }
+                )
+            }
+            if (!user.accountId.isNullOrBlank()) {
+                candidates.add(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/assignee" to
+                        JsonObject().apply { addProperty("accountId", user.accountId) }
+                )
+                candidates.add(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/assignee" to
+                        JsonObject().apply { addProperty("accountId", user.accountId) }
+                )
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            throw JiraApiException("Не удалось определить идентификатор пользователя для назначения исполнителя")
+        }
+
+        var lastError: Exception? = null
+        for ((url, payload) in candidates) {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .put(payload.toString().toRequestBody(jsonMediaType))
+                    .applyAuth(settings)
+                    .build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) return
+                    lastError = mapHttpError(resp.code, bodyStr)
+                }
+            } catch (e: Exception) {
+                lastError = wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+        }
+        throw (lastError ?: JiraApiException("Не удалось назначить исполнителя на заявку $issueKey"))
+    }
+
+    private fun fetchAvailableTransitions(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        settings: AppSettings
+    ): List<JiraTransitionOption> {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey/transitions?expand=transitions.fields"
+
+        val req = Request.Builder().url(url).get().applyAuth(settings).build()
+        val bodyStr = try {
+            clientFor(settings).newCall(req).execute().use { resp ->
+                val str = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw mapHttpError(resp.code, str)
+                str
+            }
+        } catch (e: Exception) {
+            throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+        }
+
+        val root = JsonParser.parseString(bodyStr).asJsonObject
+        val arr = root.getAsJsonArray("transitions") ?: return emptyList()
+
+        val result = mutableListOf<JiraTransitionOption>()
+        for (el in arr) {
+            if (!el.isJsonObject) continue
+            val obj = el.asJsonObject
+            val id = obj.takeString("id") ?: continue
+            val name = obj.takeString("name") ?: id
+            val toObj = obj.getAsJsonObject("to")
+            val toStatusName = toObj?.takeString("name") ?: name
+            val toCategoryKey = toObj
+                ?.getAsJsonObject("statusCategory")
+                ?.takeString("key")
+                .orEmpty()
+
+            val fieldsObj = obj.getAsJsonObject("fields")
+            val resolutionField = fieldsObj?.getAsJsonObject("resolution")
+            val hasRes = resolutionField != null
+            val resRequired = resolutionField?.get("required")?.let {
+                it.isJsonPrimitive && it.asBoolean
+            } ?: false
+            val allowedRes = mutableListOf<Pair<String, String>>()
+            resolutionField?.getAsJsonArray("allowedValues")?.forEach { valEl ->
+                if (valEl.isJsonObject) {
+                    val rObj = valEl.asJsonObject
+                    val rId = rObj.takeString("id")
+                    val rName = rObj.takeString("name") ?: rObj.takeString("value")
+                    if (rId != null && rName != null) {
+                        allowedRes.add(rId to rName)
+                    }
+                }
+            }
+
+            result.add(
+                JiraTransitionOption(
+                    id = id,
+                    name = name,
+                    toStatusName = toStatusName,
+                    toCategoryKey = toCategoryKey,
+                    hasResolutionField = hasRes,
+                    resolutionRequired = resRequired,
+                    allowedResolutions = allowedRes
+                )
+            )
+        }
+        return result
+    }
+
+    private fun selectBestTransition(
+        transitions: List<JiraTransitionOption>,
+        action: TicketWorkflowAction
+    ): JiraTransitionOption? {
+        if (transitions.isEmpty()) return null
+
+        return when (action) {
+            TicketWorkflowAction.TAKE_IN_WORK -> {
+                transitions.firstOrNull { t ->
+                    val text = "${t.name} ${t.toStatusName}"
+                    containsAnyKeyword(text, IN_WORK_KEYWORDS) &&
+                        !containsAnyKeyword(text, REJECT_KEYWORDS) &&
+                        !t.toCategoryKey.equals("done", ignoreCase = true)
+                } ?: transitions.firstOrNull { t ->
+                    t.toCategoryKey.equals("indeterminate", ignoreCase = true) &&
+                        !containsAnyKeyword(t.toStatusName, WAITING_SUPPORT_KEYWORDS) &&
+                        !containsAnyKeyword("${t.name} ${t.toStatusName}", REJECT_KEYWORDS)
+                }
+            }
+
+            TicketWorkflowAction.COMPLETE -> {
+                transitions.firstOrNull { t ->
+                    val text = "${t.name} ${t.toStatusName}"
+                    containsAnyKeyword(text, COMPLETE_KEYWORDS) &&
+                        !containsAnyKeyword(text, REJECT_KEYWORDS)
+                } ?: transitions.firstOrNull { t ->
+                    t.toCategoryKey.equals("done", ignoreCase = true) &&
+                        !containsAnyKeyword("${t.name} ${t.toStatusName}", REJECT_KEYWORDS)
+                }
+            }
+
+            TicketWorkflowAction.REJECT -> {
+                // 1. Direct reject/cancel/decline transition
+                transitions.firstOrNull { t ->
+                    containsAnyKeyword("${t.name} ${t.toStatusName}", REJECT_KEYWORDS)
+                }
+                    // 2. Done transition that offers a reject/decline resolution option
+                    ?: transitions.firstOrNull { t ->
+                        t.toCategoryKey.equals("done", ignoreCase = true) &&
+                            t.allowedResolutions.any { (_, rName) ->
+                                containsAnyKeyword(rName, REJECT_KEYWORDS)
+                            }
+                    }
+                    // 3. Single done transition if workflow uses one universal Close step
+                    ?: transitions.singleOrNull { t ->
+                        t.toCategoryKey.equals("done", ignoreCase = true)
+                    }
+            }
+        }
+    }
+
+    private fun executeTransition(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        transition: JiraTransitionOption,
+        action: TicketWorkflowAction,
+        settings: AppSettings
+    ) {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey/transitions"
+
+        val chosenResolutionId = pickResolutionId(transition, action)
+        val payloadWithResolution = JsonObject().apply {
+            add("transition", JsonObject().apply { addProperty("id", transition.id) })
+            if (chosenResolutionId != null) {
+                add(
+                    "fields",
+                    JsonObject().apply {
+                        add("resolution", JsonObject().apply { addProperty("id", chosenResolutionId) })
+                    }
+                )
+            }
+        }
+
+        try {
+            val req = Request.Builder()
+                .url(url)
+                .post(payloadWithResolution.toString().toRequestBody(jsonMediaType))
+                .applyAuth(settings)
+                .build()
+            clientFor(settings).newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) return
+                // If resolution wasn't strictly required and Jira rejected setting it on screen, retry plain transition
+                if (resp.code == 400 && chosenResolutionId != null && !transition.resolutionRequired) {
+                    val plainPayload = JsonObject().apply {
+                        add("transition", JsonObject().apply { addProperty("id", transition.id) })
+                    }
+                    val retryReq = Request.Builder()
+                        .url(url)
+                        .post(plainPayload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(retryReq).execute().use { retryResp ->
+                        val retryBody = retryResp.body?.string().orEmpty()
+                        if (retryResp.isSuccessful) return
+                        throw mapHttpError(retryResp.code, retryBody)
+                    }
+                }
+                throw mapHttpError(resp.code, bodyStr)
+            }
+        } catch (e: Exception) {
+            throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+        }
+    }
+
+    private fun pickResolutionId(
+        transition: JiraTransitionOption,
+        action: TicketWorkflowAction
+    ): String? {
+        if (!transition.hasResolutionField || transition.allowedResolutions.isEmpty()) return null
+        return when (action) {
+            TicketWorkflowAction.REJECT -> {
+                transition.allowedResolutions.firstOrNull { (_, name) ->
+                    containsAnyKeyword(name, REJECT_KEYWORDS)
+                }?.first ?: if (transition.resolutionRequired) transition.allowedResolutions.last().first else null
+            }
+            TicketWorkflowAction.COMPLETE -> {
+                transition.allowedResolutions.firstOrNull { (_, name) ->
+                    containsAnyKeyword(name, COMPLETE_KEYWORDS) && !containsAnyKeyword(name, REJECT_KEYWORDS)
+                }?.first ?: if (transition.resolutionRequired) transition.allowedResolutions.first().first else null
+            }
+            TicketWorkflowAction.TAKE_IN_WORK -> null
+        }
+    }
+
+    private fun addCommentToIssue(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        commentText: String,
+        settings: AppSettings
+    ) {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val v2Payload = JsonObject().apply { addProperty("body", commentText) }
+        val v3Payload = JsonObject().apply {
+            add(
+                "body",
+                JsonObject().apply {
+                    addProperty("type", "doc")
+                    addProperty("version", 1)
+                    add(
+                        "content",
+                        JsonArray().apply {
+                            add(
+                                JsonObject().apply {
+                                    addProperty("type", "paragraph")
+                                    add(
+                                        "content",
+                                        JsonArray().apply {
+                                            add(
+                                                JsonObject().apply {
+                                                    addProperty("type", "text")
+                                                    addProperty("text", commentText)
+                                                }
+                                            )
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+            )
+        }
+
+        val attempts = if (preferCloud) {
+            listOf(
+                "$baseUrl/rest/api/3/issue/$encodedKey/comment" to v3Payload,
+                "$baseUrl/rest/api/2/issue/$encodedKey/comment" to v2Payload
+            )
+        } else {
+            listOf(
+                "$baseUrl/rest/api/2/issue/$encodedKey/comment" to v2Payload,
+                "$baseUrl/rest/api/3/issue/$encodedKey/comment" to v3Payload
+            )
+        }
+
+        for ((url, payload) in attempts) {
+            runCatching {
+                val req = Request.Builder()
+                    .url(url)
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .applyAuth(settings)
+                    .build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) return
+                }
+            }
+        }
+    }
+
+    private fun JsonObject.takeString(key: String): String? {
+        val el = get(key) ?: return null
+        return if (el.isJsonPrimitive && !el.isJsonNull) el.asString else null
+    }
+
+    private fun containsAnyKeyword(text: String, keywords: List<String>): Boolean {
+        val normalized = text.trim().lowercase().replace('ё', 'е')
+        return keywords.any { normalized.contains(it) }
+    }
+
     private fun executeCloudJqlSearch(
         baseUrl: String,
         jql: String,
@@ -298,14 +830,20 @@ class JiraApiClient {
         val serverMsg = runCatching {
             val obj = JsonParser.parseString(body).asJsonObject
             val arr = obj.getAsJsonArray("errorMessages")
-            if (arr != null && arr.size() > 0) arr[0].asString else null
+            val firstMsg = if (arr != null && arr.size() > 0) arr[0].asString else null
+            if (!firstMsg.isNullOrBlank()) {
+                firstMsg
+            } else {
+                val errorsObj = obj.getAsJsonObject("errors")
+                errorsObj?.entrySet()?.firstOrNull()?.let { (k, v) -> "$k: ${v.asString}" }
+            }
         }.getOrNull()
 
         val message = when (code) {
-            400 -> "Ошибка запроса JQL (400): ${serverMsg ?: "проверьте фильтр проектов или JQL"}"
+            400 -> "Ошибка запроса Jira (400): ${serverMsg ?: "некорректные параметры или поле в Jira"}"
             401 -> "Ошибка авторизации (401): проверьте логин/email и пароль или токен"
             403 -> "Доступ запрещён (403): недостаточно прав или сработала защита CAPTCHA в Jira"
-            404 -> "Ресурс не найден (404): проверьте адрес сервера Jira (например, наличие /jira)"
+            404 -> "Ресурс не найден (404): проверьте адрес сервера Jira или права доступа к задаче"
             else -> "Ошибка сервера Jira ($code)${if (serverMsg != null) ": $serverMsg" else ""}"
         }
         return JiraApiException(message, code)
@@ -324,6 +862,26 @@ class JiraApiClient {
     }
 
     companion object {
+        private val IN_WORK_KEYWORDS = listOf(
+            "в работу", "взять в работу", "в работе", "начать", "принять", "приступить",
+            "выполнять", "исполнение", "обработк", "ответить клиенту",
+            "start progress", "in progress", "in work", "start", "respond", "begin"
+        )
+
+        private val COMPLETE_KEYWORDS = listOf(
+            "заверш", "выполн", "реш", "закр", "готов", "исполн",
+            "resolve", "complete", "close", "done", "finish", "fixed"
+        )
+
+        private val REJECT_KEYWORDS = listOf(
+            "отклон", "отмен", "отказ", "не будет", "ложн", "дубликат",
+            "decline", "reject", "cancel", "won't", "wont", "invalid"
+        )
+
+        private val WAITING_SUPPORT_KEYWORDS = listOf(
+            "ожидание поддержки", "ожидаие поддержки", "ожидает поддержки", "waiting for support"
+        )
+
         private fun buildClient(trustAllSsl: Boolean): OkHttpClient {
             val builder = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)

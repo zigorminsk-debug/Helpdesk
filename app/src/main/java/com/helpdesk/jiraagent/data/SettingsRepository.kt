@@ -6,6 +6,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
@@ -64,6 +65,11 @@ class SettingsRepository private constructor(context: Context) {
             .putBoolean(KEY_POLLING_ENABLED, newSettings.pollingEnabled)
             .putInt(KEY_POLL_INTERVAL, newSettings.pollIntervalSeconds)
             .putBoolean(KEY_START_ON_BOOT, newSettings.startOnBoot)
+            .putBoolean(KEY_WORK_SCHEDULE_ENABLED, newSettings.workScheduleEnabled)
+            .putString(KEY_WORK_START_TIME, newSettings.workStartTime.trim().ifEmpty { "09:00" })
+            .putString(KEY_WORK_END_TIME, newSettings.workEndTime.trim().ifEmpty { "17:30" })
+            .putString(KEY_EXTRA_WORKING_DATES, newSettings.extraWorkingDates.trim())
+            .putString(KEY_EXTRA_HOLIDAY_DATES, newSettings.extraHolidayDates.trim())
             .putString(KEY_PHONE_REGION, newSettings.phoneRegion.name)
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
@@ -111,30 +117,56 @@ class SettingsRepository private constructor(context: Context) {
      * client ticket arriving after baseline triggers a banner.
      */
     @Synchronized
-    fun processPolledTicketsAndFindNewClientOnes(polled: List<HelpdeskTicket>): List<HelpdeskTicket> {
+    fun processPolledTicketsAndFindNewClientOnes(
+        polled: List<HelpdeskTicket>,
+        isNotificationWindowOpen: Boolean = BelarusWorkCalendar.isWorkingTimeNow(_appSettings.value)
+    ): List<HelpdeskTicket> {
         updateTicketsCache(polled)
 
         val baselineDone = cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)
         val silentReseed = cachePrefs.getBoolean(KEY_SILENT_RESEED_ONCE, false)
         val seenKeys = cachePrefs.getStringSet(KEY_SEEN_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ALERT_KEYS, emptySet())?.toMutableSet()
+            ?: mutableSetOf()
 
         if (!baselineDone || silentReseed) {
             polled.forEach { seenKeys.add(it.key) }
-            cachePrefs.edit().putBoolean(KEY_SILENT_RESEED_ONCE, false).apply()
+            cachePrefs.edit()
+                .putBoolean(KEY_SILENT_RESEED_ONCE, false)
+                .remove(KEY_DEFERRED_ALERT_KEYS)
+                .apply()
+            saveSeenKeys(seenKeys, baselineInitialized = true)
+            return emptyList()
+        }
+
+        val sortedChronologically = polled.sortedBy { it.createdEpochMillis }
+
+        // Outside RB working days / hours (09:00–17:30): silence notifications & sound,
+        // and defer brand-new client tickets until the next RB working window opens.
+        if (!isNotificationWindowOpen) {
+            for (ticket in sortedChronologically) {
+                val isUnseen = seenKeys.add(ticket.key)
+                if (isUnseen && ticket.isClientTicket && ticket.stage == TicketStage.NEW) {
+                    deferredKeys.add(ticket.key)
+                }
+            }
+            cachePrefs.edit().putStringSet(KEY_DEFERRED_ALERT_KEYS, deferredKeys).apply()
             saveSeenKeys(seenKeys, baselineInitialized = true)
             return emptyList()
         }
 
         val newClientTickets = mutableListOf<HelpdeskTicket>()
-        // Sort ascending by creation time so notifications arrive in chronological order.
-        // Closed tickets never trigger incoming-ticket banners.
-        for (ticket in polled.sortedBy { it.createdEpochMillis }) {
+        for (ticket in sortedChronologically) {
+            val wasDeferred = deferredKeys.remove(ticket.key)
             val isUnseen = seenKeys.add(ticket.key)
-            if (isUnseen && ticket.isClientTicket && ticket.stage != TicketStage.CLOSED) {
-                newClientTickets.add(ticket)
+            if (ticket.isClientTicket && ticket.stage != TicketStage.CLOSED) {
+                if (isUnseen || (wasDeferred && ticket.stage == TicketStage.NEW)) {
+                    newClientTickets.add(ticket)
+                }
             }
         }
 
+        cachePrefs.edit().remove(KEY_DEFERRED_ALERT_KEYS).apply()
         saveSeenKeys(seenKeys, baselineInitialized = true)
         return newClientTickets
     }
@@ -198,6 +230,11 @@ class SettingsRepository private constructor(context: Context) {
             pollingEnabled = prefs.getBoolean(KEY_POLLING_ENABLED, true),
             pollIntervalSeconds = prefs.getInt(KEY_POLL_INTERVAL, 30),
             startOnBoot = prefs.getBoolean(KEY_START_ON_BOOT, true),
+            workScheduleEnabled = prefs.getBoolean(KEY_WORK_SCHEDULE_ENABLED, true),
+            workStartTime = prefs.getString(KEY_WORK_START_TIME, "09:00").orEmpty().ifBlank { "09:00" },
+            workEndTime = prefs.getString(KEY_WORK_END_TIME, "17:30").orEmpty().ifBlank { "17:30" },
+            extraWorkingDates = prefs.getString(KEY_EXTRA_WORKING_DATES, "").orEmpty(),
+            extraHolidayDates = prefs.getString(KEY_EXTRA_HOLIDAY_DATES, "").orEmpty(),
             phoneRegion = enumOrDefault(prefs.getString(KEY_PHONE_REGION, null), PhoneRegion.AUTO_BY_RU),
             customCountryCode = prefs.getString(KEY_CUSTOM_COUNTRY_CODE, "+375").orEmpty().ifBlank { "+375" },
             customPhoneFieldNames = prefs.getString(
@@ -314,6 +351,11 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_POLLING_ENABLED = "polling_enabled"
         private const val KEY_POLL_INTERVAL = "poll_interval"
         private const val KEY_START_ON_BOOT = "start_on_boot"
+        private const val KEY_WORK_SCHEDULE_ENABLED = "work_schedule_enabled"
+        private const val KEY_WORK_START_TIME = "work_start_time"
+        private const val KEY_WORK_END_TIME = "work_end_time"
+        private const val KEY_EXTRA_WORKING_DATES = "extra_working_dates"
+        private const val KEY_EXTRA_HOLIDAY_DATES = "extra_holiday_dates"
         private const val KEY_PHONE_REGION = "phone_region"
         private const val KEY_CUSTOM_COUNTRY_CODE = "custom_country_code"
         private const val KEY_CUSTOM_PHONE_FIELDS = "custom_phone_fields"
@@ -331,6 +373,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_CUSTOM_JQL = "filter_custom_jql"
 
         private const val KEY_SEEN_KEYS = "seen_ticket_keys"
+        private const val KEY_DEFERRED_ALERT_KEYS = "deferred_alert_keys"
         private const val KEY_BASELINE_INITIALIZED = "baseline_initialized"
         private const val KEY_SILENT_RESEED_ONCE = "silent_reseed_once"
         private const val KEY_CACHED_TICKETS_JSON = "cached_tickets_json"

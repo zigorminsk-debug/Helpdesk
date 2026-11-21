@@ -51,8 +51,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.BuildConfig
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
@@ -94,6 +96,16 @@ fun ServerSettingsScreen(
             customCountryCode = draft.customCountryCode,
             strictForFreeText = false
         )
+    }
+
+    val rbCalendarStatus = remember(
+        draft.workScheduleEnabled,
+        draft.workStartTime,
+        draft.workEndTime,
+        draft.extraWorkingDates,
+        draft.extraHolidayDates
+    ) {
+        BelarusWorkCalendar.evaluate(draft)
     }
 
     Column(
@@ -282,12 +294,15 @@ fun ServerSettingsScreen(
                     style = MaterialTheme.typography.labelLarge
                 )
 
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     POLL_INTERVAL_OPTIONS.forEach { (sec, label) ->
                         FilterChip(
                             selected = draft.pollIntervalSeconds == sec,
                             onClick = { draft = draft.copy(pollIntervalSeconds = sec) },
-                            label = { Text(label) }
+                            label = { Text(label, maxLines = 1, softWrap = false) }
                         )
                     }
                 }
@@ -298,6 +313,106 @@ fun ServerSettingsScreen(
                     checked = draft.startOnBoot,
                     onCheckedChange = { draft = draft.copy(startOnBoot = it) }
                 )
+            }
+        }
+
+        // 2b. Belarus Working Calendar & Working Hours (09:00 - 17:30) Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Календарь рабочих дней РБ и часы звука",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                SwitchRow(
+                    title = "Уведомления и звук по календарю РБ",
+                    subtitle = "Включать баннеры и звуковой сигнал только в рабочие дни Республики Беларусь с 09:00 до 17:30 (с учётом праздников и переносов РБ)",
+                    checked = draft.workScheduleEnabled,
+                    onCheckedChange = { draft = draft.copy(workScheduleEnabled = it) }
+                )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (rbCalendarStatus.isAllowedNow) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = rbCalendarStatus.statusTitle,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (rbCalendarStatus.isAllowedNow) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = rbCalendarStatus.detailMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (rbCalendarStatus.isAllowedNow) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
+
+                if (draft.workScheduleEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = draft.workStartTime,
+                            onValueChange = { draft = draft.copy(workStartTime = it) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Начало", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            placeholder = { Text("09:00") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = draft.workEndTime,
+                            onValueChange = { draft = draft.copy(workEndTime = it) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Окончание", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            placeholder = { Text("17:30") },
+                            singleLine = true
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = draft.extraWorkingDates,
+                        onValueChange = { draft = draft.copy(extraWorkingDates = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Доп. рабочие субботы (необязательно)") },
+                        placeholder = { Text("ДД.ММ.ГГГГ через запятую (основные переносы РБ уже встроены)") }
+                    )
+
+                    OutlinedTextField(
+                        value = draft.extraHolidayDates,
+                        onValueChange = { draft = draft.copy(extraHolidayDates = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Доп. выходные дни (необязательно)") },
+                        placeholder = { Text("ДД.ММ.ГГГГ через запятую") }
+                    )
+                }
             }
         }
 
@@ -409,7 +524,7 @@ fun ServerSettingsScreen(
         ) {
             Icon(Icons.Default.Save, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Сохранить и применить настройки")
+            Text("Сохранить настройки", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
 
         // 4. Version & Signing info card

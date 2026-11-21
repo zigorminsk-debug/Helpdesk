@@ -57,6 +57,11 @@ data class AppSettings(
     val pollingEnabled: Boolean = true,
     val pollIntervalSeconds: Int = 30,
     val startOnBoot: Boolean = true,
+    val workScheduleEnabled: Boolean = true,
+    val workStartTime: String = "09:00",
+    val workEndTime: String = "17:30",
+    val extraWorkingDates: String = "",
+    val extraHolidayDates: String = "",
     val phoneRegion: PhoneRegion = PhoneRegion.AUTO_BY_RU,
     val customCountryCode: String = "+375",
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"

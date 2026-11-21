@@ -17,11 +17,13 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.helpdesk.jiraagent.MainActivity
 import com.helpdesk.jiraagent.R
+import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 
 object NotificationHelper {
 
-    const val CHANNEL_CLIENT_BANNER = "jira_client_tickets_banner_v1"
+    const val CHANNEL_CLIENT_BANNER = "jira_client_tickets_banner_v2"
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
@@ -104,12 +106,24 @@ object NotificationHelper {
     }
 
     /**
-     * Displays a Heads-Up Notification Banner for a client ticket.
-     * Service tickets are strictly ignored.
+     * Displays a Heads-Up Notification Banner + sound signal for a client ticket.
+     * Strictly respects the Republic of Belarus working days calendar and 09:00–17:30 working hours
+     * unless [bypassWorkSchedule] is explicitly requested (e.g. manual test button).
      */
-    fun showClientTicketBanner(context: Context, ticket: HelpdeskTicket) {
-        if (!ticket.isClientTicket) return
-        if (!hasNotificationPermission(context)) return
+    fun showClientTicketBanner(
+        context: Context,
+        ticket: HelpdeskTicket,
+        bypassWorkSchedule: Boolean = false
+    ): Boolean {
+        if (!ticket.isClientTicket) return false
+        if (!hasNotificationPermission(context)) return false
+
+        if (!bypassWorkSchedule) {
+            val appSettings = SettingsRepository.getInstance(context).appSettings.value
+            if (!BelarusWorkCalendar.isWorkingTimeNow(appSettings)) {
+                return false
+            }
+        }
 
         ensureChannels(context)
 
@@ -188,5 +202,6 @@ object NotificationHelper {
             2000 + (ticket.key.hashCode() and 0x7FFFFFFF) % 100_000,
             builder.build()
         )
+        return true
     }
 }

@@ -11,6 +11,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
@@ -120,9 +121,15 @@ class JiraMonitorService : Service() {
         val result = apiClient.fetchRecentTickets(settings, filter)
         result.onSuccess { tickets ->
             val nowMillis = System.currentTimeMillis()
-            val newClientTickets = repository.processPolledTicketsAndFindNewClientOnes(tickets)
-            for (ticket in newClientTickets) {
-                NotificationHelper.showClientTicketBanner(applicationContext, ticket)
+            val schedule = BelarusWorkCalendar.evaluate(settings, Instant.ofEpochMilli(nowMillis))
+            val newClientTickets = repository.processPolledTicketsAndFindNewClientOnes(
+                polled = tickets,
+                isNotificationWindowOpen = schedule.isAllowedNow
+            )
+            if (schedule.isAllowedNow) {
+                for (ticket in newClientTickets) {
+                    NotificationHelper.showClientTicketBanner(applicationContext, ticket)
+                }
             }
 
             val newCount = tickets.count { it.isClientTicket && it.stage == TicketStage.NEW }
@@ -132,7 +139,8 @@ class JiraMonitorService : Service() {
                 .toLocalTime()
                 .format(timeFormatter)
 
-            updateForegroundText("Новые: $newCount · В работе: $inProgressCount · Обновлено в $timeStr")
+            val modePrefix = if (schedule.isAllowedNow) "" else "Тихий режим РБ · "
+            updateForegroundText("${modePrefix}Новые: $newCount · В работе: $inProgressCount · $timeStr")
             repository.updateSyncStatus {
                 it.copy(
                     isSyncing = false,
