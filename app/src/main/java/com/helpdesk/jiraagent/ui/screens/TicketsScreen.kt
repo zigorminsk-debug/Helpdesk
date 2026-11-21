@@ -1,5 +1,6 @@
 package com.helpdesk.jiraagent.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,7 +28,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
@@ -37,13 +41,16 @@ import androidx.compose.material.icons.filled.FilterAltOff
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,15 +59,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,9 +88,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
@@ -134,6 +147,11 @@ fun TicketsScreen(
     filterSettings: FilterSettings,
     syncStatus: SyncStatus,
     isCreatingTicket: Boolean,
+    isBatchBusy: Boolean = false,
+    externalSearchFilter: String = "",
+    onConsumeExternalSearch: () -> Unit = {},
+    onScanSerialHistory: (String) -> Unit = {},
+    onBatchAction: (Set<String>, TicketWorkflowAction?, String?, () -> Unit) -> Unit = { _, _, _, done -> done() },
     onTicketClick: (String) -> Unit,
     onQuickTakeInWork: (String) -> Unit,
     onDiscussTicketInChat: (HelpdeskTicket) -> Unit,
@@ -150,6 +168,58 @@ fun TicketsScreen(
     var assigneeScope by rememberSaveable { mutableStateOf(AssigneeScopeFilter.ALL) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
+    var multiSelectMode by rememberSaveable { mutableStateOf(false) }
+    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    var showBatchCommentDialog by rememberSaveable { mutableStateOf(false) }
+    var batchCommentDraft by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(externalSearchFilter) {
+        if (externalSearchFilter.isNotBlank()) {
+            searchQuery = externalSearchFilter
+            onConsumeExternalSearch()
+        }
+    }
+
+    val serialScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val scanned = result.contents?.trim().orEmpty()
+        if (scanned.isNotEmpty()) {
+            onScanSerialHistory(scanned)
+        }
+    }
+
+    if (showBatchCommentDialog) {
+        AlertDialog(
+            onDismissRequest = { showBatchCommentDialog = false },
+            title = { Text("Комментарий для ${selectedKeys.size} заявок", fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = batchCommentDraft,
+                    onValueChange = { batchCommentDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                    label = { Text("Общий комментарий клиентам") }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBatchCommentDialog = false
+                        onBatchAction(selectedKeys, null, batchCommentDraft) {
+                            selectedKeys = emptySet()
+                            multiSelectMode = false
+                            batchCommentDraft = ""
+                        }
+                    },
+                    enabled = batchCommentDraft.isNotBlank() && !isBatchBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                ) { Text("Отправить всем") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchCommentDialog = false }) { Text("Отмена") }
+            }
+        )
+    }
 
     val defaultProjectKey = remember(filterSettings.projectKeys, tickets) {
         TicketFilterEngine.splitCsv(filterSettings.projectKeys).firstOrNull()?.uppercase()
@@ -258,9 +328,46 @@ fun TicketsScreen(
                     )
                 },
                 trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(Icons.Default.Clear, contentDescription = "Очистить")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(
+                                onClick = { searchQuery = "" },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(Icons.Default.Clear, contentDescription = "Очистить", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        IconButton(
+                            onClick = {
+                                serialScannerLauncher.launch(
+                                    ScanOptions()
+                                        .setPrompt("Наведите камеру на S/N или QR оборудования для поиска ремонтов в Jira")
+                                        .setBeepEnabled(false)
+                                        .setOrientationLocked(false)
+                                )
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = "Сканер S/N в Jira",
+                                tint = CslOrange,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                multiSelectMode = !multiSelectMode
+                                if (!multiSelectMode) selectedKeys = emptySet()
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Checklist,
+                                contentDescription = "Массовый выбор",
+                                tint = if (multiSelectMode) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(19.dp)
+                            )
                         }
                     }
                 },
@@ -306,6 +413,99 @@ fun TicketsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 2.dp)
             )
+
+            if (multiSelectMode) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = CslMidnight,
+                    contentColor = Color.White
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Выбрано: ${selectedKeys.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = CslOrange,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Surface(
+                            onClick = {
+                                if (selectedKeys.isNotEmpty() && !isBatchBusy) {
+                                    onBatchAction(selectedKeys, TicketWorkflowAction.TAKE_IN_WORK, null) {
+                                        selectedKeys = emptySet()
+                                        multiSelectMode = false
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(7.dp),
+                            color = CslOrange
+                        ) {
+                            Text(
+                                text = "В работу",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+                        Surface(
+                            onClick = {
+                                if (selectedKeys.isNotEmpty() && !isBatchBusy) {
+                                    showBatchCommentDialog = true
+                                }
+                            },
+                            shape = RoundedCornerShape(7.dp),
+                            color = Color.White.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = "Коммент.",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+                        Surface(
+                            onClick = {
+                                if (selectedKeys.isNotEmpty() && !isBatchBusy) {
+                                    onBatchAction(selectedKeys, TicketWorkflowAction.COMPLETE, null) {
+                                        selectedKeys = emptySet()
+                                        multiSelectMode = false
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(7.dp),
+                            color = CslSuccessGreen
+                        ) {
+                            Text(
+                                text = "Закрыть",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                selectedKeys = emptySet()
+                                multiSelectMode = false
+                            },
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Отмена", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
 
             PullToRefreshBox(
                 isRefreshing = syncStatus.isSyncing,
@@ -356,19 +556,64 @@ fun TicketsScreen(
                             }
                         } else {
                             items(displayedTickets, key = { it.key }) { ticket ->
-                                SwipeableTicketListItem(
-                                    ticket = ticket,
-                                    onClick = { onTicketClick(ticket.key) },
-                                    onSwipeTakeInWork = { onQuickTakeInWork(ticket.key) },
-                                    onSwipeLeftAction = {
-                                        val primaryPhone = ticket.phoneNumbers.firstOrNull()
-                                        if (primaryPhone != null) {
-                                            DialerLauncher.openDialer(context, primaryPhone.e164)
-                                        } else {
-                                            onDiscussTicketInChat(ticket)
+                                val isSelectedInBatch = ticket.key in selectedKeys
+                                if (multiSelectMode) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        IconButton(
+                                            onClick = {
+                                                selectedKeys = if (isSelectedInBatch) {
+                                                    selectedKeys - ticket.key
+                                                } else {
+                                                    selectedKeys + ticket.key
+                                                }
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isSelectedInBatch) {
+                                                    Icons.Default.CheckBox
+                                                } else {
+                                                    Icons.Default.CheckBoxOutlineBlank
+                                                },
+                                                contentDescription = null,
+                                                tint = if (isSelectedInBatch) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
+                                        TicketListCard(
+                                            ticket = ticket,
+                                            onClick = {
+                                                selectedKeys = if (isSelectedInBatch) {
+                                                    selectedKeys - ticket.key
+                                                } else {
+                                                    selectedKeys + ticket.key
+                                                }
+                                            }
+                                        )
                                     }
-                                )
+                                } else {
+                                    SwipeableTicketListItem(
+                                        ticket = ticket,
+                                        onClick = { onTicketClick(ticket.key) },
+                                        onSwipeTakeInWork = { onQuickTakeInWork(ticket.key) },
+                                        onSwipeLeftAction = {
+                                            val primaryPhone = ticket.phoneNumbers.firstOrNull()
+                                            if (primaryPhone != null) {
+                                                DialerLauncher.openSystemDialer(
+                                                    context = context,
+                                                    phoneInput = primaryPhone.e164,
+                                                    ticketKey = ticket.key,
+                                                    clientName = ticket.reporterName
+                                                )
+                                            } else {
+                                                onDiscussTicketInChat(ticket)
+                                            }
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1035,7 +1280,14 @@ private fun TicketListCard(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 AssistChip(
-                                    onClick = { DialerLauncher.openDialer(context, phone.e164) },
+                                    onClick = {
+                                        DialerLauncher.openSystemDialer(
+                                            context = context,
+                                            phoneInput = phone.e164,
+                                            ticketKey = ticket.key,
+                                            clientName = ticket.reporterName
+                                        )
+                                    },
                                     label = {
                                         Text(
                                             text = phone.formattedDisplay,

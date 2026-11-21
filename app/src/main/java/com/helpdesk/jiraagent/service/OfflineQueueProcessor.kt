@@ -85,11 +85,21 @@ object OfflineQueueProcessor {
                         issueKey = item.ticketKey,
                         commentText = text,
                         settings = settings,
-                        filterSettings = filter
+                        filterSettings = filter,
+                        internalOnly = item.internalComment
                     ).map { refreshed ->
                         refreshed?.let { repo.upsertSingleTicket(it) }
                     }
                 }
+            }
+
+            QueuedActionType.ADD_WORKLOG -> {
+                apiClient.addIssueWorklog(
+                    issueKey = item.ticketKey,
+                    timeSpentSeconds = item.worklogSeconds.coerceAtLeast(60),
+                    commentText = item.commentText,
+                    settings = settings
+                )
             }
 
             QueuedActionType.CHAT_MESSAGE -> {

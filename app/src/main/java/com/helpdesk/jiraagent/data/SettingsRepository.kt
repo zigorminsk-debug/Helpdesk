@@ -21,11 +21,20 @@ import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.model.TtsReadoutMode
 import com.helpdesk.jiraagent.widget.HelpCslAppWidgetProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.Locale
+
+data class PendingCallSession(
+    val ticketKey: String,
+    val clientName: String,
+    val phoneNumber: String,
+    val startedAtMillis: Long
+)
 
 data class InAppBannerAlert(
     val ticket: HelpdeskTicket,
@@ -92,8 +101,51 @@ class SettingsRepository private constructor(context: Context) {
     private val _offlineQueuedActions = MutableStateFlow(loadOfflineQueuedActions())
     val offlineQueuedActions: StateFlow<List<OfflineQueuedAction>> = _offlineQueuedActions.asStateFlow()
 
+    private val _clientDossierNotes = MutableStateFlow(loadClientDossierNotes())
+    val clientDossierNotes: StateFlow<Map<String, String>> = _clientDossierNotes.asStateFlow()
+
+    private val _pendingCallSession = MutableStateFlow<PendingCallSession?>(null)
+    val pendingCallSession: StateFlow<PendingCallSession?> = _pendingCallSession.asStateFlow()
+
     @Volatile
     var isChatTabVisible: Boolean = false
+
+    fun recordOutgoingTicketCall(ticketKey: String, clientName: String, phoneNumber: String) {
+        if (!_appSettings.value.postCallWorklogPromptEnabled) return
+        _pendingCallSession.value = PendingCallSession(
+            ticketKey = ticketKey,
+            clientName = clientName,
+            phoneNumber = phoneNumber,
+            startedAtMillis = System.currentTimeMillis()
+        )
+    }
+
+    fun clearPendingCallSession() {
+        _pendingCallSession.value = null
+    }
+
+    @Synchronized
+    fun saveClientDossierNote(clientName: String, noteText: String) {
+        val normKey = normalizeClientKey(clientName)
+        if (normKey.isEmpty()) return
+        val current = _clientDossierNotes.value.toMutableMap()
+        val trimmed = noteText.trim()
+        if (trimmed.isEmpty()) {
+            current.remove(normKey)
+        } else {
+            current[normKey] = trimmed
+        }
+        prefs.edit().putString(KEY_CLIENT_DOSSIER_NOTES_JSON, gson.toJson(current)).apply()
+        _clientDossierNotes.value = current
+    }
+
+    fun getClientDossierNote(clientName: String): String {
+        val normKey = normalizeClientKey(clientName)
+        return _clientDossierNotes.value[normKey].orEmpty()
+    }
+
+    private fun normalizeClientKey(clientName: String): String =
+        clientName.trim().lowercase(Locale.ROOT)
 
     fun emitInAppBanner(ticket: HelpdeskTicket, titleSuffix: String) {
         _latestInAppBanner.value = InAppBannerAlert(
@@ -134,6 +186,11 @@ class SettingsRepository private constructor(context: Context) {
             .putBoolean(KEY_STALE_REMINDER_ENABLED, newSettings.staleTicketReminderEnabled)
             .putInt(KEY_STALE_REMINDER_MINUTES, newSettings.staleTicketReminderMinutes.coerceIn(5, 240))
             .putString(KEY_QUICK_REPLY_TEMPLATES_JSON, gson.toJson(newSettings.quickReplyTemplates))
+            .putString(KEY_TTS_READOUT_MODE, newSettings.ttsReadoutMode.name)
+            .putBoolean(KEY_STORM_PROTECTION_ENABLED, newSettings.stormProtectionEnabled)
+            .putBoolean(KEY_CALLER_ID_ENABLED, newSettings.callerIdEnabled)
+            .putBoolean(KEY_POST_CALL_WORKLOG_ENABLED, newSettings.postCallWorklogPromptEnabled)
+            .putBoolean(KEY_BIOMETRIC_LOCK_ENABLED, newSettings.biometricLockEnabled)
             .putString(KEY_PHONE_REGION, newSettings.phoneRegion.name)
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
@@ -598,6 +655,14 @@ class SettingsRepository private constructor(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    private fun loadClientDossierNotes(): Map<String, String> {
+        val json = prefs.getString(KEY_CLIENT_DOSSIER_NOTES_JSON, null) ?: return emptyMap()
+        return runCatching {
+            val type = object : TypeToken<Map<String, String>>() {}.type
+            gson.fromJson<Map<String, String>>(json, type) ?: emptyMap()
+        }.getOrDefault(emptyMap())
+    }
+
     private fun loadAppSettings(): AppSettings {
         return AppSettings(
             serverUrl = prefs.getString(KEY_SERVER_URL, "").orEmpty(),
@@ -626,6 +691,11 @@ class SettingsRepository private constructor(context: Context) {
             staleTicketReminderEnabled = prefs.getBoolean(KEY_STALE_REMINDER_ENABLED, true),
             staleTicketReminderMinutes = prefs.getInt(KEY_STALE_REMINDER_MINUTES, 15).coerceIn(5, 240),
             quickReplyTemplates = loadQuickReplyTemplates(),
+            ttsReadoutMode = enumOrDefault(prefs.getString(KEY_TTS_READOUT_MODE, null), TtsReadoutMode.HEADSET_ONLY),
+            stormProtectionEnabled = prefs.getBoolean(KEY_STORM_PROTECTION_ENABLED, true),
+            callerIdEnabled = prefs.getBoolean(KEY_CALLER_ID_ENABLED, true),
+            postCallWorklogPromptEnabled = prefs.getBoolean(KEY_POST_CALL_WORKLOG_ENABLED, true),
+            biometricLockEnabled = prefs.getBoolean(KEY_BIOMETRIC_LOCK_ENABLED, false),
             phoneRegion = enumOrDefault(prefs.getString(KEY_PHONE_REGION, null), PhoneRegion.AUTO_BY_RU),
             customCountryCode = prefs.getString(KEY_CUSTOM_COUNTRY_CODE, "+375").orEmpty().ifBlank { "+375" },
             customPhoneFieldNames = prefs.getString(
@@ -767,6 +837,12 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_STALE_REMINDER_ENABLED = "stale_reminder_enabled"
         private const val KEY_STALE_REMINDER_MINUTES = "stale_reminder_minutes"
         private const val KEY_QUICK_REPLY_TEMPLATES_JSON = "quick_reply_templates_json"
+        private const val KEY_TTS_READOUT_MODE = "tts_readout_mode"
+        private const val KEY_STORM_PROTECTION_ENABLED = "storm_protection_enabled"
+        private const val KEY_CALLER_ID_ENABLED = "caller_id_enabled"
+        private const val KEY_POST_CALL_WORKLOG_ENABLED = "post_call_worklog_enabled"
+        private const val KEY_BIOMETRIC_LOCK_ENABLED = "biometric_lock_enabled"
+        private const val KEY_CLIENT_DOSSIER_NOTES_JSON = "client_dossier_notes_json"
         private const val KEY_PHONE_REGION = "phone_region"
         private const val KEY_CUSTOM_COUNTRY_CODE = "custom_country_code"
         private const val KEY_CUSTOM_PHONE_FIELDS = "custom_phone_fields"

@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AttachFile
@@ -48,7 +49,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,6 +96,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.helpdesk.jiraagent.domain.RemoteDesktopIdMatch
 import com.helpdesk.jiraagent.domain.SysadminEntities
+import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketAttachment
 import com.helpdesk.jiraagent.ui.ClientHistoryUiState
@@ -101,6 +105,7 @@ import com.helpdesk.jiraagent.ui.theme.CslDangerRed
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
 import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
+import com.helpdesk.jiraagent.util.NavigatorLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -172,31 +177,57 @@ fun SysadminEntitiesCard(
     var customHostDraft by rememberSaveable { mutableStateOf("") }
 
     if (showCustomPingDialog) {
+        val macLookup = remember(customHostDraft) {
+            SysadminEntityExtractor.lookupMacVendor(customHostDraft)
+        }
         AlertDialog(
             onDismissRequest = { showCustomPingDialog = false },
-            title = { Text("Проверка доступности хоста / портов", fontWeight = FontWeight.Bold) },
+            title = { Text("Сетевой комбайн (Ping / SSL / DNS / MAC)", fontWeight = FontWeight.Bold) },
             text = {
-                OutlinedTextField(
-                    value = customHostDraft,
-                    onValueChange = { customHostDraft = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("IP-адрес или домен") },
-                    placeholder = { Text("Например: 192.168.1.1 или csl.by") }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = customHostDraft,
+                        onValueChange = { customHostDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("IP, домен или MAC-адрес") },
+                        placeholder = { Text("csl.by, 192.168.1.1 или D4:CA:6D:11:22:33") }
+                    )
+                    if (macLookup != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.45f))
+                        ) {
+                            Text(
+                                text = "MAC ${macLookup.normalizedMac} → Производитель: ${macLookup.vendorName ?: "Неизвестный OUI (${macLookup.ouiPrefix})"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         val target = customHostDraft.trim()
-                        if (target.isNotEmpty()) {
+                        if (target.isNotEmpty() && macLookup == null) {
                             showCustomPingDialog = false
                             onRunDiagnostics(target)
+                        } else if (macLookup != null) {
+                            copyPlainText(
+                                context,
+                                "${macLookup.normalizedMac} (${macLookup.vendorName ?: macLookup.ouiPrefix})",
+                                "MAC скопирован"
+                            )
+                            showCustomPingDialog = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                 ) {
-                    Text("Проверить")
+                    Text(if (macLookup != null) "Скопировать MAC" else "Проверить узел")
                 }
             },
             dismissButton = {
@@ -305,9 +336,90 @@ fun SysadminEntitiesCard(
                 }
             }
 
+            if (entities.macAddresses.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    entities.macAddresses.forEach { mac ->
+                        Surface(
+                            onClick = {
+                                copyPlainText(context, mac.normalizedMac, "MAC ${mac.normalizedMac} скопирован")
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Router,
+                                    contentDescription = null,
+                                    tint = CslOrange,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "${mac.normalizedMac} · ${mac.vendorName ?: "OUI ${mac.ouiPrefix}"}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (entities.streetAddresses.isNotEmpty()) {
+                entities.streetAddresses.forEach { addr ->
+                    Surface(
+                        onClick = { NavigatorLauncher.openAddressInNavigator(context, addr.searchQuery) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = CslSuccessGreen.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, CslSuccessGreen.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Navigation,
+                                contentDescription = null,
+                                tint = CslSuccessGreen,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Маршрут в Навигатор:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CslSuccessGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = addr.displayAddress,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = CslSuccessGreen,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             if (entities.isEmpty) {
                 Text(
-                    text = "ID AnyDesk/RustDesk в тексте не найдены. Нажмите «Ping / Порты» для проверки любого узла.",
+                    text = "ID удалёнки, IP, MAC и адреса в тексте не найдены. Нажмите «Ping / Порты» для проверки SSL/DNS/портов.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -445,7 +557,10 @@ fun HostDiagnosticDialog(
                 }
             } else {
                 val rep = state.report!!
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     if (rep.errorMessage != null) {
                         Text(
                             text = rep.errorMessage,
@@ -467,6 +582,50 @@ fun HostDiagnosticDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = if (rep.icmpReachable) CslSuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        rep.httpProbe?.let { http ->
+                            val httpGood = http.statusCode in 200..399
+                            Text(
+                                text = "${http.scheme}: код ${http.statusCode}" +
+                                    (http.serverHeader?.let { " · $it" } ?: "") +
+                                    " · ${http.latencyMs} мс",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (httpGood) CslSuccessGreen else CslOrange
+                            )
+                        }
+
+                        rep.sslCertificate?.let { ssl ->
+                            val sslColor = when {
+                                ssl.isExpired || ssl.daysRemaining < 7 -> CslDangerRed
+                                ssl.daysRemaining < 21 -> CslOrange
+                                else -> CslSuccessGreen
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = sslColor.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, sslColor.copy(alpha = 0.45f))
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text(
+                                        text = if (ssl.isExpired) {
+                                            "🔒 SSL ИСТЁК (${ssl.expiresFormatted})!"
+                                        } else {
+                                            "🔒 SSL до ${ssl.expiresFormatted} (осталось ${ssl.daysRemaining} дн.)"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = sslColor
+                                    )
+                                    Text(
+                                        text = "CN: ${ssl.subjectCn} · CA: ${ssl.issuerCn}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
                         HorizontalDivider()
                         rep.portStatuses.forEach { port ->
                             Row(
@@ -490,6 +649,35 @@ fun HostDiagnosticDialog(
                                     color = if (port.isOpen) CslSuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                        }
+                    }
+
+                    if (rep.dnsRecords.hasExtendedRecords) {
+                        HorizontalDivider()
+                        Text(
+                            text = "DNS-записи домена (MX / SPF / NS):",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = CslOrange
+                        )
+                        if (rep.dnsRecords.mxRecords.isNotEmpty()) {
+                            Text(
+                                text = "MX (почта): ${rep.dnsRecords.mxRecords.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        if (rep.dnsRecords.txtSpfRecords.isNotEmpty()) {
+                            Text(
+                                text = "TXT / SPF: ${rep.dnsRecords.txtSpfRecords.joinToString(" | ")}",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        if (rep.dnsRecords.nsRecords.isNotEmpty()) {
+                            Text(
+                                text = "NS: ${rep.dnsRecords.nsRecords.joinToString(", ")}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

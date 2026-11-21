@@ -43,12 +43,18 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhoneDisabled
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -89,10 +95,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
+import com.helpdesk.jiraagent.ui.components.AssignColleagueDialog
+import com.helpdesk.jiraagent.ui.components.ClientDossierCard
+import com.helpdesk.jiraagent.ui.components.ServiceActPdfDialog
+import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
+import com.helpdesk.jiraagent.util.ServiceActInput
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
@@ -130,6 +144,16 @@ fun TicketDetailScreen(
     clientHistoryState: ClientHistoryUiState,
     hostDiagnosticState: HostDiagnosticUiState,
     appSettings: AppSettings,
+    engineerDisplayName: String = "",
+    clientDossierNote: String = "",
+    assignableColleagues: List<JiraAssignableUser> = emptyList(),
+    isLoadingColleagues: Boolean = false,
+    onSaveClientDossier: (String, String) -> Unit = { _, _ -> },
+    onLoadColleagues: () -> Unit = {},
+    onAssignColleague: (JiraAssignableUser) -> Unit = {},
+    onLogWorklog: (minutes: Int, comment: String, alsoComplete: Boolean) -> Unit = { _, _, _ -> },
+    onGenerateServiceActPdf: (ServiceActInput) -> Unit = {},
+    onScanSerialHistory: (String) -> Unit = {},
     loadAttachmentBytes: suspend (String) -> Result<ByteArray>,
     onUploadAttachmentUri: (Uri, String?) -> Unit,
     onOpenExternalAttachment: (TicketAttachment) -> Unit,
@@ -139,7 +163,7 @@ fun TicketDetailScreen(
     onOpenHistoricalTicket: (String) -> Unit,
     onExecuteAction: (TicketWorkflowAction, String?, String?) -> Unit,
     onPostponeTicket: (Long, String, String?) -> Unit,
-    onAddComment: (String) -> Unit,
+    onAddComment: (String, Boolean) -> Unit,
     onDismissActionMessage: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -149,7 +173,96 @@ fun TicketDetailScreen(
     var commentDialogAction by rememberSaveable { mutableStateOf<TicketWorkflowAction?>(null) }
     var commentDraft by rememberSaveable { mutableStateOf("") }
     var standaloneCommentDraft by rememberSaveable { mutableStateOf("") }
+    var isInternalComment by rememberSaveable { mutableStateOf(false) }
     var showPostponeDialog by rememberSaveable { mutableStateOf(false) }
+    var showWorklogDialog by rememberSaveable { mutableStateOf(false) }
+    var showColleagueDialog by rememberSaveable { mutableStateOf(false) }
+    var showServiceActDialog by rememberSaveable { mutableStateOf(false) }
+    var scannedSerialForActOrChoice by rememberSaveable { mutableStateOf("") }
+    var showScannedSerialChoiceDialog by rememberSaveable { mutableStateOf(false) }
+
+    val detailScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { res ->
+        val scanned = res.contents?.trim().orEmpty()
+        if (scanned.isNotEmpty()) {
+            scannedSerialForActOrChoice = scanned
+            showScannedSerialChoiceDialog = true
+        }
+    }
+
+    if (showScannedSerialChoiceDialog && scannedSerialForActOrChoice.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { showScannedSerialChoiceDialog = false },
+            title = { Text("Распознан код: $scannedSerialForActOrChoice", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Выберите действие с серийным / инвентарным номером:")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showScannedSerialChoiceDialog = false
+                        onScanSerialHistory(scannedSerialForActOrChoice)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                ) {
+                    Text("Найти историю в Jira")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val addition = "Оборудование S/N: $scannedSerialForActOrChoice"
+                        standaloneCommentDraft = if (standaloneCommentDraft.isBlank()) {
+                            addition
+                        } else {
+                            "${standaloneCommentDraft.trimEnd()}\n$addition"
+                        }
+                        showScannedSerialChoiceDialog = false
+                    }
+                ) {
+                    Text("В комментарий")
+                }
+            }
+        )
+    }
+
+    if (showWorklogDialog && ticket != null) {
+        WorklogAndPostCallDialog(
+            ticketKey = ticket.key,
+            clientName = ticket.reporterName,
+            callSession = null,
+            onConfirmWorklog = { mins, note, complete ->
+                showWorklogDialog = false
+                onLogWorklog(mins, note, complete)
+            },
+            onDismiss = { showWorklogDialog = false }
+        )
+    }
+
+    if (showColleagueDialog) {
+        AssignColleagueDialog(
+            issueKey = ticketKey,
+            colleagues = assignableColleagues,
+            isLoading = isLoadingColleagues,
+            onSelectColleague = { col ->
+                showColleagueDialog = false
+                onAssignColleague(col)
+            },
+            onDismiss = { showColleagueDialog = false }
+        )
+    }
+
+    if (showServiceActDialog && ticket != null) {
+        ServiceActPdfDialog(
+            ticket = ticket,
+            engineerName = engineerDisplayName,
+            initialSerial = scannedSerialForActOrChoice,
+            onGenerateAndAttach = { input ->
+                showServiceActDialog = false
+                onGenerateServiceActPdf(input)
+            },
+            onDismiss = { showServiceActDialog = false }
+        )
+    }
 
     HostDiagnosticDialog(
         state = hostDiagnosticState,
@@ -403,30 +516,105 @@ fun TicketDetailScreen(
                 PhoneAndMessengerSection(
                     phones = ticket.phoneNumbers,
                     telegramHandles = ticket.telegramHandles.orEmpty(),
-                    onCall = { e164 -> DialerLauncher.openDialer(context, e164) },
+                    onCall = { e164 ->
+                        DialerLauncher.openSystemDialer(
+                            context = context,
+                            phoneInput = e164,
+                            ticketKey = ticket.key,
+                            clientName = ticket.reporterName
+                        )
+                    },
                     onCopy = { e164 -> copyToClipboard(context, e164) }
                 )
 
-                // 2b. Quick handoff to Internal Admin Chat
-                OutlinedButton(
-                    onClick = { onDiscussInChat(ticket) },
+                // 2a. Field & Shift Engineer Action Bar (Colleague, Worklog, PDF Act, S/N Scanner, Chat)
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    border = BorderStroke(1.dp, CslOrange)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Forum,
-                        contentDescription = null,
-                        tint = CslOrange,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Обсудить заявку с админами в чате",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        softWrap = false
-                    )
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    onLoadColleagues()
+                                    showColleagueDialog = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 7.dp)
+                            ) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, tint = CslOrange, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Коллеге", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                            OutlinedButton(
+                                onClick = { showWorklogDialog = true },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 7.dp)
+                            ) {
+                                Icon(Icons.Default.Timer, contentDescription = null, tint = CslOrange, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Worklog", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showServiceActDialog = true },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 7.dp)
+                            ) {
+                                Icon(Icons.Default.Description, contentDescription = null, tint = CslOrange, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PDF-акт", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    detailScannerLauncher.launch(
+                                        ScanOptions()
+                                            .setPrompt("Наведите камеру на штрихкод / S/N оборудования")
+                                            .setBeepEnabled(false)
+                                            .setOrientationLocked(false)
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 7.dp)
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = CslOrange, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Скан S/N", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { onDiscussInChat(ticket) },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, CslOrange)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Forum,
+                                contentDescription = null,
+                                tint = CslOrange,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Обсудить заявку с админами в чате",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
                 }
 
                 // 2c. Smart Sysadmin Entities: AnyDesk / RustDesk IDs + IP / Domain Ping & Port Check
@@ -516,14 +704,21 @@ fun TicketDetailScreen(
                     onOpenExternal = onOpenExternalAttachment
                 )
 
-                // 4c. Client Historical Tickets Card
+                // 4c. Local Client Dossier Card (provider, server room, on-site contact)
+                ClientDossierCard(
+                    clientName = ticket.reporterName,
+                    savedNote = clientDossierNote,
+                    onSaveNote = onSaveClientDossier
+                )
+
+                // 4d. Client Historical Tickets Card
                 ClientHistoryCard(
                     clientName = ticket.reporterName,
                     historyState = clientHistoryState,
                     onOpenTicket = onOpenHistoricalTicket
                 )
 
-                // 5. Add Comment Card (with Voice Input Microphone & Quick Macros) & Comments History
+                // 5. Add Comment Card (with JSM Internal/Public toggle, Voice Input & Quick Macros)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -541,6 +736,76 @@ fun TicketDetailScreen(
                             color = CslOrange
                         )
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                onClick = { isInternalComment = false },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (!isInternalComment) CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (!isInternalComment) CslOrange else MaterialTheme.colorScheme.outlineVariant
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Public,
+                                        contentDescription = null,
+                                        tint = if (!isInternalComment) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "Ответ клиенту",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (!isInternalComment) Color.White else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                            Surface(
+                                onClick = { isInternalComment = true },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isInternalComment) CslMidnight else MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isInternalComment) CslOrange else MaterialTheme.colorScheme.outlineVariant
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = if (isInternalComment) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "Внутр. заметка",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isInternalComment) Color.White else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
+
                         QuickReplyMacrosBar(
                             templates = appSettings.quickReplyTemplates,
                             onSelectTemplate = { tpl ->
@@ -555,7 +820,11 @@ fun TicketDetailScreen(
                         VoiceCommentTextField(
                             value = standaloneCommentDraft,
                             onValueChange = { standaloneCommentDraft = it },
-                            label = "Введите текст или нажмите 🎤 для голосового ввода"
+                            label = if (isInternalComment) {
+                                "🔒 Скрытая внутренняя заметка JSM (или нажмите 🎤)"
+                            } else {
+                                "Введите ответ клиенту или нажмите 🎤"
+                            }
                         )
 
                         Button(
@@ -563,20 +832,28 @@ fun TicketDetailScreen(
                                 val textToSend = standaloneCommentDraft.trim()
                                 if (textToSend.isNotEmpty()) {
                                     standaloneCommentDraft = ""
-                                    onAddComment(textToSend)
+                                    onAddComment(textToSend, isInternalComment)
                                 }
                             },
                             enabled = standaloneCommentDraft.isNotBlank() && !actionState.isBusy,
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isInternalComment) CslMidnight else CslOrange
+                            )
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                imageVector = if (isInternalComment) Icons.Default.Lock else Icons.AutoMirrored.Filled.Send,
                                 contentDescription = null,
                                 modifier = Modifier.size(17.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Отправить комментарий")
+                            Text(
+                                if (isInternalComment) {
+                                    "Сохранить внутреннюю заметку"
+                                } else {
+                                    "Отправить ответ клиенту"
+                                }
+                            )
                         }
 
                         if (ticket.comments.isNotEmpty()) {

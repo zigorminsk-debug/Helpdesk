@@ -5,12 +5,18 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -35,10 +41,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AssignmentInd
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
@@ -67,9 +76,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -87,6 +99,11 @@ import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.MainViewModel
+import com.helpdesk.jiraagent.ui.components.AppFullGuideDialog
+import com.helpdesk.jiraagent.ui.components.QrSettingsTransferDialog
+import com.helpdesk.jiraagent.ui.components.SerialHistoryResultsDialog
+import com.helpdesk.jiraagent.ui.components.ShiftAnalyticsDialog
+import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
 import com.helpdesk.jiraagent.ui.screens.AdminChatScreen
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
@@ -106,7 +123,7 @@ private enum class BottomDestination(val label: String) {
     SETTINGS("Настройки")
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
@@ -183,10 +200,168 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val resolvedChatRoomKey by viewModel.resolvedChatRoomKey.collectAsStateWithLifecycle()
     val pinnedShiftNote by viewModel.pinnedShiftNote.collectAsStateWithLifecycle()
     val adminChatUiState by viewModel.adminChatUiState.collectAsStateWithLifecycle()
+    val clientDossierNotes by viewModel.clientDossierNotes.collectAsStateWithLifecycle()
+    val pendingCallSession by viewModel.pendingCallSession.collectAsStateWithLifecycle()
+    val assignableColleagues by viewModel.assignableColleagues.collectAsStateWithLifecycle()
+    val isLoadingColleagues by viewModel.isLoadingColleagues.collectAsStateWithLifecycle()
+    val serialSearchState by viewModel.serialSearchState.collectAsStateWithLifecycle()
+    val isBatchBusy by viewModel.isBatchBusy.collectAsStateWithLifecycle()
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
     var hasNotifPermission by rememberSaveable {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
+    }
+    var showShiftAnalytics by rememberSaveable { mutableStateOf(false) }
+    var showFullGuide by rememberSaveable { mutableStateOf(false) }
+    var showQrTransfer by rememberSaveable { mutableStateOf(false) }
+    var showPostCallWorklogPrompt by rememberSaveable { mutableStateOf(false) }
+    var externalSearchFilter by rememberSaveable { mutableStateOf("") }
+
+    // Biometric lock state
+    var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
+    var lastBackgroundAt by rememberSaveable { mutableLongStateOf(0L) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activity = context as? FragmentActivity
+
+    val triggerBiometricUnlock = remember(activity) {
+        {
+            if (activity == null) {
+                isAppUnlocked = true
+            } else {
+                val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                val canAuth = BiometricManager.from(activity).canAuthenticate(authenticators)
+                if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
+                    isAppUnlocked = true
+                } else {
+                    val prompt = BiometricPrompt(
+                        activity,
+                        ContextCompat.getMainExecutor(activity),
+                        object : BiometricPrompt.AuthenticationCallback() {
+                            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                                isAppUnlocked = true
+                            }
+                        }
+                    )
+                    val info = BiometricPrompt.PromptInfo.Builder()
+                        .setTitle("Вход в Help-CSL")
+                        .setSubtitle("Подтвердите отпечаток пальца, лицо или PIN экрана")
+                        .setAllowedAuthenticators(authenticators)
+                        .build()
+                    runCatching { prompt.authenticate(info) }.onFailure { isAppUnlocked = true }
+                }
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, appSettings.biometricLockEnabled) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    lastBackgroundAt = System.currentTimeMillis()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (appSettings.biometricLockEnabled &&
+                        lastBackgroundAt > 0L &&
+                        System.currentTimeMillis() - lastBackgroundAt > 120_000L
+                    ) {
+                        isAppUnlocked = false
+                        triggerBiometricUnlock()
+                    }
+                    val callSess = viewModel.pendingCallSession.value
+                    if (callSess != null && System.currentTimeMillis() - callSess.startedAtMillis >= 4_000L) {
+                        showPostCallWorklogPrompt = true
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(appSettings.biometricLockEnabled) {
+        if (!appSettings.biometricLockEnabled) {
+            isAppUnlocked = true
+        } else if (!isAppUnlocked) {
+            triggerBiometricUnlock()
+        }
+    }
+
+    if (appSettings.biometricLockEnabled && !isAppUnlocked) {
+        Surface(modifier = Modifier.fillMaxSize(), color = CslMidnight, contentColor = Color.White) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.Fingerprint, contentDescription = null, tint = CslOrange, modifier = Modifier.size(64.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Help-CSL защищён", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Подтвердите личность для доступа к заявкам и чату", color = Color.White.copy(alpha = 0.75f))
+                Spacer(modifier = Modifier.height(20.dp))
+                Button(
+                    onClick = { triggerBiometricUnlock() },
+                    colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                ) {
+                    Text("Разблокировать")
+                }
+            }
+        }
+        return
+    }
+
+    if (showPostCallWorklogPrompt && pendingCallSession != null) {
+        val sess = pendingCallSession!!
+        WorklogAndPostCallDialog(
+            ticketKey = sess.ticketKey,
+            clientName = sess.clientName,
+            callSession = sess,
+            onConfirmWorklog = { mins, note, complete ->
+                showPostCallWorklogPrompt = false
+                viewModel.logTicketWorklog(sess.ticketKey, mins, note, complete)
+            },
+            onDismiss = {
+                showPostCallWorklogPrompt = false
+                viewModel.dismissPendingCallSession()
+            }
+        )
+    }
+
+    SerialHistoryResultsDialog(
+        state = serialSearchState,
+        onOpenTicket = { key -> viewModel.openTicket(key) },
+        onDismiss = { viewModel.clearSerialSearch() }
+    )
+
+    if (showShiftAnalytics) {
+        ShiftAnalyticsDialog(
+            tickets = tickets,
+            connectedUserDisplayName = syncStatus.connectedUser,
+            usernameOrEmail = appSettings.usernameOrEmail,
+            onSelectClientFilter = { client ->
+                currentTab = BottomDestination.TICKETS
+                externalSearchFilter = client
+            },
+            onDismiss = { showShiftAnalytics = false }
+        )
+    }
+
+    if (showFullGuide) {
+        AppFullGuideDialog(onDismiss = { showFullGuide = false })
+    }
+
+    if (showQrTransfer) {
+        QrSettingsTransferDialog(
+            appSettings = appSettings,
+            filterSettings = filterSettings,
+            onImportPayload = { code, pin -> viewModel.importSettingsBundle(code, pin) },
+            onDismiss = { showQrTransfer = false }
+        )
     }
 
     LaunchedEffect(returnToMainScreenStamp) {
@@ -224,6 +399,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val activeKey = selectedTicketKey
     if (activeKey != null) {
         val activeTicket = tickets.firstOrNull { it.key.equals(activeKey, ignoreCase = true) }
+        val clientDossier = activeTicket?.let {
+            clientDossierNotes[it.reporterName.trim().lowercase()] ?: ""
+        }.orEmpty()
+        val engineerName = syncStatus.connectedUser ?: appSettings.usernameOrEmail
         Box(modifier = Modifier.fillMaxSize()) {
             TicketDetailScreen(
                 ticket = activeTicket,
@@ -233,6 +412,18 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 clientHistoryState = clientHistoryState,
                 hostDiagnosticState = hostDiagnosticState,
                 appSettings = appSettings,
+                engineerDisplayName = engineerName,
+                clientDossierNote = clientDossier,
+                assignableColleagues = assignableColleagues,
+                isLoadingColleagues = isLoadingColleagues,
+                onSaveClientDossier = { client, note -> viewModel.saveClientDossierNote(client, note) },
+                onLoadColleagues = { viewModel.loadAssignableColleagues(activeKey) },
+                onAssignColleague = { col -> viewModel.assignTicketToColleague(activeKey, col) },
+                onLogWorklog = { mins, note, complete ->
+                    viewModel.logTicketWorklog(activeKey, mins, note, complete)
+                },
+                onGenerateServiceActPdf = { input -> viewModel.generateAndAttachServiceAct(input) },
+                onScanSerialHistory = { sn -> viewModel.searchByHardwareSerial(sn) },
                 loadAttachmentBytes = { url -> viewModel.loadAttachmentBytes(url) },
                 onUploadAttachmentUri = { uri, name ->
                     viewModel.uploadAttachmentFromUri(activeKey, uri, name)
@@ -258,8 +449,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 onPostponeTicket = { epochMillis, formattedDisplay, transitionId ->
                     viewModel.postponeTicket(activeKey, epochMillis, formattedDisplay, transitionId)
                 },
-                onAddComment = { commentText ->
-                    viewModel.addTicketComment(activeKey, commentText)
+                onAddComment = { commentText, internalOnly ->
+                    viewModel.addTicketComment(activeKey, commentText, internalOnly)
                 },
                 onDismissActionMessage = { viewModel.dismissTicketActionFeedback() },
                 onBack = { viewModel.closeTicketDetail() }
@@ -335,6 +526,20 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showShiftAnalytics = true }) {
+                        Icon(
+                            imageVector = Icons.Default.BarChart,
+                            contentDescription = "Статистика смены",
+                            tint = Color.White
+                        )
+                    }
+                    IconButton(onClick = { showFullGuide = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MenuBook,
+                            contentDescription = "Полный гайд",
+                            tint = Color.White
+                        )
+                    }
                     if (appSettings.isConfigured || postponedTickets.isNotEmpty()) {
                         IconButton(onClick = { viewModel.refreshNow() }) {
                             Icon(
@@ -493,6 +698,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     filterSettings = filterSettings,
                     syncStatus = syncStatus,
                     isCreatingTicket = isCreatingTicket,
+                    isBatchBusy = isBatchBusy,
+                    externalSearchFilter = externalSearchFilter,
+                    onConsumeExternalSearch = { externalSearchFilter = "" },
+                    onScanSerialHistory = { sn -> viewModel.searchByHardwareSerial(sn) },
+                    onBatchAction = { keys, act, comment, done ->
+                        viewModel.performBatchTicketsAction(keys, act, comment, done)
+                    },
                     onTicketClick = { key -> viewModel.openTicket(key) },
                     onQuickTakeInWork = { key -> viewModel.quickTakeTicketInWork(key) },
                     onDiscussTicketInChat = { t -> viewModel.discussTicketInChat(t) },
@@ -549,6 +761,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
                         viewModel.triggerTestBannerNotification()
                     },
+                    onOpenGuide = { showFullGuide = true },
+                    onOpenQrTransfer = { showQrTransfer = true },
                     onCheckForUpdate = { viewModel.checkForAppUpdate(manual = true) },
                     onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
                     onInstallReadyUpdate = { viewModel.installReadyUpdateApk() },

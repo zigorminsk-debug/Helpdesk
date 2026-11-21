@@ -2,6 +2,8 @@ package com.helpdesk.jiraagent
 
 import com.helpdesk.jiraagent.data.JiraJsonParser
 import com.helpdesk.jiraagent.domain.RemoteDesktopKind
+import com.helpdesk.jiraagent.domain.SettingsTransferCodec
+import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
@@ -11,7 +13,10 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
+import com.helpdesk.jiraagent.model.PhoneMatch
 import com.helpdesk.jiraagent.model.QueuedActionType
+import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.service.HelpCslCallScreeningService
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -81,9 +86,11 @@ class SysadminImprovementsTest {
     }
 
     @Test
-    fun `SysadminEntityExtractor finds AnyDesk, RustDesk, IPs, and domains while skipping phones and files`() {
+    fun `SysadminEntityExtractor finds AnyDesk, RustDesk, IPs, domains, MAC vendors, and street addresses`() {
         val text = """
             Добрый день! Не открывается 1С на сервере 192.168.15.20 и шлюз vpn.csl.by не пингуется.
+            Роутер клиента D4-CA-6D-11-22-33 и виртуалка 0050.56AB.CD12.
+            Адрес: ул. Притыцкого, д. 29, оф. 412
             Мой телефон +375 29 654-32-10, почта buh@csl.by, скриншот error_1c.png во вложении.
             Подключитесь по AnyDesk: 412 839 104 или резервный RustDesk 1982736450.
         """.trimIndent()
@@ -102,8 +109,15 @@ class SysadminImprovementsTest {
         val hosts = result.networkTargets.map { it.host }
         assertTrue(hosts.contains("192.168.15.20"))
         assertTrue(hosts.contains("vpn.csl.by"))
-        assertFalse(hosts.contains("csl.by")) // part of email buh@csl.by
+        assertFalse(hosts.contains("csl.by"))
         assertFalse(hosts.contains("error_1c.png"))
+
+        assertEquals(2, result.macAddresses.size)
+        assertEquals("MikroTik", result.macAddresses[0].vendorName)
+        assertEquals("VMware ESXi", result.macAddresses[1].vendorName)
+
+        assertTrue(result.streetAddresses.isNotEmpty())
+        assertTrue(result.streetAddresses.first().searchQuery.contains("Притыцкого"))
     }
 
     @Test
@@ -166,12 +180,106 @@ class SysadminImprovementsTest {
     }
 
     @Test
-    fun `OfflineQueuedAction builds clear Russian summary labels`() {
+    fun `OfflineQueuedAction builds clear Russian summary labels including worklog and internal notes`() {
         val act = OfflineQueuedAction(
             type = QueuedActionType.WORKFLOW_ACTION,
             ticketKey = "CSL-37368",
             workflowActionName = "TAKE_IN_WORK"
         )
         assertEquals("CSL-37368 · В работу", act.summaryLabel)
+
+        val wl = OfflineQueuedAction(
+            type = QueuedActionType.ADD_WORKLOG,
+            ticketKey = "CSL-37368",
+            worklogSeconds = 900
+        )
+        assertEquals("CSL-37368 · Worklog (15 мин)", wl.summaryLabel)
+    }
+
+    @Test
+    fun `SettingsTransferCodec encrypts, strips credentials when requested, and rejects wrong PIN`() {
+        val srcApp = AppSettings(
+            serverUrl = "https://jira.csl.by",
+            usernameOrEmail = "engineer1",
+            passwordOrToken = "super-secret-token",
+            workStartTime = "08:30"
+        )
+        val srcFilter = FilterSettings(projectKeys = "CSL, SUP")
+
+        val noCredCode = SettingsTransferCodec.encode(
+            appSettings = srcApp,
+            filterSettings = srcFilter,
+            includeCredentials = false,
+            pinCode = "2580"
+        )
+        assertTrue(noCredCode.startsWith("HELPCSL1:"))
+        assertTrue(SettingsTransferCodec.decode(noCredCode, pinCode = "0000").isFailure)
+
+        val decoded = SettingsTransferCodec.decode(noCredCode, pinCode = "2580").getOrThrow()
+        assertFalse(decoded.includesCredentials)
+        assertEquals("https://jira.csl.by", decoded.appSettings.serverUrl)
+        assertEquals("08:30", decoded.appSettings.workStartTime)
+        assertEquals("", decoded.appSettings.passwordOrToken)
+        assertEquals("CSL, SUP", decoded.filterSettings.projectKeys)
+    }
+
+    @Test
+    fun `CallerId matching and ShiftAnalyticsCalculator prioritize open client tickets accurately`() {
+        val now = System.currentTimeMillis()
+        val openTicket = HelpdeskTicket(
+            id = "1",
+            key = "CSL-101",
+            summary = "Не печатает принтер",
+            description = "",
+            issueType = "Service Request",
+            isSubtask = false,
+            customerRequestType = "Проблемы с ПК",
+            hasCustomerPortalInfo = true,
+            status = "Ожидание поддержки",
+            statusCategoryKey = "new",
+            priority = "Medium",
+            projectKey = "CSL",
+            projectName = "CSL",
+            reporterName = "ЖКХ",
+            reporterLoginOrEmail = "jkh",
+            assigneeName = null,
+            createdIso = "",
+            createdEpochMillis = now - 5 * 60_000L,
+            updatedIso = "",
+            updatedEpochMillis = now - 5 * 60_000L,
+            labels = emptyList(),
+            phoneNumbers = listOf(PhoneMatch("+375296543210", "+375296543210", "+375 29 654-32-10", "Тел")),
+            comments = emptyList(),
+            webUrl = "",
+            isClientTicket = true,
+            stage = TicketStage.NEW
+        )
+        val closedTicket = openTicket.copy(
+            id = "2",
+            key = "CSL-100",
+            status = "Закрыта",
+            statusCategoryKey = "done",
+            assigneeName = "Игорь",
+            assigneeLogin = "igor",
+            stage = TicketStage.CLOSED
+        )
+
+        val matched = HelpCslCallScreeningService.findMatchingTickets(
+            listOf(closedTicket, openTicket),
+            "296543210"
+        )
+        assertEquals(2, matched.size)
+        assertEquals("CSL-101", matched.first().key)
+
+        val stats = ShiftAnalyticsCalculator.compute(
+            tickets = listOf(openTicket, closedTicket),
+            connectedUserDisplayName = "Игорь",
+            usernameOrEmail = "igor",
+            nowMillis = now
+        )
+        assertEquals(2, stats.createdToday)
+        assertEquals(1, stats.closedToday)
+        assertEquals(1, stats.closedByMeToday)
+        assertEquals(100, stats.slaGreenPercent)
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.model.PhoneRegion
 
@@ -17,7 +18,9 @@ object DialerLauncher {
         context: Context,
         phoneInput: String,
         region: PhoneRegion = PhoneRegion.AUTO_BY_RU,
-        customCountryCode: String = "+375"
+        customCountryCode: String = "+375",
+        ticketKey: String? = null,
+        clientName: String? = null
     ) {
         val e164 = if (phoneInput.startsWith("+") && phoneInput.drop(1).all { it.isDigit() }) {
             phoneInput
@@ -39,6 +42,13 @@ object DialerLauncher {
         }
 
         runCatching {
+            if (!ticketKey.isNullOrBlank()) {
+                SettingsRepository.getInstance(context).recordOutgoingTicketCall(
+                    ticketKey = ticketKey,
+                    clientName = clientName.orEmpty().ifBlank { "Клиент" },
+                    phoneNumber = e164
+                )
+            }
             context.startActivity(dialIntent)
         }.onFailure {
             Toast.makeText(

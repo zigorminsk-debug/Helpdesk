@@ -14,13 +14,18 @@ import androidx.lifecycle.viewModelScope
 import com.helpdesk.jiraagent.data.InAppBannerAlert
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.JiraApiException
+import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.JiraTransitionOption
+import com.helpdesk.jiraagent.data.PendingCallSession
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
+import com.helpdesk.jiraagent.domain.SettingsTransferCodec
+import com.helpdesk.jiraagent.util.PdfServiceActGenerator
+import com.helpdesk.jiraagent.util.ServiceActInput
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
@@ -105,6 +110,13 @@ data class AdminChatUiState(
     val replyTo: AdminChatMessage? = null
 )
 
+data class SerialSearchUiState(
+    val isSearching: Boolean = false,
+    val serialQuery: String = "",
+    val results: List<HelpdeskTicket> = emptyList(),
+    val errorMessage: String? = null
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
@@ -118,6 +130,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val syncStatus: StateFlow<SyncStatus> = repository.syncStatus
     val latestInAppBanner: StateFlow<InAppBannerAlert?> = repository.latestInAppBanner
     val offlineQueuedActions: StateFlow<List<OfflineQueuedAction>> = repository.offlineQueuedActions
+    val clientDossierNotes: StateFlow<Map<String, String>> = repository.clientDossierNotes
+    val pendingCallSession: StateFlow<PendingCallSession?> = repository.pendingCallSession
+
+    private val _assignableColleagues = MutableStateFlow<List<JiraAssignableUser>>(emptyList())
+    val assignableColleagues: StateFlow<List<JiraAssignableUser>> = _assignableColleagues.asStateFlow()
+
+    private val _isLoadingColleagues = MutableStateFlow(false)
+    val isLoadingColleagues: StateFlow<Boolean> = _isLoadingColleagues.asStateFlow()
+
+    private val _serialSearchState = MutableStateFlow(SerialSearchUiState())
+    val serialSearchState: StateFlow<SerialSearchUiState> = _serialSearchState.asStateFlow()
+
+    private val _isBatchBusy = MutableStateFlow(false)
+    val isBatchBusy: StateFlow<Boolean> = _isBatchBusy.asStateFlow()
 
     val chatMessages: StateFlow<List<AdminChatMessage>> = repository.chatMessages
     val unreadChatCount: StateFlow<Int> = repository.unreadChatCount
@@ -706,10 +732,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Toast.makeText(appContext, "Отложенное пересоздание отменено", Toast.LENGTH_SHORT).show()
     }
 
-    fun addTicketComment(ticketKey: String, commentText: String) {
+    fun addTicketComment(ticketKey: String, commentText: String, internalOnly: Boolean = false) {
         val clean = commentText.trim()
         if (clean.isEmpty()) return
         val settings = appSettings.value
+        val displayBody = if (internalOnly) "🔒 [Внутренняя заметка] $clean" else clean
 
         if (ticketKey.startsWith("DEMO-")) {
             val existing = tickets.value.firstOrNull { it.key == ticketKey } ?: return
@@ -719,7 +746,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val newComment = TicketComment(
                 id = System.currentTimeMillis().toString(),
                 author = author,
-                body = clean,
+                body = displayBody,
                 createdIso = nowIso
             )
             repository.upsertSingleTicket(
@@ -727,7 +754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             _ticketActionState.value = TicketActionUiState(
                 isBusy = false,
-                statusMessage = "Комментарий добавлен",
+                statusMessage = if (internalOnly) "Внутренняя заметка добавлена" else "Комментарий добавлен",
                 isError = false
             )
             return
@@ -748,12 +775,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 issueKey = ticketKey,
                 commentText = clean,
                 settings = settings,
-                filterSettings = filterSettings.value
+                filterSettings = filterSettings.value,
+                internalOnly = internalOnly
             ).onSuccess { refreshed ->
                 refreshed?.let { repository.upsertSingleTicket(it) }
                 _ticketActionState.value = TicketActionUiState(
                     isBusy = false,
-                    statusMessage = "Комментарий отправлен в Jira",
+                    statusMessage = if (internalOnly) "Внутренняя заметка сохранена в Jira" else "Комментарий отправлен в Jira",
                     isError = false
                 )
             }.onFailure { err ->
@@ -762,7 +790,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         OfflineQueuedAction(
                             type = QueuedActionType.ADD_COMMENT,
                             ticketKey = ticketKey,
-                            commentText = clean
+                            commentText = clean,
+                            internalComment = internalOnly
                         )
                     )
                     val existing = tickets.value.firstOrNull { it.key.equals(ticketKey, ignoreCase = true) }
@@ -772,14 +801,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val offlineComment = TicketComment(
                             id = "offline_${System.currentTimeMillis()}",
                             author = "$author (в очереди)",
-                            body = clean,
+                            body = displayBody,
                             createdIso = Instant.now().toString()
                         )
                         repository.upsertSingleTicket(existing.copy(comments = existing.comments + offlineComment))
                     }
                     _ticketActionState.value = TicketActionUiState(
                         isBusy = false,
-                        statusMessage = "Нет сети: комментарий в офлайн-очереди и отправится автоматически",
+                        statusMessage = "Нет сети: сохранено в офлайн-очередь и отправится автоматически",
                         isError = false
                     )
                     return@onFailure
@@ -1490,5 +1519,359 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         saveAppSettings(updated)
         refreshAdminChat()
+    }
+
+    // =========================================================================
+    // Stage 2: Worklog, Caller Wrap-up, Client Dossier, Colleague Handoff,
+    // PDF Service Act, Serial Scanner History, Batch Actions & QR Transfer
+    // =========================================================================
+
+    fun dismissPendingCallSession() {
+        repository.clearPendingCallSession()
+    }
+
+    fun saveClientDossierNote(clientName: String, noteText: String) {
+        repository.saveClientDossierNote(clientName, noteText)
+        Toast.makeText(appContext, "Досье клиента сохранено", Toast.LENGTH_SHORT).show()
+    }
+
+    fun logTicketWorklog(
+        ticketKey: String,
+        minutes: Int,
+        commentText: String,
+        alsoCompleteTicket: Boolean = false
+    ) {
+        repository.clearPendingCallSession()
+        val safeMinutes = minutes.coerceIn(1, 1440)
+        val seconds = safeMinutes * 60
+        val cleanComment = commentText.trim()
+        val settings = appSettings.value
+
+        if (ticketKey.startsWith("DEMO-") || !settings.isConfigured) {
+            Toast.makeText(appContext, "Списано $safeMinutes мин по $ticketKey (демо)", Toast.LENGTH_SHORT).show()
+            if (alsoCompleteTicket) {
+                performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(isBusy = true, statusMessage = "Списание $safeMinutes мин в Worklog…")
+            apiClient.addIssueWorklog(
+                issueKey = ticketKey,
+                timeSpentSeconds = seconds,
+                commentText = cleanComment.ifBlank { null },
+                settings = settings
+            ).onSuccess {
+                if (cleanComment.isNotBlank() && !alsoCompleteTicket) {
+                    runCatching {
+                        apiClient.postIssueComment(
+                            issueKey = ticketKey,
+                            commentText = "📞 Итог / Worklog ($safeMinutes мин): $cleanComment",
+                            settings = settings,
+                            filterSettings = filterSettings.value,
+                            internalOnly = true
+                        ).getOrNull()?.let { repository.upsertSingleTicket(it) }
+                    }
+                }
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = "Списано $safeMinutes мин в Worklog Jira",
+                    isError = false
+                )
+                Toast.makeText(appContext, "Worklog: списано $safeMinutes мин ($ticketKey)", Toast.LENGTH_SHORT).show()
+                if (alsoCompleteTicket) {
+                    performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+                }
+            }.onFailure { err ->
+                if ((err as? JiraApiException)?.isNetworkError == true) {
+                    repository.enqueueOfflineAction(
+                        OfflineQueuedAction(
+                            type = QueuedActionType.ADD_WORKLOG,
+                            ticketKey = ticketKey,
+                            worklogSeconds = seconds,
+                            commentText = cleanComment.ifBlank { null }
+                        )
+                    )
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = "Нет сети: Worklog ($safeMinutes мин) поставлен в офлайн-очередь",
+                        isError = false
+                    )
+                    if (alsoCompleteTicket) {
+                        performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+                    }
+                    return@onFailure
+                }
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = err.message ?: "Не удалось списать время в Worklog",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun loadAssignableColleagues(issueKey: String) {
+        val settings = appSettings.value
+        if (!settings.isConfigured || issueKey.startsWith("DEMO-")) {
+            _assignableColleagues.value = listOf(
+                JiraAssignableUser("Алексей Дежурный", "alexey", null, "alexey@csl.by"),
+                JiraAssignableUser("Дмитрий Выездной", "dmitry", null, "dmitry@csl.by"),
+                JiraAssignableUser("Павел Сетевой", "pavel", null, "pavel@csl.by")
+            )
+            return
+        }
+        viewModelScope.launch {
+            _isLoadingColleagues.value = true
+            apiClient.fetchAssignableUsers(issueKey, settings)
+                .onSuccess { list -> _assignableColleagues.value = list }
+                .onFailure { _assignableColleagues.value = emptyList() }
+            _isLoadingColleagues.value = false
+        }
+    }
+
+    fun assignTicketToColleague(issueKey: String, colleague: JiraAssignableUser) {
+        val settings = appSettings.value
+        if (issueKey.startsWith("DEMO-") || !settings.isConfigured) {
+            val existing = tickets.value.firstOrNull { it.key == issueKey } ?: return
+            repository.upsertSingleTicket(existing.copy(assigneeName = colleague.displayName))
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = "Заявка передана: ${colleague.displayName}",
+                isError = false
+            )
+            return
+        }
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = true,
+                statusMessage = "Передача заявки на ${colleague.displayName}…"
+            )
+            apiClient.assignTicketToColleague(issueKey, colleague, settings, filterSettings.value)
+                .onSuccess { refreshed ->
+                    if (refreshed != null) {
+                        repository.upsertSingleTicket(refreshed)
+                    } else {
+                        tickets.value.firstOrNull { it.key == issueKey }?.let {
+                            repository.upsertSingleTicket(it.copy(assigneeName = colleague.displayName))
+                        }
+                    }
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = "Назначено на: ${colleague.displayName}",
+                        isError = false
+                    )
+                }
+                .onFailure { err ->
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = err.message ?: "Не удалось назначить коллегу",
+                        isError = true
+                    )
+                }
+        }
+    }
+
+    fun generateAndAttachServiceAct(input: ServiceActInput, openPreviewAfter: Boolean = true) {
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = true,
+                statusMessage = "Формирование PDF-акта выполненных работ…"
+            )
+            val pdfResult = withContext(Dispatchers.IO) {
+                runCatching { PdfServiceActGenerator.generatePdfFile(appContext, input) }
+            }
+            val pdfFile = pdfResult.getOrElse { err ->
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = "Ошибка создания PDF: ${err.message}",
+                    isError = true
+                )
+                return@launch
+            }
+
+            val settings = appSettings.value
+            if (settings.isConfigured && !input.ticket.key.startsWith("DEMO-")) {
+                val bytes = withContext(Dispatchers.IO) { pdfFile.readBytes() }
+                apiClient.uploadIssueAttachment(
+                    issueKey = input.ticket.key,
+                    fileName = pdfFile.name,
+                    fileBytes = bytes,
+                    mimeType = "application/pdf",
+                    settings = settings,
+                    filterSettings = filterSettings.value
+                ).onSuccess { refreshed ->
+                    refreshed?.let { repository.upsertSingleTicket(it) }
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = "PDF-акт (${pdfFile.name}) прикреплён к заявке в Jira!",
+                        isError = false
+                    )
+                }.onFailure { err ->
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = "PDF создан локально, но ошибка отправки в Jira: ${err.message}",
+                        isError = true
+                    )
+                }
+            } else {
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = "PDF-акт сформирован: ${pdfFile.name}",
+                    isError = false
+                )
+            }
+
+            if (openPreviewAfter) {
+                runCatching {
+                    val uri = FileProvider.getUriForFile(
+                        appContext,
+                        "${appContext.packageName}.fileprovider",
+                        pdfFile
+                    )
+                    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/pdf")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    appContext.startActivity(viewIntent)
+                }
+            }
+        }
+    }
+
+    fun searchByHardwareSerial(rawSerial: String) {
+        val clean = rawSerial.trim()
+        if (clean.isEmpty()) return
+        val settings = appSettings.value
+        val localMatches = tickets.value.filter { t ->
+            t.summary.contains(clean, ignoreCase = true) ||
+                t.description.contains(clean, ignoreCase = true) ||
+                t.comments.any { it.body.contains(clean, ignoreCase = true) }
+        }
+        if (!settings.isConfigured) {
+            _serialSearchState.value = SerialSearchUiState(
+                isSearching = false,
+                serialQuery = clean,
+                results = localMatches
+            )
+            return
+        }
+        viewModelScope.launch {
+            _serialSearchState.value = SerialSearchUiState(
+                isSearching = true,
+                serialQuery = clean,
+                results = localMatches
+            )
+            apiClient.searchTicketsBySerialOrText(clean, settings, filterSettings.value)
+                .onSuccess { remote ->
+                    val merged = (remote + localMatches).distinctBy { it.key }
+                    _serialSearchState.value = SerialSearchUiState(
+                        isSearching = false,
+                        serialQuery = clean,
+                        results = merged
+                    )
+                }
+                .onFailure { err ->
+                    _serialSearchState.value = SerialSearchUiState(
+                        isSearching = false,
+                        serialQuery = clean,
+                        results = localMatches,
+                        errorMessage = err.message
+                    )
+                }
+        }
+    }
+
+    fun clearSerialSearch() {
+        _serialSearchState.value = SerialSearchUiState()
+    }
+
+    fun performBatchTicketsAction(
+        ticketKeys: Set<String>,
+        workflowAction: TicketWorkflowAction?,
+        commentText: String?,
+        onFinished: () -> Unit
+    ) {
+        if (ticketKeys.isEmpty() || _isBatchBusy.value) return
+        val settings = appSettings.value
+        val cleanComment = commentText?.trim()?.takeIf { it.isNotEmpty() }
+
+        viewModelScope.launch {
+            _isBatchBusy.value = true
+            var okCount = 0
+            for (key in ticketKeys) {
+                if (workflowAction != null) {
+                    if (key.startsWith("DEMO-") || !settings.isConfigured) {
+                        okCount++
+                    } else {
+                        val res = apiClient.performWorkflowAction(
+                            issueKey = key,
+                            action = workflowAction,
+                            commentText = cleanComment,
+                            explicitTransitionId = null,
+                            settings = settings,
+                            filterSettings = filterSettings.value
+                        )
+                        res.onSuccess { out ->
+                            out.updatedTicket?.let { repository.upsertSingleTicket(it) }
+                            okCount++
+                        }.onFailure { err ->
+                            if ((err as? JiraApiException)?.isNetworkError == true) {
+                                repository.enqueueOfflineAction(
+                                    OfflineQueuedAction(
+                                        type = QueuedActionType.WORKFLOW_ACTION,
+                                        ticketKey = key,
+                                        workflowActionName = workflowAction.name,
+                                        commentText = cleanComment
+                                    )
+                                )
+                                okCount++
+                            }
+                        }
+                    }
+                } else if (cleanComment != null) {
+                    val res = apiClient.postIssueComment(
+                        issueKey = key,
+                        commentText = cleanComment,
+                        settings = settings,
+                        filterSettings = filterSettings.value,
+                        internalOnly = false
+                    )
+                    if (res.isSuccess) {
+                        res.getOrNull()?.let { repository.upsertSingleTicket(it) }
+                        okCount++
+                    }
+                }
+            }
+            _isBatchBusy.value = false
+            Toast.makeText(
+                appContext,
+                "Массовое действие выполнено для $okCount из ${ticketKeys.size} заявок",
+                Toast.LENGTH_SHORT
+            ).show()
+            onFinished()
+        }
+    }
+
+    fun importSettingsBundle(encodedCode: String, pinCode: String): Result<String> {
+        return SettingsTransferCodec.decode(encodedCode, pinCode).map { bundle ->
+            val current = appSettings.value
+            val mergedApp = if (bundle.includesCredentials) {
+                bundle.appSettings
+            } else {
+                bundle.appSettings.copy(
+                    usernameOrEmail = current.usernameOrEmail,
+                    passwordOrToken = current.passwordOrToken
+                )
+            }
+            saveAppSettings(mergedApp)
+            saveFilterSettings(bundle.filterSettings)
+            if (bundle.includesCredentials) {
+                "Настройки, фильтры и учётные данные успешно импортированы!"
+            } else {
+                "Настройки сервера, РБ-графика и фильтров импортированы (введите свой логин/пароль)."
+            }
+        }
     }
 }

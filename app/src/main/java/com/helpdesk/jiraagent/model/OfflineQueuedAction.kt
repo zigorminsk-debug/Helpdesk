@@ -5,6 +5,7 @@ import java.util.UUID
 enum class QueuedActionType {
     WORKFLOW_ACTION,
     ADD_COMMENT,
+    ADD_WORKLOG,
     CHAT_MESSAGE
 }
 
@@ -14,6 +15,8 @@ data class OfflineQueuedAction(
     val ticketKey: String = "",
     val workflowActionName: String? = null,
     val commentText: String? = null,
+    val internalComment: Boolean = false,
+    val worklogSeconds: Int = 0,
     val explicitTransitionId: String? = null,
     val chatReplyAuthor: String? = null,
     val chatReplyPreview: String? = null,
@@ -32,7 +35,8 @@ data class OfflineQueuedAction(
                 }
                 "$ticketKey · $actTitle"
             }
-            QueuedActionType.ADD_COMMENT -> "$ticketKey · Комментарий"
+            QueuedActionType.ADD_COMMENT -> "$ticketKey · ${if (internalComment) "Внутр. заметка" else "Комментарий"}"
+            QueuedActionType.ADD_WORKLOG -> "$ticketKey · Worklog (${(worklogSeconds / 60).coerceAtLeast(1)} мин)"
             QueuedActionType.CHAT_MESSAGE -> "Чат админов · Сообщение"
         }
 }

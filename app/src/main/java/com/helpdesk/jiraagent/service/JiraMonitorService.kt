@@ -210,8 +210,12 @@ class JiraMonitorService : Service() {
                 isNotificationWindowOpen = schedule.isAllowedNow
             )
             if (schedule.isAllowedNow) {
-                for (ticket in newClientTickets) {
-                    NotificationHelper.showClientTicketBanner(applicationContext, ticket)
+                if (settings.stormProtectionEnabled && newClientTickets.size >= 3) {
+                    NotificationHelper.showTicketStormBanner(applicationContext, newClientTickets)
+                } else {
+                    for (ticket in newClientTickets) {
+                        NotificationHelper.showClientTicketBanner(applicationContext, ticket)
+                    }
                 }
                 if (settings.staleTicketReminderEnabled) {
                     val staleDue = repository.findDueStaleUnassignedTickets(

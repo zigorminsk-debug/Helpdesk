@@ -48,6 +48,13 @@ enum class TicketWorkflowAction {
     REJECT
 }
 
+data class JiraAssignableUser(
+    val displayName: String,
+    val username: String?,
+    val accountId: String?,
+    val emailAddress: String?
+)
+
 data class JiraTransitionOption(
     val id: String,
     val name: String,
@@ -492,15 +499,216 @@ class JiraApiClient {
         issueKey: String,
         commentText: String,
         settings: AppSettings,
-        filterSettings: FilterSettings
+        filterSettings: FilterSettings,
+        internalOnly: Boolean = false
     ): Result<HelpdeskTicket?> = withContext(Dispatchers.IO) {
         runCatching {
             val clean = commentText.trim()
             if (clean.isEmpty()) throw JiraApiException("Введите или надиктуйте текст комментария")
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
             val preferCloud = isCloudTarget(settings, baseUrl)
-            addCommentToIssue(baseUrl, preferCloud, issueKey, clean, settings)
+            addCommentToIssue(baseUrl, preferCloud, issueKey, clean, settings, internalOnly = internalOnly)
             fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+        }
+    }
+
+    /**
+     * Logs engineer time spent (`Worklog`) on a Jira issue (`timeSpentSeconds` >= 60).
+     */
+    suspend fun addIssueWorklog(
+        issueKey: String,
+        timeSpentSeconds: Int,
+        commentText: String?,
+        settings: AppSettings
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val safeSeconds = timeSpentSeconds.coerceAtLeast(60)
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+
+            val v2Payload = JsonObject().apply {
+                addProperty("timeSpentSeconds", safeSeconds)
+                if (!commentText.isNullOrBlank()) addProperty("comment", commentText.trim())
+            }
+            val v3Payload = JsonObject().apply {
+                addProperty("timeSpentSeconds", safeSeconds)
+                if (!commentText.isNullOrBlank()) add("comment", buildAdfDocument(commentText.trim()))
+            }
+
+            val attempts = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/worklog" to v3Payload,
+                    "$baseUrl/rest/api/2/issue/$encodedKey/worklog" to v2Payload
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/worklog" to v2Payload,
+                    "$baseUrl/rest/api/3/issue/$encodedKey/worklog" to v3Payload
+                )
+            }
+
+            var lastErr: Exception? = null
+            for ((url, payload) in attempts) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .post(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) return@runCatching
+                        if (resp.code == 401 || resp.code == 403) throw mapHttpError(resp.code, bodyStr)
+                        lastErr = mapHttpError(resp.code, bodyStr)
+                    }
+                } catch (e: JiraApiException) {
+                    if (e.httpCode == 401 || e.httpCode == 403) throw e
+                    lastErr = e
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+            throw (lastErr ?: JiraApiException("Не удалось списать время в Worklog для $issueKey"))
+        }
+    }
+
+    /**
+     * Fetches Jira colleagues assignable to [issueKey] so an engineer can hand off a ticket.
+     */
+    suspend fun fetchAssignableUsers(
+        issueKey: String,
+        settings: AppSettings
+    ): Result<List<JiraAssignableUser>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+            val urls = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/user/assignable/search?issueKey=$encodedKey&maxResults=50",
+                    "$baseUrl/rest/api/2/user/assignable/search?issueKey=$encodedKey&maxResults=50"
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/user/assignable/search?issueKey=$encodedKey&maxResults=50",
+                    "$baseUrl/rest/api/3/user/assignable/search?issueKey=$encodedKey&maxResults=50"
+                )
+            }
+
+            for (url in urls) {
+                try {
+                    val req = Request.Builder().url(url).get().applyAuth(settings).build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            val arr = JsonParser.parseString(bodyStr).asJsonArray
+                            return@runCatching buildList {
+                                for (el in arr) {
+                                    if (!el.isJsonObject) continue
+                                    val obj = el.asJsonObject
+                                    val active = obj.get("active")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                                    if (!active) continue
+                                    val displayName = obj.takeString("displayName") ?: continue
+                                    add(
+                                        JiraAssignableUser(
+                                            displayName = displayName,
+                                            username = obj.takeString("name") ?: obj.takeString("key"),
+                                            accountId = obj.takeString("accountId"),
+                                            emailAddress = obj.takeString("emailAddress")
+                                        )
+                                    )
+                                }
+                            }.distinctBy { it.accountId ?: it.username ?: it.displayName }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Try fallback
+                }
+            }
+            emptyList()
+        }
+    }
+
+    /**
+     * Reassigns [issueKey] to a chosen colleague in Jira.
+     */
+    suspend fun assignTicketToColleague(
+        issueKey: String,
+        colleague: JiraAssignableUser,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<HelpdeskTicket?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+
+            val payloads = buildList {
+                if (!colleague.accountId.isNullOrBlank()) {
+                    add("$baseUrl/rest/api/3/issue/$encodedKey/assignee" to JsonObject().apply {
+                        addProperty("accountId", colleague.accountId)
+                    })
+                }
+                if (!colleague.username.isNullOrBlank()) {
+                    add("$baseUrl/rest/api/2/issue/$encodedKey/assignee" to JsonObject().apply {
+                        addProperty("name", colleague.username)
+                    })
+                }
+            }
+
+            var assigned = false
+            var lastErr: Exception? = null
+            for ((url, payload) in payloads) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .put(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful || resp.code == 204) {
+                            assigned = true
+                        } else {
+                            lastErr = mapHttpError(resp.code, bodyStr)
+                        }
+                    }
+                    if (assigned) break
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+            if (!assigned) {
+                throw (lastErr ?: JiraApiException("Не удалось переназначить заявку на ${colleague.displayName}"))
+            }
+            fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+        }
+    }
+
+    /**
+     * Searches Jira across historical tickets by scanned hardware barcode / serial number (`S/N`).
+     */
+    suspend fun searchTicketsBySerialOrText(
+        rawSerial: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = rawSerial.trim().replace("\"", "").replace("\\", "")
+            if (clean.isEmpty()) return@runCatching emptyList()
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val jql = "text ~ \"$clean\" ORDER BY created DESC"
+            val resultJson = executeJqlSearch(baseUrl, preferCloud, jql, 25, settings)
+            JiraJsonParser.parseSearchResponse(resultJson, settings, filterSettings)
+                .filterNot {
+                    AdminChatCodec.isAdminChatStorageIssue(
+                        issueKey = it.key,
+                        summary = it.summary,
+                        labels = it.labels
+                    )
+                }
         }
     }
 
@@ -1315,10 +1523,24 @@ class JiraApiClient {
         preferCloud: Boolean,
         issueKey: String,
         commentText: String,
-        settings: AppSettings
+        settings: AppSettings,
+        internalOnly: Boolean = false
     ) {
         val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
-        val v2Payload = JsonObject().apply { addProperty("body", commentText) }
+        val internalProps = JsonArray().apply {
+            add(
+                JsonObject().apply {
+                    addProperty("key", "sd.public.comment")
+                    add("value", JsonObject().apply { addProperty("internal", true) })
+                }
+            )
+        }
+        val v2Payload = JsonObject().apply {
+            addProperty("body", commentText)
+            if (internalOnly) {
+                add("properties", internalProps)
+            }
+        }
         val v3Payload = JsonObject().apply {
             add(
                 "body",
@@ -1348,6 +1570,9 @@ class JiraApiClient {
                     )
                 }
             )
+            if (internalOnly) {
+                add("properties", internalProps)
+            }
         }
 
         val attempts = if (preferCloud) {

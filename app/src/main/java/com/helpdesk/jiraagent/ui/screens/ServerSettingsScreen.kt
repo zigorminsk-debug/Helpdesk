@@ -1,9 +1,11 @@
 package com.helpdesk.jiraagent.ui.screens
 
 import android.app.Activity
+import android.app.role.RoleManager
 import android.content.Intent
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,11 +36,16 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Schedule
@@ -86,8 +93,10 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
+import com.helpdesk.jiraagent.model.TtsReadoutMode
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.notification.TicketSpeechAnnouncer
 import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.ConnectionTestState
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
@@ -112,6 +121,8 @@ fun ServerSettingsScreen(
     onTestConnection: (AppSettings) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onTriggerTestBanner: () -> Unit = {},
+    onOpenGuide: () -> Unit = {},
+    onOpenQrTransfer: () -> Unit = {},
     onCheckForUpdate: () -> Unit = {},
     onDownloadAndInstallUpdate: () -> Unit = {},
     onInstallReadyUpdate: () -> Unit = {},
@@ -202,6 +213,31 @@ fun ServerSettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 0. Quick Onboarding & Full App Guide Bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onOpenGuide,
+                modifier = Modifier.weight(1f),
+                border = BorderStroke(1.dp, CslOrange)
+            ) {
+                Icon(Icons.Default.MenuBook, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Полный гайд", maxLines = 1, softWrap = false, fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(
+                onClick = onOpenQrTransfer,
+                modifier = Modifier.weight(1f),
+                border = BorderStroke(1.dp, CslOrange)
+            ) {
+                Icon(Icons.Default.QrCode2, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Перенос QR", maxLines = 1, softWrap = false, fontWeight = FontWeight.Bold)
+            }
+        }
+
         // 1. Jira Connection Card
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -967,6 +1003,206 @@ fun ServerSettingsScreen(
                     ) {
                         Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp))
                     }
+                }
+            }
+        }
+
+        // 3c. Hands-Free TTS ("За рулём"), Storm Protection, Caller ID & Biometric Security
+        val callerIdRoleLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { res ->
+            if (res.resultCode == Activity.RESULT_OK) {
+                Toast.makeText(context, "Help-CSL активирован как определитель номера!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Headphones, contentDescription = null, tint = CslOrange)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Режим «За рулём», Телефония и Защита",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "Голосовое чтение новых заявок (TTS):",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TtsReadoutMode.entries.forEach { mode ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val updated = draft.copy(ttsReadoutMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = draft.ttsReadoutMode == mode,
+                            onClick = {
+                                val updated = draft.copy(ttsReadoutMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(mode.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(mode.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = { TicketSpeechAnnouncer.speakPreview(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Прослушать голосовое чтение (тест TTS)")
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Защита от «Шторма заявок»",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "При пачке из 3+ новых тикетов играть 1 сигнал и группировать сводку",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.stormProtectionEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(stormProtectionEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Определитель клиента при звонке (Caller ID)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Показывать плашку с клиентом и открытой заявкой при входящем вызове",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.callerIdEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(callerIdEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && draft.callerIdEnabled) {
+                    OutlinedButton(
+                        onClick = {
+                            val rm = context.getSystemService(RoleManager::class.java)
+                            if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
+                                if (rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
+                                    Toast.makeText(context, "Help-CSL уже назначен определителем номера!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    callerIdRoleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
+                                }
+                            } else {
+                                Toast.makeText(context, "На этом устройстве системная роль АОН недоступна", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Call, contentDescription = null, tint = CslOrange, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Включить системный определитель (АОН)")
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Предлагать Worklog после звонка клиенту",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "После звонка из карточки заявки открывать окно списания минут и итога",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.postCallWorklogPromptEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(postCallWorklogPromptEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Fingerprint, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Вход по отпечатку пальца / FaceID",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Text(
+                            text = "Запрашивать биометрию или PIN экрана после сворачивания приложения",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.biometricLockEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(biometricLockEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
                 }
             }
         }

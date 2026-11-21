@@ -274,7 +274,115 @@ object NotificationHelper {
             notificationId,
             builder.build()
         )
+        if (playSound) {
+            TicketSpeechAnnouncer.announceNewTicketIfEnabled(context, ticket, settings)
+        }
         return true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showTicketStormBanner(
+        context: Context,
+        tickets: List<HelpdeskTicket>,
+        playSound: Boolean = true
+    ) {
+        if (tickets.isEmpty()) return
+        val repo = SettingsRepository.getInstance(context)
+        val settings = repo.appSettings.value
+        if (playSound) {
+            AlertSoundPlayer.playTicketAlert(context, settings)
+            TicketSpeechAnnouncer.announceStormIfEnabled(context, tickets.size, settings)
+        }
+        tickets.lastOrNull()?.let { latest ->
+            repo.emitInAppBanner(latest, "⚡ Шторм заявок: +${tickets.size} новых обращений!")
+        }
+
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            7700,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val linesText = tickets.take(6).joinToString("\n") {
+            "• ${it.reporterName.ifBlank { "Клиент" }} (${it.key}): ${it.summary.take(55)}"
+        } + if (tickets.size > 6) "\n…и ещё ${tickets.size - 6} заявок" else ""
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("⚡ Шторм заявок: ${tickets.size} новых обращений")
+            .setContentText("Сгруппировано, чтобы не перегружать звуковые сигналы")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(linesText))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Открыть очередь", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(7700, notification)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showIncomingCallerIdBanner(
+        context: Context,
+        callerNumber: String,
+        matchedTickets: List<HelpdeskTicket>
+    ) {
+        if (matchedTickets.isEmpty() || !hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val primary = matchedTickets.first()
+        val clientName = primary.reporterName.ifBlank { "Клиент Jira" }
+        val openTicketIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_TICKET_KEY, primary.key)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            8800 + (primary.key.hashCode() and 0xFFF),
+            openTicketIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val dossier = SettingsRepository.getInstance(context).getClientDossierNote(clientName)
+        val details = buildString {
+            append("Заявка ${primary.key} (${primary.status}): ${primary.summary}")
+            if (matchedTickets.size > 1) {
+                append("\nВсего заявок с этого номера: ${matchedTickets.size}")
+            }
+            if (dossier.isNotBlank()) {
+                append("\nДосье: ").append(dossier.take(120))
+            }
+        }
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("📞 Звонит: $clientName ($callerNumber)")
+            .setContentText("${primary.key}: ${primary.summary}")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(details))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Открыть ${primary.key}", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(8801, notification)
     }
 
     @SuppressLint("MissingPermission")

@@ -74,6 +74,12 @@ enum class AlertSoundPreset(val title: String, val subtitle: String) {
     )
 }
 
+enum class TtsReadoutMode(val title: String, val subtitle: String) {
+    OFF("Выключено", "Голосовое чтение новых заявок отключено"),
+    HEADSET_ONLY("Только в наушниках / Bluetooth", "Озвучивать клиента и тему, когда подключена гарнитура или авто"),
+    ALWAYS("Всегда (в рабочие часы)", "Озвучивать новые заявки и на динамике, и в гарнитуре")
+}
+
 data class AppSettings(
     val serverUrl: String = "",
     val serverType: JiraServerType = JiraServerType.AUTO,
@@ -98,6 +104,11 @@ data class AppSettings(
     val staleTicketReminderEnabled: Boolean = true,
     val staleTicketReminderMinutes: Int = 15,
     val quickReplyTemplates: List<String> = DEFAULT_QUICK_REPLY_TEMPLATES,
+    val ttsReadoutMode: TtsReadoutMode = TtsReadoutMode.HEADSET_ONLY,
+    val stormProtectionEnabled: Boolean = true,
+    val callerIdEnabled: Boolean = true,
+    val postCallWorklogPromptEnabled: Boolean = true,
+    val biometricLockEnabled: Boolean = false,
     val phoneRegion: PhoneRegion = PhoneRegion.AUTO_BY_RU,
     val customCountryCode: String = "+375",
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
