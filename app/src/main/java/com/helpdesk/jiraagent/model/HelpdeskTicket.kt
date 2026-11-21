@@ -70,6 +70,30 @@ data class TicketComment(
     val createdIso: String
 )
 
+data class TicketAttachment(
+    val id: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val contentUrl: String,
+    val thumbnailUrl: String? = null,
+    val authorName: String = "",
+    val createdIso: String = ""
+) {
+    val isImage: Boolean
+        get() {
+            val lowerMime = mimeType.lowercase()
+            if (lowerMime.startsWith("image/")) return true
+            val lowerName = filename.lowercase()
+            return lowerName.endsWith(".png") ||
+                lowerName.endsWith(".jpg") ||
+                lowerName.endsWith(".jpeg") ||
+                lowerName.endsWith(".webp") ||
+                lowerName.endsWith(".gif") ||
+                lowerName.endsWith(".bmp")
+        }
+}
+
 data class HelpdeskTicket(
     val id: String,
     val key: String,
@@ -87,6 +111,7 @@ data class HelpdeskTicket(
     val reporterName: String,
     val reporterLoginOrEmail: String,
     val assigneeName: String?,
+    val assigneeLogin: String? = null,
     val createdIso: String,
     val createdEpochMillis: Long,
     val updatedIso: String,
@@ -95,12 +120,33 @@ data class HelpdeskTicket(
     val phoneNumbers: List<PhoneMatch>,
     val telegramHandles: List<String>? = emptyList(),
     val comments: List<TicketComment>,
+    val attachments: List<TicketAttachment>? = emptyList(),
     val webUrl: String,
     val isClientTicket: Boolean = true,
     val filterReason: String? = null
 ) {
     val stage: TicketStage
         get() = TicketStage.fromJiraStatus(status, statusCategoryKey)
+
+    fun isAssignedToAgent(connectedUserDisplayName: String?, usernameOrEmail: String): Boolean {
+        val display = assigneeName?.trim().orEmpty()
+        val login = assigneeLogin?.trim().orEmpty()
+        if (display.isEmpty() && login.isEmpty()) return false
+
+        val candidates = buildList {
+            connectedUserDisplayName?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it.lowercase()) }
+            val userClean = usernameOrEmail.trim().lowercase()
+            if (userClean.isNotEmpty()) {
+                add(userClean)
+                val beforeAt = userClean.substringBefore('@')
+                if (beforeAt.length >= 3) add(beforeAt)
+            }
+        }.distinct()
+
+        if (candidates.isEmpty()) return false
+        val haystack = "$display | $login".lowercase()
+        return candidates.any { token -> haystack.contains(token) }
+    }
 }
 
 data class SyncStatus(

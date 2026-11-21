@@ -23,14 +23,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.FilterAltOff
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Schedule
@@ -42,6 +46,8 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -49,7 +55,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,14 +78,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.helpdesk.jiraagent.domain.SlaCalculator
+import com.helpdesk.jiraagent.domain.SlaUrgency
+import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.ui.components.CreateTicketDialog
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
 import com.helpdesk.jiraagent.ui.components.SysadminEmptyStatePanel
+import com.helpdesk.jiraagent.ui.theme.CslDangerRed
 import com.helpdesk.jiraagent.ui.theme.CslInfoBlue
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -94,6 +111,12 @@ private enum class TicketTabMode {
     FILTERED_SERVICE
 }
 
+private enum class AssigneeScopeFilter {
+    ALL,
+    MINE,
+    UNASSIGNED
+}
+
 private data class TabItemSpec(
     val mode: TicketTabMode,
     val title: String,
@@ -101,20 +124,50 @@ private data class TabItemSpec(
     val icon: ImageVector
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TicketsScreen(
     tickets: List<HelpdeskTicket>,
     postponedTickets: List<PostponedTicket>,
+    offlineQueuedActions: List<OfflineQueuedAction>,
     appSettings: AppSettings,
+    filterSettings: FilterSettings,
     syncStatus: SyncStatus,
+    isCreatingTicket: Boolean,
     onTicketClick: (String) -> Unit,
+    onQuickTakeInWork: (String) -> Unit,
+    onDiscussTicketInChat: (HelpdeskTicket) -> Unit,
+    onCreateTicket: (String, String, String, String, Boolean) -> Unit,
+    onFlushOfflineQueue: () -> Unit,
+    onCancelOfflineAction: (String) -> Unit,
     onCancelPostponed: (String) -> Unit,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var tabMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
+    var assigneeScope by rememberSaveable { mutableStateOf(AssigneeScopeFilter.ALL) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var showCreateDialog by rememberSaveable { mutableStateOf(false) }
+
+    val defaultProjectKey = remember(filterSettings.projectKeys, tickets) {
+        TicketFilterEngine.splitCsv(filterSettings.projectKeys).firstOrNull()?.uppercase()
+            ?: tickets.firstOrNull { it.isClientTicket }?.projectKey?.uppercase()
+            ?: ""
+    }
+
+    if (showCreateDialog) {
+        CreateTicketDialog(
+            defaultProjectKey = defaultProjectKey,
+            isCreating = isCreatingTicket,
+            onDismiss = { showCreateDialog = false },
+            onCreate = { proj, type, sum, desc, selfAssign ->
+                showCreateDialog = false
+                onCreateTicket(proj, type, sum, desc, selfAssign)
+            }
+        )
+    }
 
     val clientTickets = remember(tickets) { tickets.filter { it.isClientTicket } }
     val newTickets = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.NEW } }
@@ -129,12 +182,29 @@ fun TicketsScreen(
         TicketTabMode.FILTERED_SERVICE -> serviceFilteredTickets
     }
 
-    val displayedTickets = remember(baseList, searchQuery) {
+    val mineCountInTab = remember(baseList, syncStatus.connectedUser, appSettings.usernameOrEmail) {
+        baseList.count { it.isAssignedToAgent(syncStatus.connectedUser, appSettings.usernameOrEmail) }
+    }
+    val freeCountInTab = remember(baseList) {
+        baseList.count { it.assigneeName.isNullOrBlank() }
+    }
+
+    val scopeFilteredList = remember(baseList, assigneeScope, syncStatus.connectedUser, appSettings.usernameOrEmail) {
+        when (assigneeScope) {
+            AssigneeScopeFilter.ALL -> baseList
+            AssigneeScopeFilter.MINE -> baseList.filter {
+                it.isAssignedToAgent(syncStatus.connectedUser, appSettings.usernameOrEmail)
+            }
+            AssigneeScopeFilter.UNASSIGNED -> baseList.filter { it.assigneeName.isNullOrBlank() }
+        }
+    }
+
+    val displayedTickets = remember(scopeFilteredList, searchQuery) {
         val q = searchQuery.trim().lowercase()
         if (q.isEmpty()) {
-            baseList
+            scopeFilteredList
         } else {
-            baseList.filter { t ->
+            scopeFilteredList.filter { t ->
                 t.key.lowercase().contains(q) ||
                     t.summary.lowercase().contains(q) ||
                     t.reporterName.lowercase().contains(q) ||
@@ -147,126 +217,381 @@ fun TicketsScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        if (syncStatus.isSyncing) {
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
-                color = CslOrange
-            )
-        }
-
-        if (!appSettings.isConfigured) {
-            UnconfiguredBanner(onOpenSettings = onOpenSettings)
-        } else {
-            syncStatus.lastError?.let { err ->
-                ErrorBanner(errorMessage = err, onRetry = onRefresh)
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (syncStatus.isSyncing) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = CslOrange
+                )
             }
-        }
 
-        // Concise single-line search field styled in csl.by palette
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            placeholder = {
-                Text(
-                    text = "Поиск заявки…",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            leadingIcon = {
-                Icon(
-                    Icons.Default.Search,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                    tint = CslOrange
-                )
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Очистить")
-                    }
+            if (!appSettings.isConfigured) {
+                UnconfiguredBanner(onOpenSettings = onOpenSettings)
+            } else {
+                syncStatus.lastError?.let { err ->
+                    ErrorBanner(errorMessage = err, onRetry = onRefresh)
                 }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(10.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = CslOrange,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface
-            )
-        )
+            }
 
-        val tabSpecs = remember(
-            newTickets.size,
-            inProgressTickets.size,
-            closedTickets.size,
-            serviceFilteredTickets.size
-        ) {
-            listOf(
-                TabItemSpec(TicketTabMode.NEW, "Новые", newTickets.size, Icons.Default.FiberNew),
-                TabItemSpec(TicketTabMode.IN_PROGRESS, "В работе", inProgressTickets.size, Icons.Default.Build),
-                TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
-                TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceFilteredTickets.size, Icons.Default.SmartToy)
+            // Concise single-line search field styled in csl.by palette
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                placeholder = {
+                    Text(
+                        text = "Поиск заявки…",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = CslOrange
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Очистить")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CslOrange,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface
+                )
             )
-        }
 
-        AdaptiveFourTabsBar(
-            tabs = tabSpecs,
-            selectedMode = tabMode,
-            onSelect = { tabMode = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-        )
-
-        if (displayedTickets.isEmpty() && postponedTickets.isEmpty()) {
-            EmptyTicketsPlaceholder(
-                isConfigured = appSettings.isConfigured,
-                tabMode = tabMode,
-                hasSearch = searchQuery.isNotBlank(),
-                onRefresh = onRefresh
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            val tabSpecs = remember(
+                newTickets.size,
+                inProgressTickets.size,
+                closedTickets.size,
+                serviceFilteredTickets.size
             ) {
-                if (postponedTickets.isNotEmpty()) {
-                    item(key = "postponed_summary_card") {
-                        PostponedTicketsQueueCard(
-                            items = postponedTickets,
-                            onCancel = onCancelPostponed
-                        )
+                listOf(
+                    TabItemSpec(TicketTabMode.NEW, "Новые", newTickets.size, Icons.Default.FiberNew),
+                    TabItemSpec(TicketTabMode.IN_PROGRESS, "В работе", inProgressTickets.size, Icons.Default.Build),
+                    TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
+                    TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceFilteredTickets.size, Icons.Default.SmartToy)
+                )
+            }
+
+            AdaptiveFourTabsBar(
+                tabs = tabSpecs,
+                selectedMode = tabMode,
+                onSelect = { tabMode = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+
+            AssigneeScopeRow(
+                selected = assigneeScope,
+                allCount = baseList.size,
+                mineCount = mineCountInTab,
+                freeCount = freeCountInTab,
+                onSelect = { assigneeScope = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp)
+            )
+
+            PullToRefreshBox(
+                isRefreshing = syncStatus.isSyncing,
+                onRefresh = onRefresh,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (displayedTickets.isEmpty() && postponedTickets.isEmpty() && offlineQueuedActions.isEmpty()) {
+                    EmptyTicketsPlaceholder(
+                        isConfigured = appSettings.isConfigured,
+                        tabMode = tabMode,
+                        hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
+                        onRefresh = onRefresh
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 76.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (offlineQueuedActions.isNotEmpty()) {
+                            item(key = "offline_queue_card") {
+                                OfflineActionsQueueCard(
+                                    items = offlineQueuedActions,
+                                    onFlushNow = onFlushOfflineQueue,
+                                    onCancel = onCancelOfflineAction
+                                )
+                            }
+                        }
+
+                        if (postponedTickets.isNotEmpty()) {
+                            item(key = "postponed_summary_card") {
+                                PostponedTicketsQueueCard(
+                                    items = postponedTickets,
+                                    onCancel = onCancelPostponed
+                                )
+                            }
+                        }
+
+                        if (displayedTickets.isEmpty()) {
+                            item(key = "empty_tickets_gif") {
+                                EmptyTicketsPlaceholder(
+                                    isConfigured = appSettings.isConfigured,
+                                    tabMode = tabMode,
+                                    hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
+                                    onRefresh = onRefresh,
+                                    scrollable = false
+                                )
+                            }
+                        } else {
+                            items(displayedTickets, key = { it.key }) { ticket ->
+                                SwipeableTicketListItem(
+                                    ticket = ticket,
+                                    onClick = { onTicketClick(ticket.key) },
+                                    onSwipeTakeInWork = { onQuickTakeInWork(ticket.key) },
+                                    onSwipeLeftAction = {
+                                        val primaryPhone = ticket.phoneNumbers.firstOrNull()
+                                        if (primaryPhone != null) {
+                                            DialerLauncher.openDialer(context, primaryPhone.e164)
+                                        } else {
+                                            onDiscussTicketInChat(ticket)
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
+            }
+        }
 
-                if (displayedTickets.isEmpty()) {
-                    item(key = "empty_tickets_gif") {
-                        EmptyTicketsPlaceholder(
-                            isConfigured = appSettings.isConfigured,
-                            tabMode = tabMode,
-                            hasSearch = searchQuery.isNotBlank(),
-                            onRefresh = onRefresh,
-                            scrollable = false
-                        )
-                    }
-                } else {
-                    items(displayedTickets, key = { it.key }) { ticket ->
-                        TicketListCard(
-                            ticket = ticket,
-                            onClick = { onTicketClick(ticket.key) }
+        if (appSettings.isConfigured) {
+            FloatingActionButton(
+                onClick = { showCreateDialog = true },
+                containerColor = CslOrange,
+                contentColor = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Новая заявка"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssigneeScopeRow(
+    selected: AssigneeScopeFilter,
+    allCount: Int,
+    mineCount: Int,
+    freeCount: Int,
+    onSelect: (AssigneeScopeFilter) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val options = listOf(
+        Triple(AssigneeScopeFilter.ALL, "Все", allCount),
+        Triple(AssigneeScopeFilter.MINE, "Мои", mineCount),
+        Triple(AssigneeScopeFilter.UNASSIGNED, "Свободные", freeCount)
+    )
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.forEach { (mode, title, count) ->
+            val isSelected = selected == mode
+            Surface(
+                onClick = { onSelect(mode) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp),
+                color = if (isSelected) CslMidnight else MaterialTheme.colorScheme.surface,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isSelected) CslOrange else MaterialTheme.colorScheme.outlineVariant
+                )
+            ) {
+                Text(
+                    text = "$title ($count)",
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineActionsQueueCard(
+    items: List<OfflineQueuedAction>,
+    onFlushNow: () -> Unit,
+    onCancel: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, CslOrange)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CloudOff,
+                    contentDescription = null,
+                    tint = CslOrange,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Офлайн-очередь (${items.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Surface(
+                    onClick = onFlushNow,
+                    shape = RoundedCornerShape(6.dp),
+                    color = CslOrange
+                ) {
+                    Text(
+                        text = "Отправить",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            items.forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = item.summaryLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { onCancel(item.id) },
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Удалить из очереди",
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableTicketListItem(
+    ticket: HelpdeskTicket,
+    onClick: () -> Unit,
+    onSwipeTakeInWork: () -> Unit,
+    onSwipeLeftAction: () -> Unit
+) {
+    val hasPhone = ticket.phoneNumbers.isNotEmpty()
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { target ->
+            when (target) {
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    onSwipeTakeInWork()
+                    false
+                }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    onSwipeLeftAction()
+                    false
+                }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            val dir = dismissState.dismissDirection
+            val bgColor = when (dir) {
+                SwipeToDismissBoxValue.StartToEnd -> CslSuccessGreen.copy(alpha = 0.88f)
+                SwipeToDismissBoxValue.EndToStart -> CslMidnight.copy(alpha = 0.92f)
+                SwipeToDismissBoxValue.Settled -> Color.Transparent
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(bgColor, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 16.dp)
+            ) {
+                if (dir == SwipeToDismissBoxValue.StartToEnd) {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterStart),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.AssignmentInd, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "В работу",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                } else if (dir == SwipeToDismissBoxValue.EndToStart) {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (hasPhone) "Позвонить" else "В чат",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = if (hasPhone) Icons.Default.Call else Icons.Default.Forum,
+                            contentDescription = null,
+                            tint = CslOrange
+                        )
+                    }
+                }
+            }
+        }
+    ) {
+        TicketListCard(
+            ticket = ticket,
+            onClick = onClick
+        )
     }
 }
 
@@ -613,6 +938,31 @@ private fun TicketListCard(
                             )
                         }
                     }
+
+                    if (ticket.isClientTicket && stage == TicketStage.NEW) {
+                        val slaBadge = SlaCalculator.computeWaitBadge(ticket.createdEpochMillis)
+                        if (slaBadge != null) {
+                            val (slaBg, slaFg) = when (slaBadge.urgency) {
+                                SlaUrgency.FRESH -> CslSuccessGreen.copy(alpha = 0.14f) to CslSuccessGreen
+                                SlaUrgency.WARNING -> CslOrange.copy(alpha = 0.16f) to CslOrange
+                                SlaUrgency.OVERDUE -> CslDangerRed.copy(alpha = 0.16f) to CslDangerRed
+                            }
+                            Surface(
+                                color = slaBg,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = slaBadge.label,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = slaFg,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // 3. Full Summary (wraps naturally inside card so multi-line titles are readable)
@@ -642,6 +992,16 @@ private fun TicketListCard(
                             style = MaterialTheme.typography.labelSmall,
                             color = CslInfoBlue,
                             fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    val attCount = ticket.attachments?.size ?: 0
+                    if (attCount > 0) {
+                        Text(
+                            text = "• 📎 $attCount",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CslOrange,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }

@@ -10,6 +10,7 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
+import com.helpdesk.jiraagent.model.TicketAttachment
 import com.helpdesk.jiraagent.model.TicketComment
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -121,7 +122,18 @@ object JiraJsonParser {
             .distinct()
             .joinToString(" | ")
 
-        val assigneeName = fields.getObjectOrNull("assignee")?.getStringOrNull("displayName")
+        val assigneeObj = fields.getObjectOrNull("assignee")
+        val assigneeName = assigneeObj?.getStringOrNull("displayName")
+        val assigneeLogin = listOfNotNull(
+            assigneeObj?.getStringOrNull("name"),
+            assigneeObj?.getStringOrNull("emailAddress"),
+            assigneeObj?.getStringOrNull("key"),
+            assigneeObj?.getStringOrNull("accountId")
+        ).map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(" | ")
+            .takeIf { it.isNotEmpty() }
 
         val createdIso = fields.getStringOrNull("created").orEmpty()
         val updatedIso = fields.getStringOrNull("updated").orEmpty()
@@ -133,6 +145,7 @@ object JiraJsonParser {
             .orEmpty()
 
         val comments = parseComments(fields.getObjectOrNull("comment"))
+        val attachments = parseAttachments(fields.getArrayOrNull("attachment"))
 
         // Detect Jira Service Management Customer Request Type & portal links
         var customerRequestType: String? = null
@@ -187,6 +200,7 @@ object JiraJsonParser {
             reporterName = reporterName,
             reporterLoginOrEmail = reporterLoginOrEmail,
             assigneeName = assigneeName,
+            assigneeLogin = assigneeLogin,
             createdIso = createdIso,
             createdEpochMillis = createdMillis,
             updatedIso = updatedIso,
@@ -195,6 +209,7 @@ object JiraJsonParser {
             phoneNumbers = phones,
             telegramHandles = tgHandles,
             comments = comments,
+            attachments = attachments,
             webUrl = webUrl
         )
 
@@ -364,6 +379,37 @@ object JiraJsonParser {
             val body = extractReadableText(obj.get("body")).trim()
             val created = obj.getStringOrNull("created").orEmpty()
             if (body.isEmpty()) null else TicketComment(id, author, body, created)
+        }
+    }
+
+    private fun parseAttachments(attachmentArr: JsonArray?): List<TicketAttachment> {
+        if (attachmentArr == null) return emptyList()
+        return attachmentArr.mapNotNull { elem ->
+            if (!elem.isJsonObject) return@mapNotNull null
+            val obj = elem.asJsonObject
+            val id = obj.getStringOrNull("id") ?: return@mapNotNull null
+            val filename = obj.getStringOrNull("filename")?.trim().orEmpty().ifEmpty { "file_$id" }
+            val contentUrl = obj.getStringOrNull("content")?.trim().orEmpty()
+            if (contentUrl.isEmpty()) return@mapNotNull null
+            val mimeType = obj.getStringOrNull("mimeType").orEmpty()
+            val sizeBytes = obj.get("size")?.takeIf { it.isJsonPrimitive }?.let {
+                runCatching { it.asLong }.getOrDefault(0L)
+            } ?: 0L
+            val thumbnailUrl = obj.getStringOrNull("thumbnail")?.trim()?.takeIf { it.isNotEmpty() }
+            val authorName = obj.getObjectOrNull("author")?.getStringOrNull("displayName")
+                ?: obj.getObjectOrNull("author")?.getStringOrNull("name")
+                ?: ""
+            val createdIso = obj.getStringOrNull("created").orEmpty()
+            TicketAttachment(
+                id = id,
+                filename = filename,
+                mimeType = mimeType,
+                sizeBytes = sizeBytes,
+                contentUrl = contentUrl,
+                thumbnailUrl = thumbnailUrl,
+                authorName = authorName,
+                createdIso = createdIso
+            )
         }
     }
 

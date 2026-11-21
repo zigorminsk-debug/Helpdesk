@@ -4,6 +4,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
@@ -38,11 +40,30 @@ class JiraMonitorService : Service() {
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
     private var lastUpdateCheckEpochMillis: Long = 0L
     private var lastNotifiedUpdateTag: String? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
         repository = SettingsRepository.getInstance(applicationContext)
         PostponeScheduler.scheduleNextAlarm(applicationContext)
+        registerOfflineSyncNetworkCallback()
+    }
+
+    private fun registerOfflineSyncNetworkCallback() {
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (repository.offlineQueuedActions.value.isNotEmpty()) {
+                        serviceScope.launch {
+                            OfflineQueueProcessor.flushPending(applicationContext, apiClient)
+                        }
+                    }
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -138,6 +159,7 @@ class JiraMonitorService : Service() {
 
                 if (settings.isConfigured && settings.pollingEnabled) {
                     pollOnce()
+                    pollAdminChatSafely()
                 }
 
                 // Periodically check GitHub Releases for new APK versions (every 90 minutes)
@@ -175,6 +197,10 @@ class JiraMonitorService : Service() {
 
         repository.updateSyncStatus { it.copy(isSyncing = true) }
 
+        if (repository.offlineQueuedActions.value.isNotEmpty()) {
+            runCatching { OfflineQueueProcessor.flushPending(applicationContext, apiClient) }
+        }
+
         val result = apiClient.fetchRecentTickets(settings, filter)
         result.onSuccess { tickets ->
             val nowMillis = System.currentTimeMillis()
@@ -186,6 +212,22 @@ class JiraMonitorService : Service() {
             if (schedule.isAllowedNow) {
                 for (ticket in newClientTickets) {
                     NotificationHelper.showClientTicketBanner(applicationContext, ticket)
+                }
+                if (settings.staleTicketReminderEnabled) {
+                    val staleDue = repository.findDueStaleUnassignedTickets(
+                        polled = repository.tickets.value,
+                        reminderMinutes = settings.staleTicketReminderMinutes,
+                        nowMillis = nowMillis
+                    )
+                    for (stale in staleDue) {
+                        if (newClientTickets.none { it.key == stale.key }) {
+                            NotificationHelper.showClientTicketBanner(
+                                context = applicationContext,
+                                ticket = stale,
+                                customTitleSuffix = "Не взята > ${settings.staleTicketReminderMinutes} мин!"
+                            )
+                        }
+                    }
                 }
             }
 
@@ -222,6 +264,32 @@ class JiraMonitorService : Service() {
         }
     }
 
+    private suspend fun pollAdminChatSafely() {
+        runCatching {
+            val settings = repository.appSettings.value
+            if (!settings.isConfigured) return
+            val filter = repository.filterSettings.value
+            val cachedRoomKey = repository.resolvedChatRoomKey.value
+            val roomKey = apiClient.resolveOrCreateAdminChatRoom(
+                settings = settings,
+                filterSettings = filter,
+                cachedRoomKey = cachedRoomKey
+            ).getOrNull() ?: return
+
+            val snapshot = apiClient.fetchAdminChatRoomSnapshot(roomKey, settings).getOrNull() ?: return
+            val newColleagueMessages = repository.recordPolledChatMessages(
+                roomIssueKey = roomKey,
+                messages = snapshot.messages,
+                pinnedNote = snapshot.pinnedNote
+            )
+            if (settings.adminChatNotificationsEnabled) {
+                for (msg in newColleagueMessages) {
+                    NotificationHelper.showAdminChatMessageNotification(applicationContext, msg)
+                }
+            }
+        }
+    }
+
     private fun stopPollingAndService() {
         pollingJob?.cancel()
         repository.updateSyncStatus { it.copy(isServiceRunning = false, isSyncing = false) }
@@ -232,6 +300,11 @@ class JiraMonitorService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        }
+        networkCallback = null
         repository.updateSyncStatus { it.copy(isServiceRunning = false, isSyncing = false) }
         serviceScope.cancel()
         super.onDestroy()

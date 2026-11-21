@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneDisabled
@@ -90,12 +92,21 @@ import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
+import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
+import com.helpdesk.jiraagent.model.TicketAttachment
+import com.helpdesk.jiraagent.ui.ClientHistoryUiState
+import com.helpdesk.jiraagent.ui.HostDiagnosticUiState
 import com.helpdesk.jiraagent.ui.TicketActionUiState
 import com.helpdesk.jiraagent.ui.components.ClickablePhoneText
+import com.helpdesk.jiraagent.ui.components.ClientHistoryCard
+import com.helpdesk.jiraagent.ui.components.HostDiagnosticDialog
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
+import com.helpdesk.jiraagent.ui.components.QuickReplyMacrosBar
+import com.helpdesk.jiraagent.ui.components.SysadminEntitiesCard
+import com.helpdesk.jiraagent.ui.components.TicketAttachmentsCard
 import com.helpdesk.jiraagent.ui.theme.CslDangerRed
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -116,7 +127,16 @@ fun TicketDetailScreen(
     ticketKey: String,
     isLoading: Boolean,
     actionState: TicketActionUiState,
+    clientHistoryState: ClientHistoryUiState,
+    hostDiagnosticState: HostDiagnosticUiState,
     appSettings: AppSettings,
+    loadAttachmentBytes: suspend (String) -> Result<ByteArray>,
+    onUploadAttachmentUri: (Uri, String?) -> Unit,
+    onOpenExternalAttachment: (TicketAttachment) -> Unit,
+    onRunHostDiagnostics: (String) -> Unit,
+    onDismissHostDiagnostics: () -> Unit,
+    onDiscussInChat: (HelpdeskTicket) -> Unit,
+    onOpenHistoricalTicket: (String) -> Unit,
     onExecuteAction: (TicketWorkflowAction, String?, String?) -> Unit,
     onPostponeTicket: (Long, String, String?) -> Unit,
     onAddComment: (String) -> Unit,
@@ -130,6 +150,12 @@ fun TicketDetailScreen(
     var commentDraft by rememberSaveable { mutableStateOf("") }
     var standaloneCommentDraft by rememberSaveable { mutableStateOf("") }
     var showPostponeDialog by rememberSaveable { mutableStateOf(false) }
+
+    HostDiagnosticDialog(
+        state = hostDiagnosticState,
+        onRetest = onRunHostDiagnostics,
+        onDismiss = onDismissHostDiagnostics
+    )
 
     // Optional comment dialog for "Завершить" or "Отклонить"
     val pendingDialogAction = commentDialogAction
@@ -152,6 +178,12 @@ fun TicketDetailScreen(
                             "Добавьте или надиктуйте голосом комментарий о выполнении (необязательно):"
                         },
                         style = MaterialTheme.typography.bodySmall
+                    )
+                    QuickReplyMacrosBar(
+                        templates = appSettings.quickReplyTemplates,
+                        onSelectTemplate = { tpl ->
+                            commentDraft = if (commentDraft.isBlank()) tpl else "${commentDraft.trimEnd()} $tpl"
+                        }
                     )
                     VoiceCommentTextField(
                         value = commentDraft,
@@ -287,6 +319,15 @@ fun TicketDetailScreen(
                     }
                 },
                 actions = {
+                    if (ticket != null) {
+                        IconButton(onClick = { onDiscussInChat(ticket) }) {
+                            Icon(
+                                imageVector = Icons.Default.Forum,
+                                contentDescription = "Обсудить в чате админов",
+                                tint = CslOrange
+                            )
+                        }
+                    }
                     val webUrl = ticket?.webUrl.orEmpty()
                     if (webUrl.isNotBlank()) {
                         IconButton(onClick = { DialerLauncher.openBrowser(context, webUrl) }) {
@@ -366,6 +407,37 @@ fun TicketDetailScreen(
                     onCopy = { e164 -> copyToClipboard(context, e164) }
                 )
 
+                // 2b. Quick handoff to Internal Admin Chat
+                OutlinedButton(
+                    onClick = { onDiscussInChat(ticket) },
+                    modifier = Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, CslOrange)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Forum,
+                        contentDescription = null,
+                        tint = CslOrange,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Обсудить заявку с админами в чате",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                // 2c. Smart Sysadmin Entities: AnyDesk / RustDesk IDs + IP / Domain Ping & Port Check
+                val extractedEntities = remember(ticket.key, ticket.summary, ticket.description, ticket.comments) {
+                    SysadminEntityExtractor.extractFromTicket(ticket)
+                }
+                SysadminEntitiesCard(
+                    entities = extractedEntities,
+                    onRunDiagnostics = onRunHostDiagnostics
+                )
+
                 // 3. Summary & Metadata Card (Full non-truncated fields!)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -435,7 +507,23 @@ fun TicketDetailScreen(
                     }
                 }
 
-                // 5. Add Comment Card (with Voice Input Microphone) & Comments History
+                // 4b. Jira Attachments & Camera Upload Card
+                TicketAttachmentsCard(
+                    attachments = ticket.attachments.orEmpty(),
+                    isBusy = actionState.isBusy,
+                    loadAttachmentBytes = loadAttachmentBytes,
+                    onUploadUri = onUploadAttachmentUri,
+                    onOpenExternal = onOpenExternalAttachment
+                )
+
+                // 4c. Client Historical Tickets Card
+                ClientHistoryCard(
+                    clientName = ticket.reporterName,
+                    historyState = clientHistoryState,
+                    onOpenTicket = onOpenHistoricalTicket
+                )
+
+                // 5. Add Comment Card (with Voice Input Microphone & Quick Macros) & Comments History
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -451,6 +539,17 @@ fun TicketDetailScreen(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = CslOrange
+                        )
+
+                        QuickReplyMacrosBar(
+                            templates = appSettings.quickReplyTemplates,
+                            onSelectTemplate = { tpl ->
+                                standaloneCommentDraft = if (standaloneCommentDraft.isBlank()) {
+                                    tpl
+                                } else {
+                                    "${standaloneCommentDraft.trimEnd()} $tpl"
+                                }
+                            }
                         )
 
                         VoiceCommentTextField(

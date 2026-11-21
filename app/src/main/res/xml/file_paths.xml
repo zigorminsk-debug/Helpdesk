@@ -6,4 +6,10 @@
     <external-cache-path
         name="ext_apk_updates"
         path="updates/" />
+    <cache-path
+        name="camera_captures"
+        path="camera_captures/" />
+    <cache-path
+        name="shared_attachments"
+        path="shared_attachments/" />
 </paths>

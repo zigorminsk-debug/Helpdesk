@@ -38,12 +38,18 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
         <package android:name="org.telegram.messenger" />
         <package android:name="org.telegram.messenger.web" />
         <package android:name="org.thunderdog.challegram" />
         <package android:name="com.viber.voip" />
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.anydesk.anydeskandroid" />
+        <package android:name="com.carriez.flutter_hbb" />
+        <package android:name="com.teamviewer.teamviewer.market.mobile" />
     </queries>
 
     <application
@@ -88,6 +94,35 @@
             android:name=".service.PostponeAlarmReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <receiver
+            android:name=".notification.NotificationActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.HelpCslAppWidgetProvider"
+            android:exported="true"
+            android:label="Help-CSL Сводка заявок">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.helpdesk.jiraagent.action.WIDGET_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/help_csl_widget_info" />
+        </receiver>
+
+        <service
+            android:name=".service.HelpCslDutyTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification_ticket"
+            android:label="Help-CSL Дежурство"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -34,15 +34,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -73,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -82,6 +87,7 @@ import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.MainViewModel
+import com.helpdesk.jiraagent.ui.screens.AdminChatScreen
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.TicketDetailScreen
@@ -95,6 +101,7 @@ import kotlinx.coroutines.delay
 
 private enum class BottomDestination(val label: String) {
     TICKETS("Заявки"),
+    CHAT("Чат"),
     FILTER("Фильтр"),
     SETTINGS("Настройки")
 }
@@ -142,6 +149,10 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(NotificationHelper.EXTRA_TRIGGER_APP_UPDATE)
             viewModel.checkForAppUpdate(manual = true, autoStartDownload = true)
         }
+        if (intent?.getBooleanExtra(NotificationHelper.EXTRA_OPEN_ADMIN_CHAT, false) == true) {
+            intent.removeExtra(NotificationHelper.EXTRA_OPEN_ADMIN_CHAT)
+            viewModel.requestOpenAdminChatTab()
+        }
     }
 }
 
@@ -154,14 +165,24 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val filterSettings by viewModel.filterSettings.collectAsStateWithLifecycle()
     val tickets by viewModel.tickets.collectAsStateWithLifecycle()
     val postponedTickets by viewModel.postponedTickets.collectAsStateWithLifecycle()
+    val offlineQueuedActions by viewModel.offlineQueuedActions.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val selectedTicketKey by viewModel.selectedTicketKey.collectAsStateWithLifecycle()
     val isLoadingDetail by viewModel.isLoadingTicketDetail.collectAsStateWithLifecycle()
     val ticketActionState by viewModel.ticketActionState.collectAsStateWithLifecycle()
+    val clientHistoryState by viewModel.clientHistoryState.collectAsStateWithLifecycle()
+    val hostDiagnosticState by viewModel.hostDiagnosticState.collectAsStateWithLifecycle()
+    val isCreatingTicket by viewModel.isCreatingTicket.collectAsStateWithLifecycle()
     val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val latestInAppBanner by viewModel.latestInAppBanner.collectAsStateWithLifecycle()
     val returnToMainScreenStamp by viewModel.returnToMainScreenStamp.collectAsStateWithLifecycle()
+    val openChatTabStamp by viewModel.openChatTabStamp.collectAsStateWithLifecycle()
+    val chatMessages by viewModel.chatMessages.collectAsStateWithLifecycle()
+    val unreadChatCount by viewModel.unreadChatCount.collectAsStateWithLifecycle()
+    val resolvedChatRoomKey by viewModel.resolvedChatRoomKey.collectAsStateWithLifecycle()
+    val pinnedShiftNote by viewModel.pinnedShiftNote.collectAsStateWithLifecycle()
+    val adminChatUiState by viewModel.adminChatUiState.collectAsStateWithLifecycle()
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
     var hasNotifPermission by rememberSaveable {
@@ -171,6 +192,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     LaunchedEffect(returnToMainScreenStamp) {
         if (returnToMainScreenStamp > 0L) {
             currentTab = BottomDestination.TICKETS
+        }
+    }
+
+    LaunchedEffect(openChatTabStamp) {
+        if (openChatTabStamp > 0L) {
+            currentTab = BottomDestination.CHAT
         }
     }
 
@@ -203,7 +230,28 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 ticketKey = activeKey,
                 isLoading = isLoadingDetail,
                 actionState = ticketActionState,
+                clientHistoryState = clientHistoryState,
+                hostDiagnosticState = hostDiagnosticState,
                 appSettings = appSettings,
+                loadAttachmentBytes = { url -> viewModel.loadAttachmentBytes(url) },
+                onUploadAttachmentUri = { uri, name ->
+                    viewModel.uploadAttachmentFromUri(activeKey, uri, name)
+                },
+                onOpenExternalAttachment = { att ->
+                    viewModel.openExternalAttachment(att)
+                },
+                onRunHostDiagnostics = { host ->
+                    viewModel.runHostDiagnostics(host)
+                },
+                onDismissHostDiagnostics = {
+                    viewModel.dismissHostDiagnostics()
+                },
+                onDiscussInChat = { t ->
+                    viewModel.discussTicketInChat(t)
+                },
+                onOpenHistoricalTicket = { key ->
+                    viewModel.openTicket(key)
+                },
                 onExecuteAction = { action, comment, transitionId ->
                     viewModel.executeTicketAction(activeKey, action, comment, transitionId)
                 },
@@ -223,6 +271,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     AlertSoundPlayer.stopCurrent()
                     viewModel.dismissInAppBanner()
                     viewModel.openTicket(key)
+                },
+                onTakeInWork = { key ->
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.quickTakeTicketInWork(key)
                 },
                 onDismiss = {
                     AlertSoundPlayer.stopCurrent()
@@ -296,6 +348,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             )
         },
         bottomBar = {
+            val navLabelSize = with(LocalDensity.current) { 11.dp.toSp() }
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = NavigationBarDefaults.Elevation
@@ -304,21 +357,73 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     selected = currentTab == BottomDestination.TICKETS,
                     onClick = { currentTab = BottomDestination.TICKETS },
                     icon = { Icon(Icons.Default.SupportAgent, contentDescription = null) },
-                    label = { Text(BottomDestination.TICKETS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = {
+                        Text(
+                            text = BottomDestination.TICKETS.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    colors = navItemColors
+                )
+                NavigationBarItem(
+                    selected = currentTab == BottomDestination.CHAT,
+                    onClick = { currentTab = BottomDestination.CHAT },
+                    icon = {
+                        BadgedBox(
+                            badge = {
+                                if (unreadChatCount > 0) {
+                                    Badge(
+                                        containerColor = CslOrange,
+                                        contentColor = Color.White
+                                    ) {
+                                        Text(
+                                            text = if (unreadChatCount > 99) "99+" else unreadChatCount.toString()
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Forum, contentDescription = null)
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = BottomDestination.CHAT.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
                     colors = navItemColors
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.FILTER,
                     onClick = { currentTab = BottomDestination.FILTER },
                     icon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                    label = { Text(BottomDestination.FILTER.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = {
+                        Text(
+                            text = BottomDestination.FILTER.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
                     colors = navItemColors
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.SETTINGS,
                     onClick = { currentTab = BottomDestination.SETTINGS },
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text(BottomDestination.SETTINGS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = {
+                        Text(
+                            text = BottomDestination.SETTINGS.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
                     colors = navItemColors
                 )
             }
@@ -383,12 +488,44 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 BottomDestination.TICKETS -> TicketsScreen(
                     tickets = tickets,
                     postponedTickets = postponedTickets,
+                    offlineQueuedActions = offlineQueuedActions,
                     appSettings = appSettings,
+                    filterSettings = filterSettings,
                     syncStatus = syncStatus,
+                    isCreatingTicket = isCreatingTicket,
                     onTicketClick = { key -> viewModel.openTicket(key) },
+                    onQuickTakeInWork = { key -> viewModel.quickTakeTicketInWork(key) },
+                    onDiscussTicketInChat = { t -> viewModel.discussTicketInChat(t) },
+                    onCreateTicket = { proj, type, sum, desc, selfAssign ->
+                        viewModel.createNewTicket(proj, type, sum, desc, selfAssign) { newKey ->
+                            viewModel.openTicket(newKey)
+                        }
+                    },
+                    onFlushOfflineQueue = { viewModel.flushOfflineQueueNow() },
+                    onCancelOfflineAction = { id -> viewModel.cancelOfflineAction(id) },
                     onCancelPostponed = { id -> viewModel.cancelPostponedTicket(id) },
                     onRefresh = { viewModel.refreshNow() },
                     onOpenSettings = { currentTab = BottomDestination.SETTINGS },
+                    modifier = Modifier.weight(1f)
+                )
+
+                BottomDestination.CHAT -> AdminChatScreen(
+                    messages = chatMessages,
+                    chatUiState = adminChatUiState,
+                    resolvedRoomKey = resolvedChatRoomKey,
+                    pinnedShiftNote = pinnedShiftNote,
+                    appSettings = appSettings,
+                    activeTickets = tickets,
+                    onChatVisibilityChanged = { visible -> viewModel.setChatTabActive(visible) },
+                    onRefresh = { viewModel.refreshAdminChat() },
+                    onDraftChange = { txt -> viewModel.updateChatDraft(txt) },
+                    onSelectReply = { msg -> viewModel.setChatReplyTarget(msg) },
+                    onSendMessage = { viewModel.sendAdminChatMessage() },
+                    onDeleteMessage = { id -> viewModel.deleteAdminChatMessage(id) },
+                    onSavePinnedNote = { note -> viewModel.savePinnedShiftNote(note) },
+                    onSaveRoomSettings = { key, notif -> viewModel.saveChatRoomSettings(key, notif) },
+                    onOpenTicket = { key -> viewModel.openTicket(key) },
+                    onOpenServerSettings = { currentTab = BottomDestination.SETTINGS },
                     modifier = Modifier.weight(1f)
                 )
 
@@ -428,6 +565,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             viewModel.dismissInAppBanner()
             viewModel.openTicket(key)
         },
+        onTakeInWork = { key ->
+            AlertSoundPlayer.stopCurrent()
+            viewModel.quickTakeTicketInWork(key)
+        },
         onDismiss = {
             AlertSoundPlayer.stopCurrent()
             viewModel.dismissInAppBanner()
@@ -440,6 +581,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
 private fun InAppFloatingBannerOverlay(
     bannerAlert: InAppBannerAlert?,
     onOpenTicket: (String) -> Unit,
+    onTakeInWork: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -516,14 +658,28 @@ private fun InAppFloatingBannerOverlay(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    Button(
+                        onClick = { onTakeInWork(ticket.key) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AssignmentInd,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("В работу", maxLines = 1, softWrap = false)
+                    }
+
                     Button(
                         onClick = { onOpenTicket(ticket.key) },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                     ) {
-                        Text("Открыть заявку")
+                        Text("Открыть", maxLines = 1, softWrap = false)
                     }
 
                     if (phone != null) {
@@ -532,15 +688,13 @@ private fun InAppFloatingBannerOverlay(
                                 AlertSoundPlayer.stopCurrent()
                                 DialerLauncher.openDialer(context, phone.e164)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D4ED8))
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Call,
-                                contentDescription = null,
+                                contentDescription = "Позвонить",
                                 modifier = Modifier.size(16.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Позвонить")
                         }
                     }
                 }

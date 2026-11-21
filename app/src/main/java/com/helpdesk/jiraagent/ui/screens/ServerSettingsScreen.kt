@@ -27,16 +27,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SettingsApplications
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -811,6 +816,158 @@ fun ServerSettingsScreen(
                         MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
+            }
+        }
+
+        // 3b. SLA Escalation Reminder & Quick Reply Templates Card
+        var newTemplateDraft by rememberSaveable { mutableStateOf("") }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Schedule, contentDescription = null, tint = CslOrange)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Контроль SLA и шаблоны ответов",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Повторный сигнал о неразобранной заявке",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Напомнить баннером и звуком, если новую заявку никто не взял в работу",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.staleTicketReminderEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(staleTicketReminderEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                if (draft.staleTicketReminderEnabled) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(10, 15, 30, 60).forEach { mins ->
+                            FilterChip(
+                                selected = draft.staleTicketReminderMinutes == mins,
+                                onClick = {
+                                    val updated = draft.copy(staleTicketReminderMinutes = mins)
+                                    draft = updated
+                                    onSaveSettings(updated)
+                                },
+                                label = { Text("Через $mins мин") }
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Bolt, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Быстрые шаблоны комментариев (${draft.quickReplyTemplates.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = {
+                            val updated = draft.copy(
+                                quickReplyTemplates = AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
+                            )
+                            draft = updated
+                            onSaveSettings(updated)
+                            Toast.makeText(context, "Стандартные шаблоны восстановлены", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(Icons.Default.Restore, contentDescription = "Сбросить шаблоны", tint = CslOrange)
+                    }
+                }
+
+                draft.quickReplyTemplates.forEachIndexed { index, tpl ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "• $tpl",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                val nextList = draft.quickReplyTemplates.filterIndexed { i, _ -> i != index }
+                                val updated = draft.copy(quickReplyTemplates = nextList)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Удалить шаблон",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newTemplateDraft,
+                        onValueChange = { newTemplateDraft = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Новый шаблон ответа") }
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val clean = newTemplateDraft.trim()
+                            if (clean.isNotEmpty()) {
+                                val updated = draft.copy(
+                                    quickReplyTemplates = draft.quickReplyTemplates + clean
+                                )
+                                draft = updated
+                                newTemplateDraft = ""
+                                onSaveSettings(updated)
+                            }
+                        },
+                        enabled = newTemplateDraft.isNotBlank()
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp))
+                    }
+                }
             }
         }
 

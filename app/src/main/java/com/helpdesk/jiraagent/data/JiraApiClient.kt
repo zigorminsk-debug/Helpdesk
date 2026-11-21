@@ -4,6 +4,9 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.model.AdminChatCodec
+import com.helpdesk.jiraagent.model.AdminChatMessage
+import com.helpdesk.jiraagent.model.AdminChatRoomSnapshot
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.FilterSettings
@@ -18,6 +21,8 @@ import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -31,7 +36,11 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
-class JiraApiException(message: String, val httpCode: Int? = null) : Exception(message)
+class JiraApiException(
+    message: String,
+    val httpCode: Int? = null,
+    val isNetworkError: Boolean = false
+) : Exception(message)
 
 enum class TicketWorkflowAction {
     TAKE_IN_WORK,
@@ -78,6 +87,11 @@ class JiraApiClient {
     private val selfSignedClient: OkHttpClient = buildClient(trustAllSsl = true)
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    @Volatile
+    private var cachedUserSignature: String? = null
+    @Volatile
+    private var cachedAuthenticatedUser: AuthenticatedJiraUser? = null
 
     private fun clientFor(settings: AppSettings): OkHttpClient {
         return if (settings.trustSelfSignedSsl) selfSignedClient else standardClient
@@ -205,10 +219,26 @@ class JiraApiClient {
 
                 val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
                 for (ticket in activeDeferred.await()) {
-                    mergedByKey[ticket.key] = ticket
+                    if (!AdminChatCodec.isAdminChatStorageIssue(
+                            issueKey = ticket.key,
+                            summary = ticket.summary,
+                            labels = ticket.labels,
+                            configuredChatKey = settings.adminChatIssueKey
+                        )
+                    ) {
+                        mergedByKey[ticket.key] = ticket
+                    }
                 }
                 for (ticket in closedDeferred.await()) {
-                    mergedByKey.putIfAbsent(ticket.key, ticket)
+                    if (!AdminChatCodec.isAdminChatStorageIssue(
+                            issueKey = ticket.key,
+                            summary = ticket.summary,
+                            labels = ticket.labels,
+                            configuredChatKey = settings.adminChatIssueKey
+                        )
+                    ) {
+                        mergedByKey.putIfAbsent(ticket.key, ticket)
+                    }
                 }
                 mergedByKey.values.toList()
             }
@@ -1418,6 +1448,1020 @@ class JiraApiClient {
         }
     }
 
+    /**
+     * Resolves (or automatically creates) the shared internal Admin Chat room Jira issue
+     * so all tech-support admins connected to the same Jira server communicate in one shared room.
+     */
+    suspend fun resolveOrCreateAdminChatRoom(
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        cachedRoomKey: String = ""
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+
+            // 1. Explicit room key configured manually in settings
+            val manualKey = settings.adminChatIssueKey.trim().uppercase(Locale.ROOT)
+            if (manualKey.isNotEmpty()) {
+                if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
+                    return@runCatching manualKey
+                } else {
+                    throw JiraApiException("Задача комнаты чата $manualKey не найдена или недоступна")
+                }
+            }
+
+            // 2. Previously discovered room key cached locally
+            val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
+            if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
+                return@runCatching localCached
+            }
+
+            // 3. Search Jira for an existing shared Help-CSL Admin Chat room issue (oldest wins)
+            val searchQueries = listOf(
+                """summary ~ "${AdminChatCodec.ADMIN_CHAT_MARKER}" ORDER BY created ASC""",
+                """labels = "${AdminChatCodec.ADMIN_CHAT_LABEL}" ORDER BY created ASC"""
+            )
+            for (jql in searchQueries) {
+                val foundKey = runCatching {
+                    val json = executeSearchWithFallback(baseUrl, jql, 5, preferCloud, settings)
+                    val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                    arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
+                }.getOrNull()
+                if (!foundKey.isNullOrBlank()) {
+                    return@runCatching foundKey.uppercase(Locale.ROOT)
+                }
+            }
+
+            // 4. None exists yet -> automatically create the shared room issue and close it so it stays out of queues
+            createSharedAdminChatRoomIssue(baseUrl, preferCloud, settings, filterSettings)
+        }
+    }
+
+    suspend fun fetchAdminChatRoomSnapshot(
+        roomIssueKey: String,
+        settings: AppSettings
+    ): Result<AdminChatRoomSnapshot> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val me = getCachedOrFetchAuthenticatedUser(baseUrl, preferCloud, settings)
+            val myIds = buildUserIdentifiers(me, settings)
+
+            val rawComments = fetchLatestRawCommentsJson(baseUrl, preferCloud, roomIssueKey, settings)
+            val parsedMessages = rawComments.mapNotNull { commentEl ->
+                if (!commentEl.isJsonObject) return@mapNotNull null
+                parseSingleChatComment(
+                    commentObj = commentEl.asJsonObject,
+                    roomIssueKey = roomIssueKey,
+                    myIdentifiers = myIds,
+                    myDisplayName = me.displayName
+                )
+            }.sortedWith(
+                compareBy<AdminChatMessage> { it.createdEpochMillis }
+                    .thenBy { it.id.toLongOrNull() ?: 0L }
+            )
+
+            val pinnedNote = fetchRoomPinnedNoteBestEffort(baseUrl, preferCloud, roomIssueKey, settings)
+
+            AdminChatRoomSnapshot(
+                roomIssueKey = roomIssueKey,
+                currentUserDisplayName = me.displayName,
+                currentUserIdentifiers = myIds,
+                messages = parsedMessages,
+                pinnedNote = pinnedNote
+            )
+        }
+    }
+
+    private fun fetchRoomPinnedNoteBestEffort(
+        baseUrl: String,
+        preferCloud: Boolean,
+        roomIssueKey: String,
+        settings: AppSettings
+    ): String {
+        return runCatching {
+            val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
+            val apiVer = if (preferCloud) "3" else "2"
+            val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?fields=description"
+            val req = Request.Builder().url(url).get().applyAuth(settings).build()
+            clientFor(settings).newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use ""
+                val root = JsonParser.parseString(resp.body?.string().orEmpty()).asJsonObject
+                val descEl = root.getAsJsonObject("fields")?.get("description")
+                val readable = JiraJsonParser.extractReadableText(descEl)
+                AdminChatCodec.extractPinnedNoteFromDescription(readable)
+            }
+        }.getOrDefault("")
+    }
+
+    suspend fun updateAdminChatPinnedNote(
+        roomIssueKey: String,
+        pinnedNote: String,
+        settings: AppSettings
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
+            val fullDescription = AdminChatCodec.encodeRoomDescriptionWithPinnedNote(pinnedNote)
+
+            val v2Payload = JsonObject().apply {
+                add("fields", JsonObject().apply { addProperty("description", fullDescription) })
+            }
+            val v3Payload = JsonObject().apply {
+                add("fields", JsonObject().apply { add("description", buildAdfDocument(fullDescription)) })
+            }
+
+            val attempts = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/issue/$encodedKey" to v3Payload,
+                    "$baseUrl/rest/api/2/issue/$encodedKey" to v2Payload
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/issue/$encodedKey" to v2Payload,
+                    "$baseUrl/rest/api/3/issue/$encodedKey" to v3Payload
+                )
+            }
+
+            var lastErr: Exception? = null
+            for ((url, payload) in attempts) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .put(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful || resp.code == 204) {
+                            return@runCatching pinnedNote.trim()
+                        }
+                        lastErr = mapHttpError(resp.code, bodyStr)
+                    }
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+            throw (lastErr ?: JiraApiException("Не удалось обновить закреплённую заметку смены"))
+        }
+    }
+
+    /**
+     * Downloads an attachment or thumbnail byte array from Jira using authenticated credentials.
+     */
+    suspend fun downloadAttachmentBytes(
+        attachmentUrl: String,
+        settings: AppSettings
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val resolvedUrl = if (attachmentUrl.startsWith("http://", ignoreCase = true) ||
+                attachmentUrl.startsWith("https://", ignoreCase = true)
+            ) {
+                attachmentUrl
+            } else {
+                "$baseUrl/${attachmentUrl.trimStart('/')}"
+            }
+
+            val reqBuilder = Request.Builder().url(resolvedUrl).get()
+            reqBuilder.applyAuth(settings)
+            reqBuilder.header("Accept", "*/*")
+
+            try {
+                clientFor(settings).newCall(reqBuilder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw mapHttpError(resp.code, "")
+                    }
+                    val bytes = resp.body?.bytes() ?: ByteArray(0)
+                    if (bytes.isEmpty()) {
+                        throw JiraApiException("Пустой файл вложения")
+                    }
+                    bytes
+                }
+            } catch (e: Exception) {
+                throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+        }
+    }
+
+    /**
+     * Uploads a photo/screenshot/file attachment to [issueKey] via Multipart POST with X-Atlassian-Token: no-check.
+     */
+    suspend fun uploadIssueAttachment(
+        issueKey: String,
+        fileName: String,
+        mimeType: String,
+        fileBytes: ByteArray,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<HelpdeskTicket?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+            val safeMime = mimeType.ifBlank { "application/octet-stream" }.toMediaTypeOrNull()
+                ?: "application/octet-stream".toMediaType()
+            val safeFileName = fileName.ifBlank { "photo_${System.currentTimeMillis()}.jpg" }
+
+            val multipartBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", safeFileName, fileBytes.toRequestBody(safeMime))
+                .build()
+
+            val urls = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/attachments",
+                    "$baseUrl/rest/api/2/issue/$encodedKey/attachments"
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/attachments",
+                    "$baseUrl/rest/api/3/issue/$encodedKey/attachments"
+                )
+            }
+
+            var uploaded = false
+            var lastErr: Exception? = null
+            for (url in urls) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .post(multipartBody)
+                        .applyAuth(settings)
+                        .header("X-Atlassian-Token", "no-check")
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            uploaded = true
+                        } else if (resp.code == 401 || resp.code == 403) {
+                            throw mapHttpError(resp.code, bodyStr)
+                        } else {
+                            lastErr = mapHttpError(resp.code, bodyStr)
+                        }
+                    }
+                    if (uploaded) break
+                } catch (e: JiraApiException) {
+                    if (e.httpCode == 401 || e.httpCode == 403) throw e
+                    lastErr = e
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+
+            if (!uploaded) {
+                throw (lastErr ?: JiraApiException("Не удалось прикрепить файл к заявке $issueKey"))
+            }
+
+            fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+        }
+    }
+
+    /**
+     * Creates a new Jira ticket directly from the mobile app (with optional self-assignment).
+     */
+    suspend fun createManualTicket(
+        projectKeyHint: String,
+        issueTypeHint: String,
+        summary: String,
+        description: String,
+        assignToSelf: Boolean,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<HelpdeskTicket> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanSummary = summary.trim()
+            if (cleanSummary.isEmpty()) {
+                throw JiraApiException("Введите тему новой заявки")
+            }
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val apiVer = if (preferCloud) "3" else "2"
+
+            data class CreateCandidate(
+                val projectKey: String?,
+                val projectId: String?,
+                val issueTypeId: String?,
+                val issueTypeName: String?
+            )
+
+            val candidates = mutableListOf<CreateCandidate>()
+            val requestedProj = projectKeyHint.trim().uppercase(Locale.ROOT)
+                .ifEmpty { TicketFilterEngine.splitCsv(filterSettings.projectKeys).firstOrNull()?.uppercase(Locale.ROOT).orEmpty() }
+            val requestedTypeLower = issueTypeHint.trim().lowercase(Locale.ROOT)
+
+            val searchJql = if (requestedProj.isNotEmpty()) {
+                "project = \"$requestedProj\" ORDER BY created DESC"
+            } else {
+                "ORDER BY created DESC"
+            }
+
+            runCatching {
+                val json = executeSearchWithFallback(baseUrl, searchJql, 15, preferCloud, settings)
+                val issues = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                val found = mutableListOf<Triple<String?, String?, Pair<String, String>>>()
+                issues?.forEach { el ->
+                    if (!el.isJsonObject) return@forEach
+                    val f = el.asJsonObject.getAsJsonObject("fields") ?: return@forEach
+                    val proj = f.getAsJsonObject("project")
+                    val iType = f.getAsJsonObject("issuetype")
+                    val sub = iType?.get("subtask")?.let { it.isJsonPrimitive && it.asBoolean } ?: false
+                    val tId = iType?.takeString("id")
+                    val tName = iType?.takeString("name").orEmpty()
+                    val pId = proj?.takeString("id")
+                    val pKey = proj?.takeString("key")
+                    if (!sub && !tId.isNullOrBlank() && (!pId.isNullOrBlank() || !pKey.isNullOrBlank())) {
+                        found.add(Triple(pKey, pId, tId to tName))
+                    }
+                }
+                val ordered = if (requestedTypeLower.isNotEmpty()) {
+                    found.sortedByDescending { (_, _, pair) ->
+                        pair.second.lowercase(Locale.ROOT).contains(requestedTypeLower)
+                    }
+                } else {
+                    found
+                }
+                for ((pKey, pId, typePair) in ordered) {
+                    val c = CreateCandidate(pKey, pId, typePair.first, typePair.second)
+                    if (candidates.none { it.projectKey == c.projectKey && it.issueTypeId == c.issueTypeId }) {
+                        candidates.add(c)
+                    }
+                }
+            }
+
+            if (candidates.isEmpty() && requestedProj.isNotEmpty()) {
+                val fallbackType = issueTypeHint.trim().ifEmpty { "Service Request" }
+                candidates.add(CreateCandidate(requestedProj, null, null, fallbackType))
+                candidates.add(CreateCandidate(requestedProj, null, null, "Task"))
+                candidates.add(CreateCandidate(requestedProj, null, null, "Задача"))
+            }
+
+            if (candidates.isEmpty()) {
+                throw JiraApiException("Укажите ключ проекта (например CSL) для создания заявки")
+            }
+
+            val createUrl = "$baseUrl/rest/api/$apiVer/issue"
+            var createdKey: String? = null
+            var lastErr: Exception? = null
+
+            for (cand in candidates.take(4)) {
+                val fields = JsonObject().apply {
+                    add(
+                        "project",
+                        JsonObject().apply {
+                            if (!cand.projectId.isNullOrBlank()) addProperty("id", cand.projectId)
+                            else addProperty("key", cand.projectKey)
+                        }
+                    )
+                    add(
+                        "issuetype",
+                        JsonObject().apply {
+                            if (!cand.issueTypeId.isNullOrBlank()) addProperty("id", cand.issueTypeId)
+                            else addProperty("name", cand.issueTypeName)
+                        }
+                    )
+                    addProperty("summary", cleanSummary)
+                    if (description.isNotBlank()) {
+                        if (preferCloud) {
+                            add("description", buildAdfDocument(description.trim()))
+                        } else {
+                            addProperty("description", description.trim())
+                        }
+                    }
+                }
+
+                val payload = JsonObject().apply { add("fields", fields) }
+                try {
+                    val req = Request.Builder()
+                        .url(createUrl)
+                        .post(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            createdKey = JsonParser.parseString(bodyStr).asJsonObject.takeString("key")
+                        } else {
+                            lastErr = mapHttpError(resp.code, bodyStr)
+                        }
+                    }
+                    if (!createdKey.isNullOrBlank()) break
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+
+            val finalKey = createdKey ?: throw (lastErr ?: JiraApiException("Не удалось создать заявку в Jira"))
+
+            if (assignToSelf) {
+                runCatching {
+                    val me = getCachedOrFetchAuthenticatedUser(baseUrl, preferCloud, settings)
+                    assignIssueToUser(baseUrl, preferCloud, finalKey, me, settings)
+                }
+            }
+
+            fetchTicketByKey(finalKey, settings, filterSettings).getOrElse {
+                val nowMs = System.currentTimeMillis()
+                val nowIso = java.time.Instant.ofEpochMilli(nowMs).toString()
+                HelpdeskTicket(
+                    id = finalKey,
+                    key = finalKey,
+                    summary = cleanSummary,
+                    description = description.trim(),
+                    issueType = issueTypeHint.ifBlank { "Задача" },
+                    isSubtask = false,
+                    customerRequestType = null,
+                    hasCustomerPortalInfo = false,
+                    status = "Открыта",
+                    statusCategoryKey = "new",
+                    priority = "Normal",
+                    projectKey = finalKey.substringBefore('-', requestedProj),
+                    projectName = finalKey.substringBefore('-', requestedProj),
+                    reporterName = settings.usernameOrEmail.ifBlank { "Администратор" },
+                    reporterLoginOrEmail = settings.usernameOrEmail,
+                    assigneeName = if (assignToSelf) settings.usernameOrEmail else null,
+                    createdIso = nowIso,
+                    createdEpochMillis = nowMs,
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMs,
+                    labels = emptyList(),
+                    phoneNumbers = emptyList(),
+                    telegramHandles = emptyList(),
+                    comments = emptyList(),
+                    attachments = emptyList(),
+                    webUrl = "${baseUrl.trimEnd('/')}/browse/$finalKey",
+                    isClientTicket = true
+                )
+            }
+        }
+    }
+
+    /**
+     * Searches Jira for up to 6 recent historical tickets from the same client/organization.
+     */
+    suspend fun fetchClientHistory(
+        reporterName: String,
+        excludeTicketKey: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanReporter = reporterName.trim()
+                .replace("\"", "")
+                .replace("\\", "")
+            if (cleanReporter.length < 2) return@runCatching emptyList()
+
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val projectClause = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+                .takeIf { it.isNotEmpty() }
+                ?.joinToString(", ") { "\"${it.replace("\"", "")}\"" }
+                ?.let { "project in ($it) AND " }
+                .orEmpty()
+
+            val jqlCandidates = listOf(
+                "${projectClause}key != \"${excludeTicketKey.replace("\"", "")}\" AND reporter = \"$cleanReporter\" ORDER BY created DESC",
+                "${projectClause}key != \"${excludeTicketKey.replace("\"", "")}\" AND text ~ \"$cleanReporter\" ORDER BY created DESC"
+            )
+
+            for (jql in jqlCandidates) {
+                val list = runCatching {
+                    val json = executeSearchWithFallback(baseUrl, jql, 8, preferCloud, settings)
+                    JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
+                        .filterNot {
+                            it.key.equals(excludeTicketKey, ignoreCase = true) ||
+                                AdminChatCodec.isAdminChatStorageIssue(
+                                    issueKey = it.key,
+                                    summary = it.summary,
+                                    labels = it.labels,
+                                    configuredChatKey = settings.adminChatIssueKey
+                                )
+                        }
+                        .filter {
+                            it.reporterName.contains(cleanReporter, ignoreCase = true) ||
+                                cleanReporter.contains(it.reporterName, ignoreCase = true)
+                        }
+                        .take(5)
+                }.getOrNull()
+                if (!list.isNullOrEmpty()) return@runCatching list
+            }
+            emptyList()
+        }
+    }
+
+    suspend fun sendAdminChatMessage(
+        roomIssueKey: String,
+        rawText: String,
+        replyToAuthor: String? = null,
+        replyToPreview: String? = null,
+        settings: AppSettings
+    ): Result<AdminChatMessage> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanText = rawText.trim()
+            if (cleanText.isEmpty()) {
+                throw JiraApiException("Введите текст сообщения")
+            }
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val me = getCachedOrFetchAuthenticatedUser(baseUrl, preferCloud, settings)
+            val myIds = buildUserIdentifiers(me, settings)
+
+            val encodedBody = AdminChatCodec.encodeMessage(
+                text = cleanText,
+                replyToAuthor = replyToAuthor,
+                replyToPreview = replyToPreview
+            )
+            val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
+
+            val internalPropsArray = JsonArray().apply {
+                add(
+                    JsonObject().apply {
+                        addProperty("key", "sd.public.comment")
+                        add("value", JsonObject().apply { addProperty("internal", true) })
+                    }
+                )
+            }
+
+            val v2Internal = JsonObject().apply {
+                addProperty("body", encodedBody)
+                add("properties", internalPropsArray)
+            }
+            val v2Plain = JsonObject().apply {
+                addProperty("body", encodedBody)
+            }
+            val v3Internal = JsonObject().apply {
+                add("body", buildAdfDocument(encodedBody))
+                add("properties", internalPropsArray)
+            }
+            val v3Plain = JsonObject().apply {
+                add("body", buildAdfDocument(encodedBody))
+            }
+
+            val attempts = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/comment" to v3Internal,
+                    "$baseUrl/rest/api/3/issue/$encodedKey/comment" to v3Plain,
+                    "$baseUrl/rest/api/2/issue/$encodedKey/comment" to v2Plain
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/comment" to v2Internal,
+                    "$baseUrl/rest/api/2/issue/$encodedKey/comment" to v2Plain,
+                    "$baseUrl/rest/api/3/issue/$encodedKey/comment" to v3Plain
+                )
+            }
+
+            var lastErr: Exception? = null
+            for ((url, payload) in attempts) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .post(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            val parsedObj = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                            if (parsedObj != null) {
+                                parseSingleChatComment(
+                                    commentObj = parsedObj,
+                                    roomIssueKey = roomIssueKey,
+                                    myIdentifiers = myIds,
+                                    myDisplayName = me.displayName
+                                )?.let { return@runCatching it.copy(isOwnMessage = true) }
+                            }
+                            val decoded = AdminChatCodec.decodeMessage(encodedBody, roomIssueKey)
+                            val nowMs = System.currentTimeMillis()
+                            return@runCatching AdminChatMessage(
+                                id = nowMs.toString(),
+                                authorDisplayName = me.displayName,
+                                authorIdentifier = me.accountId ?: me.name ?: settings.usernameOrEmail,
+                                isOwnMessage = true,
+                                text = decoded.text,
+                                replyToAuthor = decoded.replyToAuthor,
+                                replyToPreview = decoded.replyToPreview,
+                                mentionedTicketKeys = decoded.mentionedTicketKeys,
+                                createdIso = java.time.Instant.ofEpochMilli(nowMs).toString(),
+                                createdEpochMillis = nowMs
+                            )
+                        }
+                        if (resp.code == 401 || resp.code == 403) {
+                            throw mapHttpError(resp.code, bodyStr)
+                        }
+                        lastErr = mapHttpError(resp.code, bodyStr)
+                    }
+                } catch (e: JiraApiException) {
+                    if (e.httpCode == 401 || e.httpCode == 403) throw e
+                    lastErr = e
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+            throw (lastErr ?: JiraApiException("Не удалось отправить сообщение в чат"))
+        }
+    }
+
+    suspend fun deleteAdminChatMessage(
+        roomIssueKey: String,
+        commentId: String,
+        settings: AppSettings
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
+            val encodedCommentId = URLEncoder.encode(commentId, "UTF-8")
+            val urls = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/issue/$encodedKey/comment/$encodedCommentId",
+                    "$baseUrl/rest/api/2/issue/$encodedKey/comment/$encodedCommentId"
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/issue/$encodedKey/comment/$encodedCommentId",
+                    "$baseUrl/rest/api/3/issue/$encodedKey/comment/$encodedCommentId"
+                )
+            }
+
+            var lastErr: Exception? = null
+            for (url in urls) {
+                try {
+                    val req = Request.Builder().url(url).delete().applyAuth(settings).build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful || resp.code == 204) return@runCatching
+                        lastErr = mapHttpError(resp.code, bodyStr)
+                    }
+                } catch (e: Exception) {
+                    lastErr = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                }
+            }
+            throw (lastErr ?: JiraApiException("Не удалось удалить сообщение"))
+        }
+    }
+
+    private fun verifyIssueAccessible(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        settings: AppSettings
+    ): Boolean {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?fields=summary"
+        return runCatching {
+            val req = Request.Builder().url(url).get().applyAuth(settings).build()
+            clientFor(settings).newCall(req).execute().use { it.isSuccessful }
+        }.getOrDefault(false)
+    }
+
+    private fun createSharedAdminChatRoomIssue(
+        baseUrl: String,
+        preferCloud: Boolean,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): String {
+        data class ProjectTypeCandidate(
+            val projectId: String?,
+            val projectKey: String?,
+            val issueTypeId: String
+        )
+
+        val candidates = mutableListOf<ProjectTypeCandidate>()
+
+        // Candidate Source A: Inspect recent existing issues in Jira (guaranteed valid project + non-subtask issueType)
+        val projectFilterKeys = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+        val sampleJqls = buildList {
+            if (projectFilterKeys.isNotEmpty()) {
+                val quoted = projectFilterKeys.joinToString(", ") { "\"$it\"" }
+                add("project in ($quoted) ORDER BY created DESC")
+            }
+            add("ORDER BY created DESC")
+        }
+
+        for (jql in sampleJqls) {
+            runCatching {
+                val json = executeSearchWithFallback(baseUrl, jql, 8, preferCloud, settings)
+                val issues = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                issues?.forEach { el ->
+                    if (!el.isJsonObject) return@forEach
+                    val fields = el.asJsonObject.getAsJsonObject("fields") ?: return@forEach
+                    val proj = fields.getAsJsonObject("project")
+                    val iType = fields.getAsJsonObject("issuetype")
+                    val isSubtask = iType?.get("subtask")?.let { it.isJsonPrimitive && it.asBoolean } ?: false
+                    val typeId = iType?.takeString("id")
+                    val pId = proj?.takeString("id")
+                    val pKey = proj?.takeString("key")
+                    if (!isSubtask && !typeId.isNullOrBlank() && (!pId.isNullOrBlank() || !pKey.isNullOrBlank())) {
+                        val cand = ProjectTypeCandidate(pId, pKey, typeId)
+                        if (candidates.none { it.projectKey == cand.projectKey && it.issueTypeId == cand.issueTypeId }) {
+                            candidates.add(cand)
+                        }
+                    }
+                }
+            }
+            if (candidates.isNotEmpty()) break
+        }
+
+        // Candidate Source B: Fallback to /project + /issuetype metadata endpoints
+        if (candidates.isEmpty()) {
+            runCatching {
+                val apiVer = if (preferCloud) "3" else "2"
+                val projReq = Request.Builder().url("$baseUrl/rest/api/$apiVer/project").get().applyAuth(settings).build()
+                val firstProj = clientFor(settings).newCall(projReq).execute().use { resp ->
+                    if (!resp.isSuccessful) null
+                    else {
+                        val arr = JsonParser.parseString(resp.body?.string().orEmpty()).asJsonArray
+                        val preferredKey = projectFilterKeys.firstOrNull()?.uppercase(Locale.ROOT)
+                        val chosen = if (preferredKey != null) {
+                            arr.firstOrNull {
+                                it.isJsonObject && it.asJsonObject.takeString("key")?.uppercase(Locale.ROOT) == preferredKey
+                            } ?: arr.firstOrNull()
+                        } else {
+                            arr.firstOrNull()
+                        }
+                        chosen?.asJsonObject
+                    }
+                }
+
+                val typeReq = Request.Builder().url("$baseUrl/rest/api/$apiVer/issuetype").get().applyAuth(settings).build()
+                val nonSubtaskTypes = clientFor(settings).newCall(typeReq).execute().use { resp ->
+                    if (!resp.isSuccessful) emptyList()
+                    else {
+                        JsonParser.parseString(resp.body?.string().orEmpty()).asJsonArray.mapNotNull { el ->
+                            if (!el.isJsonObject) return@mapNotNull null
+                            val o = el.asJsonObject
+                            val sub = o.get("subtask")?.let { it.isJsonPrimitive && it.asBoolean } ?: false
+                            if (sub) null else (o.takeString("id") to o.takeString("name").orEmpty())
+                        }
+                    }
+                }
+
+                val pId = firstProj?.takeString("id")
+                val pKey = firstProj?.takeString("key")
+                val sortedTypes = nonSubtaskTypes.sortedBy { (_, name) ->
+                    val low = name.lowercase(Locale.ROOT)
+                    when {
+                        low.contains("task") || low.contains("задач") -> 0
+                        low.contains("service") || low.contains("запрос") -> 1
+                        else -> 2
+                    }
+                }
+                for ((tId, _) in sortedTypes.take(3)) {
+                    if (!tId.isNullOrBlank() && (!pId.isNullOrBlank() || !pKey.isNullOrBlank())) {
+                        candidates.add(ProjectTypeCandidate(pId, pKey, tId))
+                    }
+                }
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            throw JiraApiException(
+                "Не удалось автоматически подобрать проект для комнаты чата. " +
+                    "Укажите ключ любой служебной задачи (например CSL-100) в настройках комнаты чата."
+            )
+        }
+
+        val apiVer = if (preferCloud) "3" else "2"
+        val createUrl = "$baseUrl/rest/api/$apiVer/issue"
+        val protectedFields = setOf("project", "issuetype", "summary")
+        var lastError: Exception? = null
+
+        for (cand in candidates.take(4)) {
+            val fields = JsonObject().apply {
+                add(
+                    "project",
+                    JsonObject().apply {
+                        if (!cand.projectId.isNullOrBlank()) addProperty("id", cand.projectId)
+                        else addProperty("key", cand.projectKey)
+                    }
+                )
+                add("issuetype", JsonObject().apply { addProperty("id", cand.issueTypeId) })
+                addProperty("summary", AdminChatCodec.ADMIN_CHAT_ROOM_SUMMARY)
+                if (preferCloud) {
+                    add("description", buildAdfDocument(AdminChatCodec.ADMIN_CHAT_ROOM_DESCRIPTION))
+                } else {
+                    addProperty("description", AdminChatCodec.ADMIN_CHAT_ROOM_DESCRIPTION)
+                }
+                add("labels", JsonArray().apply { add(AdminChatCodec.ADMIN_CHAT_LABEL) })
+            }
+
+            repeat(3) {
+                val payload = JsonObject().apply { add("fields", fields) }
+                try {
+                    val req = Request.Builder()
+                        .url(createUrl)
+                        .post(payload.toString().toRequestBody(jsonMediaType))
+                        .applyAuth(settings)
+                        .build()
+                    val createdKey = clientFor(settings).newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            JsonParser.parseString(bodyStr).asJsonObject.takeString("key")
+                        } else if (resp.code == 400) {
+                            val rejectedKeys = runCatching {
+                                JsonParser.parseString(bodyStr)
+                                    .asJsonObject
+                                    .getAsJsonObject("errors")
+                                    ?.keySet()
+                                    ?.filter { it !in protectedFields }
+                                    .orEmpty()
+                            }.getOrDefault(emptyList())
+                            var stripped = false
+                            for (rk in rejectedKeys) {
+                                if (fields.has(rk)) {
+                                    fields.remove(rk)
+                                    stripped = true
+                                }
+                            }
+                            lastError = mapHttpError(resp.code, bodyStr)
+                            if (!stripped) null else ""
+                        } else {
+                            lastError = mapHttpError(resp.code, bodyStr)
+                            null
+                        }
+                    }
+
+                    if (!createdKey.isNullOrBlank()) {
+                        // Best-effort close the chat storage issue so it never clutters active Jira queues
+                        runCatching {
+                            val transitions = fetchAvailableTransitions(baseUrl, preferCloud, createdKey, settings)
+                            val closeTrans = selectBestTransition(transitions, TicketWorkflowAction.COMPLETE)
+                            if (closeTrans != null) {
+                                executeTransition(baseUrl, preferCloud, createdKey, closeTrans, TicketWorkflowAction.COMPLETE, settings)
+                            }
+                        }
+                        return createdKey.uppercase(Locale.ROOT)
+                    } else if (createdKey == null) {
+                        return@repeat
+                    }
+                } catch (e: Exception) {
+                    lastError = wrapNetworkException(e, settings.trustSelfSignedSsl)
+                    return@repeat
+                }
+            }
+        }
+
+        throw (lastError ?: JiraApiException(
+            "Не удалось создать комнату чата в Jira. Укажите существующий номер задачи вручную в настройках чата."
+        ))
+    }
+
+    private fun getCachedOrFetchAuthenticatedUser(
+        baseUrl: String,
+        preferCloud: Boolean,
+        settings: AppSettings
+    ): AuthenticatedJiraUser {
+        val sig = "$baseUrl|${settings.authType}|${settings.usernameOrEmail}|${settings.passwordOrToken.hashCode()}"
+        val existing = cachedAuthenticatedUser
+        if (existing != null && cachedUserSignature == sig) {
+            return existing
+        }
+        val fetched = fetchAuthenticatedUser(baseUrl, preferCloud, settings)
+        cachedUserSignature = sig
+        cachedAuthenticatedUser = fetched
+        return fetched
+    }
+
+    private fun buildUserIdentifiers(
+        user: AuthenticatedJiraUser,
+        settings: AppSettings
+    ): Set<String> {
+        return buildSet {
+            user.accountId?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            user.name?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            user.key?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            settings.usernameOrEmail.trim().lowercase(Locale.ROOT).takeIf { it.isNotEmpty() }?.let(::add)
+        }
+    }
+
+    private fun fetchLatestRawCommentsJson(
+        baseUrl: String,
+        preferCloud: Boolean,
+        roomIssueKey: String,
+        settings: AppSettings
+    ): JsonArray {
+        val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
+        val maxFetch = 80
+
+        if (preferCloud) {
+            val cloudUrls = listOf(
+                "$baseUrl/rest/api/3/issue/$encodedKey/comment?orderBy=-created&maxResults=$maxFetch",
+                "$baseUrl/rest/api/3/issue/$encodedKey/comment?maxResults=$maxFetch",
+                "$baseUrl/rest/api/2/issue/$encodedKey/comment?maxResults=$maxFetch"
+            )
+            for (url in cloudUrls) {
+                val arr = runCatching { fetchCommentsPageAndTailIfNeeded(baseUrl, "3", encodedKey, url, maxFetch, settings) }.getOrNull()
+                if (arr != null) return arr
+            }
+        } else {
+            val serverUrls = listOf(
+                "$baseUrl/rest/api/2/issue/$encodedKey/comment?maxResults=$maxFetch",
+                "$baseUrl/rest/api/3/issue/$encodedKey/comment?orderBy=-created&maxResults=$maxFetch"
+            )
+            for (url in serverUrls) {
+                val ver = if (url.contains("/api/3/")) "3" else "2"
+                val arr = runCatching { fetchCommentsPageAndTailIfNeeded(baseUrl, ver, encodedKey, url, maxFetch, settings) }.getOrNull()
+                if (arr != null) return arr
+            }
+        }
+
+        // Fallback: fetch issue with ?fields=comment
+        val apiVer = if (preferCloud) "3" else "2"
+        val issueUrl = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?fields=comment"
+        val req = Request.Builder().url(issueUrl).get().applyAuth(settings).build()
+        clientFor(settings).newCall(req).execute().use { resp ->
+            val bodyStr = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw mapHttpError(resp.code, bodyStr)
+            val root = JsonParser.parseString(bodyStr).asJsonObject
+            return root.getAsJsonObject("fields")
+                ?.getAsJsonObject("comment")
+                ?.getAsJsonArray("comments")
+                ?: JsonArray()
+        }
+    }
+
+    private fun fetchCommentsPageAndTailIfNeeded(
+        baseUrl: String,
+        apiVer: String,
+        encodedKey: String,
+        initialUrl: String,
+        maxFetch: Int,
+        settings: AppSettings
+    ): JsonArray {
+        val req = Request.Builder().url(initialUrl).get().applyAuth(settings).build()
+        val firstObj = clientFor(settings).newCall(req).execute().use { resp ->
+            val bodyStr = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw mapHttpError(resp.code, bodyStr)
+            JsonParser.parseString(bodyStr).asJsonObject
+        }
+
+        val firstComments = firstObj.getAsJsonArray("comments") ?: JsonArray()
+        val total = firstObj.get("total")?.takeIf { it.isJsonPrimitive }?.asInt ?: firstComments.size()
+        val isOrderedDesc = initialUrl.contains("orderBy=-created")
+
+        if (!isOrderedDesc && total > firstComments.size()) {
+            val tailStart = (total - maxFetch).coerceAtLeast(0)
+            val tailUrl = "$baseUrl/rest/api/$apiVer/issue/$encodedKey/comment?startAt=$tailStart&maxResults=$maxFetch"
+            val tailReq = Request.Builder().url(tailUrl).get().applyAuth(settings).build()
+            clientFor(settings).newCall(tailReq).execute().use { tailResp ->
+                if (tailResp.isSuccessful) {
+                    val tailObj = JsonParser.parseString(tailResp.body?.string().orEmpty()).asJsonObject
+                    tailObj.getAsJsonArray("comments")?.let { return it }
+                }
+            }
+        }
+        return firstComments
+    }
+
+    private fun parseSingleChatComment(
+        commentObj: JsonObject,
+        roomIssueKey: String,
+        myIdentifiers: Set<String>,
+        myDisplayName: String
+    ): AdminChatMessage? {
+        val id = commentObj.takeString("id") ?: return null
+        val rawBody = JiraJsonParser.extractReadableText(commentObj.get("body")).trim()
+        if (rawBody.isEmpty()) return null
+
+        val authorObj = commentObj.getAsJsonObject("author")
+            ?: commentObj.getAsJsonObject("updateAuthor")
+        val authorDisplay = authorObj?.takeString("displayName")
+            ?: authorObj?.takeString("name")
+            ?: authorObj?.takeString("emailAddress")
+            ?: "Администратор"
+
+        val authorCandidates = buildSet {
+            authorObj?.takeString("accountId")?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            authorObj?.takeString("name")?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            authorObj?.takeString("key")?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+            authorObj?.takeString("emailAddress")?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }?.let(::add)
+        }
+
+        val isMine = (authorCandidates.isNotEmpty() && authorCandidates.any { it in myIdentifiers }) ||
+            (authorCandidates.isEmpty() && authorDisplay.equals(myDisplayName, ignoreCase = true))
+
+        val createdIso = commentObj.takeString("created").orEmpty()
+        val createdMillis = JiraJsonParser.parseJiraTimestampMillis(createdIso)
+        val decoded = AdminChatCodec.decodeMessage(rawBody, roomIssueKey)
+
+        return AdminChatMessage(
+            id = id,
+            authorDisplayName = authorDisplay,
+            authorIdentifier = authorCandidates.firstOrNull() ?: authorDisplay,
+            isOwnMessage = isMine,
+            text = decoded.text,
+            replyToAuthor = decoded.replyToAuthor,
+            replyToPreview = decoded.replyToPreview,
+            mentionedTicketKeys = decoded.mentionedTicketKeys,
+            createdIso = createdIso,
+            createdEpochMillis = createdMillis
+        )
+    }
+
     private fun mapHttpError(code: Int, body: String): JiraApiException {
         val serverMsg = runCatching {
             val obj = JsonParser.parseString(body).asJsonObject
@@ -1446,11 +2490,17 @@ class JiraApiClient {
         val msg = e.message.orEmpty()
         if (e is javax.net.ssl.SSLException && !trustSelfSigned) {
             return JiraApiException(
-                "Ошибка SSL-сертификата. Если используется внутренний корпоративный сервер, " +
-                    "включите «Доверять самоподписанным SSL» в настройках."
+                message = "Ошибка SSL-сертификата. Если используется внутренний корпоративный сервер, " +
+                    "включите «Доверять самоподписанным SSL» в настройках.",
+                httpCode = null,
+                isNetworkError = false
             )
         }
-        return JiraApiException("Ошибка сети: ${msg.ifBlank { e.javaClass.simpleName }}")
+        return JiraApiException(
+            message = "Ошибка сети: ${msg.ifBlank { e.javaClass.simpleName }}",
+            httpCode = null,
+            isNetworkError = true
+        )
     }
 
     companion object {

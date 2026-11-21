@@ -1,5 +1,6 @@
 package com.helpdesk.jiraagent.domain
 
+import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 
@@ -87,6 +88,18 @@ object TicketFilterEngine {
         filter: FilterSettings,
         currentAgentLoginOrEmail: String = ""
     ): FilterEvaluation {
+        if (AdminChatCodec.isAdminChatStorageIssue(
+                issueKey = ticket.key,
+                summary = ticket.summary,
+                labels = ticket.labels
+            )
+        ) {
+            return FilterEvaluation(
+                isClientTicket = false,
+                reason = "Служебная комната чата админов"
+            )
+        }
+
         if (!filter.clientOnlyFilterEnabled) {
             return FilterEvaluation(isClientTicket = true, reason = null)
         }

@@ -93,6 +93,11 @@ data class AppSettings(
     val alertSoundPreset: AlertSoundPreset = AlertSoundPreset.CSL_CHIME,
     val customAlertSoundUri: String = "",
     val customAlertSoundTitle: String = "",
+    val adminChatIssueKey: String = "",
+    val adminChatNotificationsEnabled: Boolean = true,
+    val staleTicketReminderEnabled: Boolean = true,
+    val staleTicketReminderMinutes: Int = 15,
+    val quickReplyTemplates: List<String> = DEFAULT_QUICK_REPLY_TEMPLATES,
     val phoneRegion: PhoneRegion = PhoneRegion.AUTO_BY_RU,
     val customCountryCode: String = "+375",
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
@@ -100,4 +105,14 @@ data class AppSettings(
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&
             (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank())
+
+    companion object {
+        val DEFAULT_QUICK_REPLY_TEMPLATES = listOf(
+            "Выполнено, проверьте, пожалуйста, работу.",
+            "Не удалось дозвониться. Укажите удобное время или актуальный номер.",
+            "Подключились удалённо, неисправность устранена.",
+            "Служба перезапущена, доступ восстановлен.",
+            "Принято в работу, скоро свяжемся с вами."
+        )
+    }
 }

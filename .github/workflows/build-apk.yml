@@ -104,14 +104,7 @@ jobs:
           - SHA-256 APK: \`${{ steps.verify_apk.outputs.apk_sha256 }}\`
           EOF
 
-          if [ "${GITHUB_REF_NAME}" = "main" ]; then
-            PRERELEASE_FLAG=""
-          else
-            PRERELEASE_FLAG="--prerelease"
-          fi
-
           gh release create "$TAG" "dist/${{ steps.version.outputs.apk_name }}" \
             --target "${GITHUB_SHA}" \
             --title "Help-CSL ${TAG}" \
-            --notes-file dist/release-notes.md \
-            $PRERELEASE_FLAG || echo "Примечание: для автоматического создания Release включите Read and write permissions в Settings → Actions → General → Workflow permissions (APK уже доступен в Artifacts выше)."
+            --notes-file dist/release-notes.md || echo "Примечание: для автоматического создания Release включите Read and write permissions в Settings → Actions → General → Workflow permissions (APK уже доступен в Artifacts выше)."

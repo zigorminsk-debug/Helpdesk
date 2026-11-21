@@ -8,16 +8,20 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.model.AdminChatCodec
+import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
+import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.widget.HelpCslAppWidgetProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,6 +73,28 @@ class SettingsRepository private constructor(context: Context) {
     private val _latestInAppBanner = MutableStateFlow<InAppBannerAlert?>(null)
     val latestInAppBanner: StateFlow<InAppBannerAlert?> = _latestInAppBanner.asStateFlow()
 
+    private val _resolvedChatRoomKey = MutableStateFlow(
+        _appSettings.value.adminChatIssueKey.trim().ifBlank {
+            cachePrefs.getString(KEY_RESOLVED_CHAT_ROOM_KEY, "").orEmpty()
+        }
+    )
+    val resolvedChatRoomKey: StateFlow<String> = _resolvedChatRoomKey.asStateFlow()
+
+    private val _chatMessages = MutableStateFlow(loadCachedChatMessages())
+    val chatMessages: StateFlow<List<AdminChatMessage>> = _chatMessages.asStateFlow()
+
+    private val _unreadChatCount = MutableStateFlow(cachePrefs.getInt(KEY_UNREAD_CHAT_COUNT, 0))
+    val unreadChatCount: StateFlow<Int> = _unreadChatCount.asStateFlow()
+
+    private val _pinnedShiftNote = MutableStateFlow(cachePrefs.getString(KEY_PINNED_SHIFT_NOTE, "").orEmpty())
+    val pinnedShiftNote: StateFlow<String> = _pinnedShiftNote.asStateFlow()
+
+    private val _offlineQueuedActions = MutableStateFlow(loadOfflineQueuedActions())
+    val offlineQueuedActions: StateFlow<List<OfflineQueuedAction>> = _offlineQueuedActions.asStateFlow()
+
+    @Volatile
+    var isChatTabVisible: Boolean = false
+
     fun emitInAppBanner(ticket: HelpdeskTicket, titleSuffix: String) {
         _latestInAppBanner.value = InAppBannerAlert(
             ticket = ticket,
@@ -83,6 +109,7 @@ class SettingsRepository private constructor(context: Context) {
 
     fun saveAppSettings(newSettings: AppSettings) {
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
+        val manualRoomChanged = newSettings.adminChatIssueKey.trim() != _appSettings.value.adminChatIssueKey.trim()
         prefs.edit()
             .putString(KEY_SERVER_URL, newSettings.serverUrl.trim())
             .putString(KEY_SERVER_TYPE, newSettings.serverType.name)
@@ -102,6 +129,11 @@ class SettingsRepository private constructor(context: Context) {
             .putString(KEY_ALERT_SOUND_PRESET, newSettings.alertSoundPreset.name)
             .putString(KEY_CUSTOM_ALERT_SOUND_URI, newSettings.customAlertSoundUri.trim())
             .putString(KEY_CUSTOM_ALERT_SOUND_TITLE, newSettings.customAlertSoundTitle.trim())
+            .putString(KEY_ADMIN_CHAT_ISSUE_KEY, newSettings.adminChatIssueKey.trim().uppercase())
+            .putBoolean(KEY_ADMIN_CHAT_NOTIFICATIONS, newSettings.adminChatNotificationsEnabled)
+            .putBoolean(KEY_STALE_REMINDER_ENABLED, newSettings.staleTicketReminderEnabled)
+            .putInt(KEY_STALE_REMINDER_MINUTES, newSettings.staleTicketReminderMinutes.coerceIn(5, 240))
+            .putString(KEY_QUICK_REPLY_TEMPLATES_JSON, gson.toJson(newSettings.quickReplyTemplates))
             .putString(KEY_PHONE_REGION, newSettings.phoneRegion.name)
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
@@ -109,8 +141,16 @@ class SettingsRepository private constructor(context: Context) {
 
         if (serverChanged) {
             resetSeenBaseline()
+            resetAdminChatCache()
+        } else if (manualRoomChanged) {
+            resetAdminChatCache()
+            val manual = newSettings.adminChatIssueKey.trim().uppercase()
+            if (manual.isNotBlank()) {
+                setResolvedChatRoomKey(manual)
+            }
         }
-        _appSettings.value = newSettings
+        _appSettings.value = newSettings.copy(adminChatIssueKey = newSettings.adminChatIssueKey.trim().uppercase())
+        runCatching { HelpCslAppWidgetProvider.requestUpdateAll(appContext) }
     }
 
     fun saveFilterSettings(newFilter: FilterSettings) {
@@ -155,7 +195,16 @@ class SettingsRepository private constructor(context: Context) {
         polled: List<HelpdeskTicket>,
         isNotificationWindowOpen: Boolean = BelarusWorkCalendar.isWorkingTimeNow(_appSettings.value)
     ): List<HelpdeskTicket> {
-        val adjustedPolled = applyRecreatedOverrides(polled)
+        val chatRoomKey = _resolvedChatRoomKey.value
+        val filteredWithoutChatRoom = polled.filterNot { t ->
+            AdminChatCodec.isAdminChatStorageIssue(
+                issueKey = t.key,
+                summary = t.summary,
+                labels = t.labels,
+                configuredChatKey = chatRoomKey
+            )
+        }
+        val adjustedPolled = applyRecreatedOverrides(filteredWithoutChatRoom)
         updateTicketsCache(adjustedPolled)
 
         val baselineDone = cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)
@@ -311,6 +360,7 @@ class SettingsRepository private constructor(context: Context) {
             val trimmed = list.take(60)
             cachePrefs.edit().putString(KEY_CACHED_TICKETS_JSON, gson.toJson(trimmed)).apply()
         }
+        runCatching { HelpCslAppWidgetProvider.requestUpdateAll(appContext) }
     }
 
     private fun saveSeenKeys(keys: Set<String>, baselineInitialized: Boolean) {
@@ -327,6 +377,224 @@ class SettingsRepository private constructor(context: Context) {
         return runCatching {
             val type = object : TypeToken<List<HelpdeskTicket>>() {}.type
             gson.fromJson<List<HelpdeskTicket>>(json, type) ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    @Synchronized
+    fun setResolvedChatRoomKey(issueKey: String) {
+        val clean = issueKey.trim().uppercase()
+        if (clean.isEmpty() || clean == _resolvedChatRoomKey.value) return
+        _resolvedChatRoomKey.value = clean
+        cachePrefs.edit().putString(KEY_RESOLVED_CHAT_ROOM_KEY, clean).apply()
+        // Ensure chat room issue is immediately hidden if it was ever in tickets cache
+        val filtered = _tickets.value.filterNot { it.key.equals(clean, ignoreCase = true) }
+        if (filtered.size != _tickets.value.size) {
+            updateTicketsCache(filtered)
+        }
+    }
+
+    @Synchronized
+    fun markAdminChatRead() {
+        val latestIds = _chatMessages.value.map { it.id }.toSet()
+        val seenIds = (cachePrefs.getStringSet(KEY_SEEN_CHAT_IDS, emptySet()).orEmpty() + latestIds)
+            .toList()
+            .takeLast(500)
+            .toSet()
+        _unreadChatCount.value = 0
+        cachePrefs.edit()
+            .putInt(KEY_UNREAD_CHAT_COUNT, 0)
+            .putStringSet(KEY_SEEN_CHAT_IDS, seenIds)
+            .putBoolean(KEY_CHAT_BASELINE_INITIALIZED, true)
+            .apply()
+    }
+
+    /**
+     * Updates cached chat messages, maintains unread counter, and returns brand-new messages
+     * authored by OTHER admins (for optional background notification).
+     */
+    @Synchronized
+    fun recordPolledChatMessages(
+        roomIssueKey: String,
+        messages: List<AdminChatMessage>,
+        pinnedNote: String? = null
+    ): List<AdminChatMessage> {
+        setResolvedChatRoomKey(roomIssueKey)
+        if (pinnedNote != null && pinnedNote != _pinnedShiftNote.value) {
+            _pinnedShiftNote.value = pinnedNote
+            cachePrefs.edit().putString(KEY_PINNED_SHIFT_NOTE, pinnedNote).apply()
+        }
+        _chatMessages.value = messages
+        runCatching {
+            val trimmed = messages.takeLast(80)
+            cachePrefs.edit().putString(KEY_CACHED_CHAT_MESSAGES_JSON, gson.toJson(trimmed)).apply()
+        }
+
+        val chatBaselineDone = cachePrefs.getBoolean(KEY_CHAT_BASELINE_INITIALIZED, false)
+        val seenIds = cachePrefs.getStringSet(KEY_SEEN_CHAT_IDS, emptySet())?.toMutableSet() ?: mutableSetOf()
+
+        if (!chatBaselineDone) {
+            messages.forEach { seenIds.add(it.id) }
+            val bounded = if (seenIds.size > 500) seenIds.toList().takeLast(500).toSet() else seenIds
+            cachePrefs.edit()
+                .putStringSet(KEY_SEEN_CHAT_IDS, bounded)
+                .putBoolean(KEY_CHAT_BASELINE_INITIALIZED, true)
+                .putInt(KEY_UNREAD_CHAT_COUNT, 0)
+                .apply()
+            _unreadChatCount.value = 0
+            return emptyList()
+        }
+
+        val newColleagueMessages = mutableListOf<AdminChatMessage>()
+        for (msg in messages) {
+            val isUnseen = seenIds.add(msg.id)
+            if (isUnseen && !msg.isOwnMessage) {
+                newColleagueMessages.add(msg)
+            }
+        }
+
+        val bounded = if (seenIds.size > 500) seenIds.toList().takeLast(500).toSet() else seenIds
+        val updatedUnread = if (isChatTabVisible) {
+            0
+        } else {
+            (_unreadChatCount.value + newColleagueMessages.size).coerceAtMost(99)
+        }
+        _unreadChatCount.value = updatedUnread
+        cachePrefs.edit()
+            .putStringSet(KEY_SEEN_CHAT_IDS, bounded)
+            .putInt(KEY_UNREAD_CHAT_COUNT, updatedUnread)
+            .apply()
+
+        return if (isChatTabVisible) emptyList() else newColleagueMessages
+    }
+
+    @Synchronized
+    fun appendSentChatMessage(msg: AdminChatMessage) {
+        val merged = (_chatMessages.value.filterNot { it.id == msg.id } + msg)
+            .sortedBy { it.createdEpochMillis }
+        _chatMessages.value = merged
+        val seenIds = (cachePrefs.getStringSet(KEY_SEEN_CHAT_IDS, emptySet()).orEmpty() + msg.id)
+            .toList()
+            .takeLast(500)
+            .toSet()
+        cachePrefs.edit()
+            .putStringSet(KEY_SEEN_CHAT_IDS, seenIds)
+            .putBoolean(KEY_CHAT_BASELINE_INITIALIZED, true)
+            .putString(KEY_CACHED_CHAT_MESSAGES_JSON, gson.toJson(merged.takeLast(80)))
+            .apply()
+    }
+
+    @Synchronized
+    fun removeDeletedChatMessage(commentId: String) {
+        val filtered = _chatMessages.value.filterNot { it.id == commentId }
+        _chatMessages.value = filtered
+        cachePrefs.edit()
+            .putString(KEY_CACHED_CHAT_MESSAGES_JSON, gson.toJson(filtered.takeLast(80)))
+            .apply()
+    }
+
+    fun resetAdminChatCache() {
+        _resolvedChatRoomKey.value = ""
+        _chatMessages.value = emptyList()
+        _unreadChatCount.value = 0
+        _pinnedShiftNote.value = ""
+        cachePrefs.edit()
+            .remove(KEY_RESOLVED_CHAT_ROOM_KEY)
+            .remove(KEY_CACHED_CHAT_MESSAGES_JSON)
+            .remove(KEY_SEEN_CHAT_IDS)
+            .remove(KEY_PINNED_SHIFT_NOTE)
+            .putBoolean(KEY_CHAT_BASELINE_INITIALIZED, false)
+            .putInt(KEY_UNREAD_CHAT_COUNT, 0)
+            .apply()
+    }
+
+    @Synchronized
+    fun updatePinnedShiftNote(note: String) {
+        val clean = note.trim()
+        _pinnedShiftNote.value = clean
+        cachePrefs.edit().putString(KEY_PINNED_SHIFT_NOTE, clean).apply()
+    }
+
+    @Synchronized
+    fun enqueueOfflineAction(action: OfflineQueuedAction) {
+        val updated = (_offlineQueuedActions.value.filterNot { it.id == action.id } + action)
+            .takeLast(50)
+        _offlineQueuedActions.value = updated
+        persistOfflineActions(updated)
+    }
+
+    @Synchronized
+    fun removeOfflineAction(actionId: String) {
+        val updated = _offlineQueuedActions.value.filterNot { it.id == actionId }
+        _offlineQueuedActions.value = updated
+        persistOfflineActions(updated)
+    }
+
+    @Synchronized
+    fun updateOfflineActionError(actionId: String, errorMsg: String) {
+        val updated = _offlineQueuedActions.value.map { item ->
+            if (item.id == actionId) {
+                item.copy(attemptCount = item.attemptCount + 1, lastError = errorMsg)
+            } else {
+                item
+            }
+        }
+        _offlineQueuedActions.value = updated
+        persistOfflineActions(updated)
+    }
+
+    private fun persistOfflineActions(items: List<OfflineQueuedAction>) {
+        runCatching {
+            cachePrefs.edit().putString(KEY_OFFLINE_QUEUE_JSON, gson.toJson(items)).apply()
+        }
+    }
+
+    private fun loadOfflineQueuedActions(): List<OfflineQueuedAction> {
+        val json = cachePrefs.getString(KEY_OFFLINE_QUEUE_JSON, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<OfflineQueuedAction>>() {}.type
+            gson.fromJson<List<OfflineQueuedAction>>(json, type) ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Returns NEW unassigned client tickets that have waited longer than [reminderMinutes]
+     * and have not yet triggered a stale escalation reminder.
+     */
+    @Synchronized
+    fun findDueStaleUnassignedTickets(
+        polled: List<HelpdeskTicket>,
+        reminderMinutes: Int,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<HelpdeskTicket> {
+        val thresholdMs = reminderMinutes.coerceAtLeast(5) * 60_000L
+        val maxLookbackMs = 12L * 3600_000L
+        val reminded = cachePrefs.getStringSet(KEY_STALE_REMINDED_KEYS, emptySet())?.toMutableSet()
+            ?: mutableSetOf()
+
+        val due = mutableListOf<HelpdeskTicket>()
+        for (ticket in polled) {
+            if (!ticket.isClientTicket) continue
+            if (ticket.stage != TicketStage.NEW) continue
+            if (!ticket.assigneeName.isNullOrBlank()) continue
+            if (ticket.createdEpochMillis <= 0L) continue
+            val ageMs = nowMillis - ticket.createdEpochMillis
+            if (ageMs in thresholdMs..maxLookbackMs && reminded.add(ticket.key)) {
+                due.add(ticket)
+            }
+        }
+
+        if (due.isNotEmpty()) {
+            val bounded = if (reminded.size > 500) reminded.toList().takeLast(500).toSet() else reminded
+            cachePrefs.edit().putStringSet(KEY_STALE_REMINDED_KEYS, bounded).apply()
+        }
+        return due
+    }
+
+    private fun loadCachedChatMessages(): List<AdminChatMessage> {
+        val json = cachePrefs.getString(KEY_CACHED_CHAT_MESSAGES_JSON, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<AdminChatMessage>>() {}.type
+            gson.fromJson<List<AdminChatMessage>>(json, type) ?: emptyList()
         }.getOrDefault(emptyList())
     }
 
@@ -353,6 +621,11 @@ class SettingsRepository private constructor(context: Context) {
             ),
             customAlertSoundUri = prefs.getString(KEY_CUSTOM_ALERT_SOUND_URI, "").orEmpty(),
             customAlertSoundTitle = prefs.getString(KEY_CUSTOM_ALERT_SOUND_TITLE, "").orEmpty(),
+            adminChatIssueKey = prefs.getString(KEY_ADMIN_CHAT_ISSUE_KEY, "").orEmpty(),
+            adminChatNotificationsEnabled = prefs.getBoolean(KEY_ADMIN_CHAT_NOTIFICATIONS, true),
+            staleTicketReminderEnabled = prefs.getBoolean(KEY_STALE_REMINDER_ENABLED, true),
+            staleTicketReminderMinutes = prefs.getInt(KEY_STALE_REMINDER_MINUTES, 15).coerceIn(5, 240),
+            quickReplyTemplates = loadQuickReplyTemplates(),
             phoneRegion = enumOrDefault(prefs.getString(KEY_PHONE_REGION, null), PhoneRegion.AUTO_BY_RU),
             customCountryCode = prefs.getString(KEY_CUSTOM_COUNTRY_CODE, "+375").orEmpty().ifBlank { "+375" },
             customPhoneFieldNames = prefs.getString(
@@ -385,6 +658,17 @@ class SettingsRepository private constructor(context: Context) {
             ).orEmpty(),
             customJqlCondition = prefs.getString(KEY_CUSTOM_JQL, "").orEmpty()
         )
+    }
+
+    private fun loadQuickReplyTemplates(): List<String> {
+        val raw = prefs.getString(KEY_QUICK_REPLY_TEMPLATES_JSON, null)
+            ?: return AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
+        return runCatching {
+            val type = object : TypeToken<List<String>>() {}.type
+            val parsed = gson.fromJson<List<String>>(raw, type)
+            parsed?.map { it.trim() }?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
+                ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
+        }.getOrDefault(AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES)
     }
 
     companion object {
@@ -478,6 +762,11 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_ALERT_SOUND_PRESET = "alert_sound_preset"
         private const val KEY_CUSTOM_ALERT_SOUND_URI = "custom_alert_sound_uri"
         private const val KEY_CUSTOM_ALERT_SOUND_TITLE = "custom_alert_sound_title"
+        private const val KEY_ADMIN_CHAT_ISSUE_KEY = "admin_chat_issue_key"
+        private const val KEY_ADMIN_CHAT_NOTIFICATIONS = "admin_chat_notifications"
+        private const val KEY_STALE_REMINDER_ENABLED = "stale_reminder_enabled"
+        private const val KEY_STALE_REMINDER_MINUTES = "stale_reminder_minutes"
+        private const val KEY_QUICK_REPLY_TEMPLATES_JSON = "quick_reply_templates_json"
         private const val KEY_PHONE_REGION = "phone_region"
         private const val KEY_CUSTOM_COUNTRY_CODE = "custom_country_code"
         private const val KEY_CUSTOM_PHONE_FIELDS = "custom_phone_fields"
@@ -501,5 +790,13 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_BASELINE_INITIALIZED = "baseline_initialized"
         private const val KEY_SILENT_RESEED_ONCE = "silent_reseed_once"
         private const val KEY_CACHED_TICKETS_JSON = "cached_tickets_json"
+        private const val KEY_RESOLVED_CHAT_ROOM_KEY = "resolved_chat_room_key"
+        private const val KEY_CACHED_CHAT_MESSAGES_JSON = "cached_chat_messages_json"
+        private const val KEY_SEEN_CHAT_IDS = "seen_chat_comment_ids"
+        private const val KEY_CHAT_BASELINE_INITIALIZED = "chat_baseline_initialized"
+        private const val KEY_UNREAD_CHAT_COUNT = "unread_chat_count"
+        private const val KEY_PINNED_SHIFT_NOTE = "pinned_shift_note"
+        private const val KEY_OFFLINE_QUEUE_JSON = "offline_queue_json"
+        private const val KEY_STALE_REMINDED_KEYS = "stale_reminded_ticket_keys"
     }
 }

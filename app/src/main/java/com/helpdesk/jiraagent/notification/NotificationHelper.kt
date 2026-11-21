@@ -19,18 +19,21 @@ import com.helpdesk.jiraagent.MainActivity
 import com.helpdesk.jiraagent.R
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.update.GitHubReleaseUpdate
 
 object NotificationHelper {
 
     const val CHANNEL_CLIENT_BANNER = "help_csl_urgent_banner_v4"
+    const val CHANNEL_ADMIN_CHAT = "help_csl_admin_chat_v1"
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
     const val UPDATE_NOTIFICATION_ID = 1002
     const val EXTRA_OPEN_TICKET_KEY = "extra_open_ticket_key"
     const val EXTRA_TRIGGER_APP_UPDATE = "extra_trigger_app_update"
+    const val EXTRA_OPEN_ADMIN_CHAT = "extra_open_admin_chat"
 
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -64,7 +67,18 @@ object NotificationHelper {
             setSound(null, null)
         }
 
-        manager.createNotificationChannels(listOf(bannerChannel, statusChannel))
+        val chatChannel = NotificationChannel(
+            CHANNEL_ADMIN_CHAT,
+            "Внутренний чат админов Help-CSL",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Сообщения коллег во внутреннем чате техподдержки"
+            enableVibration(true)
+            lightColor = 0xFFF7631B.toInt()
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+        }
+
+        manager.createNotificationChannels(listOf(bannerChannel, chatChannel, statusChannel))
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
@@ -211,6 +225,25 @@ object NotificationHelper {
             .setContentIntent(openPendingIntent)
             .setFullScreenIntent(openPendingIntent, true)
 
+        val notificationId = 2000 + (ticket.key.hashCode() and 0x7FFFFFFF) % 100_000
+
+        val takeInWorkIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_TAKE_TICKET_IN_WORK
+            putExtra(NotificationActionReceiver.EXTRA_TICKET_KEY, ticket.key)
+            putExtra(NotificationActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val takePendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode + 2,
+            takeInWorkIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        builder.addAction(
+            0,
+            "В работу",
+            takePendingIntent
+        )
+
         if (primaryPhone != null) {
             val dialIntent = Intent(
                 Intent.ACTION_DIAL,
@@ -226,19 +259,19 @@ object NotificationHelper {
             )
             builder.addAction(
                 android.R.drawable.ic_menu_call,
-                "Позвонить ${primaryPhone.formattedDisplay}",
+                "Позвонить",
                 dialPendingIntent
             )
         }
 
         builder.addAction(
             0,
-            "Открыть заявку",
+            "Открыть",
             openPendingIntent
         )
 
         NotificationManagerCompat.from(context).notify(
-            2000 + (ticket.key.hashCode() and 0x7FFFFFFF) % 100_000,
+            notificationId,
             builder.build()
         )
         return true
@@ -278,5 +311,46 @@ object NotificationHelper {
             .build()
 
         NotificationManagerCompat.from(context).notify(UPDATE_NOTIFICATION_ID, notification)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showAdminChatMessageNotification(
+        context: Context,
+        message: AdminChatMessage
+    ) {
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val openChatIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ADMIN_CHAT, true)
+        }
+        val reqCode = 9000 + (message.id.hashCode() and 0x7FFF)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            reqCode,
+            openChatIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ADMIN_CHAT)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("Чат техподдержки · ${message.authorDisplayName}")
+            .setContentText(message.text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message.text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Открыть чат", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(
+            5000 + (message.id.hashCode() and 0x7FFFFFFF) % 10_000,
+            notification
+        )
     }
 }
