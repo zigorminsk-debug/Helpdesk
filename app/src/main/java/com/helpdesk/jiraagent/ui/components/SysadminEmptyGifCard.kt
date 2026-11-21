@@ -5,10 +5,13 @@ import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Movie
 import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.SystemClock
 import android.view.View
 import android.widget.ImageView
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,31 +29,24 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -66,13 +62,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import kotlin.random.Random
 
 data class SysadminGifItem(
-    val number: Int,
+    val id: String,
     val assetPath: String,
-    val title: String,
     val quote: String,
     val aspectRatio: Float
 )
@@ -80,74 +77,16 @@ data class SysadminGifItem(
 object SysadminGifCatalog {
     val items: List<SysadminGifItem> = listOf(
         SysadminGifItem(
-            number = 1,
+            id = "roy_off_on",
             assetPath = "admin_gifs/admin_gif_01.gif",
-            title = "Алло, IT? Выкл/Вкл (IT Crowd)",
             quote = "«Вы пробовали выключить и снова включить?» — очередь чиста!",
-            aspectRatio = 500f / 274f
+            aspectRatio = 439f / 256f
         ),
         SysadminGifItem(
-            number = 2,
-            assetPath = "admin_gifs/admin_gif_02.gif",
-            title = "Танец сисадмина в серверной",
-            quote = "Все серверы зелёные, пинг 1 мс, новых тикетов — ноль!",
-            aspectRatio = 320f / 179f
-        ),
-        SysadminGifItem(
-            number = 3,
-            assetPath = "admin_gifs/admin_gif_03.gif",
-            title = "HACKERMAN",
-            quote = "Когда закрыл все вопросы одной перезагрузкой службы",
-            aspectRatio = 320f / 180f
-        ),
-        SysadminGifItem(
-            number = 4,
-            assetPath = "admin_gifs/admin_gif_04.gif",
-            title = "Птичка Гомера за клавиатурой",
-            quote = "Скрипты крутятся, бэкапы пишутся — 100% автоматизация!",
-            aspectRatio = 264f / 200f
-        ),
-        SysadminGifItem(
-            number = 5,
-            assetPath = "admin_gifs/admin_gif_05.gif",
-            title = "Сверхскоростной разбор (Джим Керри)",
-            quote = "Все обращения разлетелись быстрее, чем остыл утренний кофе",
-            aspectRatio = 271f / 300f
-        ),
-        SysadminGifItem(
-            number = 6,
-            assetPath = "admin_gifs/admin_gif_06.gif",
-            title = "Дзен с кофе (This is fine)",
-            quote = "Новых заявок 0… Подозрительно тихо, но кофе по расписанию",
-            aspectRatio = 1.15f
-        ),
-        SysadminGifItem(
-            number = 7,
+            id = "moss_fire",
             assetPath = "admin_gifs/admin_gif_07.gif",
-            title = "Спокойствие Мосса (IT Crowd)",
             quote = "В очереди чисто. Главное правило админа — не трогать то, что работает!",
-            aspectRatio = 480f / 270f
-        ),
-        SysadminGifItem(
-            number = 8,
-            assetPath = "admin_gifs/admin_gif_08.gif",
-            title = "Брент Рэмбо — палец вверх",
-            quote = "Ни одного висящего тикета — полёт отличный!",
-            aspectRatio = 250f / 188f
-        ),
-        SysadminGifItem(
-            number = 9,
-            assetPath = "admin_gifs/admin_gif_09.gif",
-            title = "Одобрительный кивок старшего админа",
-            quote = "Старший сисадмин одобряет: на горизонте полный порядок",
-            aspectRatio = 340f / 191f
-        ),
-        SysadminGifItem(
-            number = 10,
-            assetPath = "admin_gifs/admin_gif_10.gif",
-            title = "Дежурный кот на клавиатуре",
-            quote = "Дежурный кот на посту: режим ожидания новых заявок",
-            aspectRatio = 340f / 191f
+            aspectRatio = 440f / 248f
         )
     )
 }
@@ -164,7 +103,6 @@ fun SysadminEmptyStatePanel(
     var currentIndex by rememberSaveable {
         mutableIntStateOf(Random.nextInt(gifs.size))
     }
-    var showCatalogDialog by remember { mutableStateOf(false) }
 
     val safeIndex = currentIndex.mod(gifs.size)
     val currentGif = gifs[safeIndex]
@@ -192,62 +130,40 @@ fun SysadminEmptyStatePanel(
                     currentIndex = (safeIndex + 1) % gifs.size
                 },
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF04091E)),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 175.dp, max = 235.dp)
-                        .aspectRatio(currentGif.aspectRatio.coerceIn(1.1f, 1.85f))
-                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                        .background(Color(0xFF081029)),
-                    contentAlignment = Alignment.Center
+            Crossfade(
+                targetState = currentGif,
+                animationSpec = tween(durationMillis = 300),
+                label = "sysadmin_gif_crossfade"
+            ) { gif ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    AnimatedAssetGifView(
-                        assetPath = currentGif.assetPath,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    Surface(
+                    Box(
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xCC04091E)
+                            .fillMaxWidth()
+                            .heightIn(min = 180.dp, max = 240.dp)
+                            .aspectRatio(gif.aspectRatio)
+                            .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                            .background(Color(0xFF04091E)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "GIF ${currentGif.number}/${gifs.size}",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
+                        AnimatedAssetGifView(
+                            assetPath = gif.assetPath,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                }
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
                     Text(
-                        text = currentGif.title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = currentGif.quote,
-                        style = MaterialTheme.typography.bodySmall,
+                        text = gif.quote,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center
                     )
@@ -255,74 +171,63 @@ fun SysadminEmptyStatePanel(
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        if (gifs.size > 1) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IconButton(
+                    onClick = { currentIndex = (safeIndex - 1 + gifs.size) % gifs.size },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronLeft,
+                        contentDescription = "Предыдущая гифка",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                gifs.indices.forEach { idx ->
+                    Box(
+                        modifier = Modifier
+                            .size(if (idx == safeIndex) 8.dp else 6.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (idx == safeIndex) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outline
+                                }
+                            )
+                            .clickable { currentIndex = idx }
+                    )
+                }
+
+                IconButton(
+                    onClick = { currentIndex = (safeIndex + 1) % gifs.size },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Следующая гифка",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(6.dp))
 
         Text(
             text = emptyStatusText,
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
 
-        Spacer(Modifier.height(10.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            IconButton(
-                onClick = { currentIndex = (safeIndex - 1 + gifs.size) % gifs.size },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(Icons.Default.ChevronLeft, contentDescription = "Предыдущая гифка")
-            }
-
-            FilledTonalButton(
-                onClick = {
-                    val next = if (gifs.size > 1) {
-                        var candidate = Random.nextInt(gifs.size)
-                        if (candidate == safeIndex) candidate = (safeIndex + 1) % gifs.size
-                        candidate
-                    } else {
-                        0
-                    }
-                    currentIndex = next
-                },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Casino,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Случайная", style = MaterialTheme.typography.labelLarge)
-            }
-
-            OutlinedButton(
-                onClick = { showCatalogDialog = true },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Collections,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(5.dp))
-                Text("Все 10", style = MaterialTheme.typography.labelLarge)
-            }
-
-            IconButton(
-                onClick = { currentIndex = (safeIndex + 1) % gifs.size },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(Icons.Default.ChevronRight, contentDescription = "Следующая гифка")
-            }
-        }
-
         if (showRefreshButton) {
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Button(
                 onClick = onRefreshNow,
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
@@ -337,66 +242,6 @@ fun SysadminEmptyStatePanel(
             }
         }
     }
-
-    if (showCatalogDialog) {
-        AlertDialog(
-            onDismissRequest = { showCatalogDialog = false },
-            title = {
-                Text(
-                    text = "10 админских гифок",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 380.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    itemsIndexed(gifs) { index, item ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable {
-                                    currentIndex = index
-                                    showCatalogDialog = false
-                                }
-                                .padding(horizontal = 4.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = index == safeIndex,
-                                onClick = {
-                                    currentIndex = index
-                                    showCatalogDialog = false
-                                }
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${item.number}. ${item.title}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = item.quote,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showCatalogDialog = false }) {
-                    Text("Закрыть")
-                }
-            }
-        )
-    }
 }
 
 @Composable
@@ -407,6 +252,31 @@ fun AnimatedAssetGifView(
     val context = LocalContext.current
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        var decodedDrawable by remember(assetPath) { mutableStateOf<Drawable?>(null) }
+
+        LaunchedEffect(assetPath) {
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = context.assets.open(assetPath).use { it.readBytes() }
+                    val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
+                    ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
+                        // Hardware/default allocator enables smooth VSYNC RenderThread playback
+                        decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
+                    }
+                }.getOrNull()
+            }
+            decodedDrawable = loaded
+        }
+
+        DisposableEffect(decodedDrawable) {
+            val anim = decodedDrawable as? AnimatedImageDrawable
+            anim?.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+            anim?.start()
+            onDispose {
+                anim?.stop()
+            }
+        }
+
         AndroidView(
             modifier = modifier,
             factory = { ctx ->
@@ -415,30 +285,17 @@ fun AnimatedAssetGifView(
                 }
             },
             update = { imageView ->
-                if (imageView.tag != assetPath) {
-                    (imageView.drawable as? AnimatedImageDrawable)?.stop()
-                    imageView.tag = assetPath
-                    runCatching {
-                        val bytes = context.assets.open(assetPath).use { it.readBytes() }
-                        val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
-                        val drawable = ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
-                            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                        }
-                        imageView.setImageDrawable(drawable)
-                        if (drawable is AnimatedImageDrawable) {
-                            drawable.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
-                            drawable.start()
-                        }
-                    }
-                } else {
-                    val current = imageView.drawable
-                    if (current is AnimatedImageDrawable && !current.isRunning) {
-                        current.start()
-                    }
+                val d = decodedDrawable
+                if (imageView.drawable !== d) {
+                    imageView.setImageDrawable(d)
+                }
+                if (d is AnimatedImageDrawable && !d.isRunning) {
+                    d.start()
                 }
             },
             onRelease = { imageView ->
                 (imageView.drawable as? AnimatedImageDrawable)?.stop()
+                imageView.setImageDrawable(null)
             }
         )
     } else {

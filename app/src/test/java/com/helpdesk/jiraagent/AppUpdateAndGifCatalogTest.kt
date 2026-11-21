@@ -84,9 +84,11 @@ class AppUpdateAndGifCatalogTest {
     }
 
     @Test
-    fun `all 10 sysadmin empty-screen GIF assets exist and are valid animated GIF89a`() {
+    fun `selected sysadmin empty-screen GIF assets 1 and 7 exist and are valid animated GIF89a`() {
         val items = SysadminGifCatalog.items
-        assertEquals(10, items.size)
+        assertEquals(2, items.size)
+        assertEquals("admin_gifs/admin_gif_01.gif", items[0].assetPath)
+        assertEquals("admin_gifs/admin_gif_07.gif", items[1].assetPath)
 
         val assetsRoot = listOf(
             File("src/main/assets"),
@@ -94,11 +96,11 @@ class AppUpdateAndGifCatalogTest {
         ).firstOrNull { it.exists() }
         assertNotNull("Assets directory should exist", assetsRoot)
 
-        items.forEachIndexed { idx, item ->
-            assertEquals(idx + 1, item.number)
+        items.forEach { item ->
+            assertTrue("Quote should not be blank", item.quote.isNotBlank())
             val gifFile = File(assetsRoot!!, item.assetPath)
             assertTrue("Missing GIF asset: ${gifFile.path}", gifFile.exists())
-            assertTrue("GIF asset too small: ${gifFile.path}", gifFile.length() > 10_000L)
+            assertTrue("GIF asset too small: ${gifFile.path}", gifFile.length() > 100_000L)
             val header = ByteArray(6)
             gifFile.inputStream().use { it.read(header) }
             val magic = String(header, Charsets.US_ASCII)
