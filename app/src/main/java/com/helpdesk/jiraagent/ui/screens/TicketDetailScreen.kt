@@ -5,8 +5,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -26,7 +29,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.AssignmentInd
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
@@ -34,12 +39,16 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneDisabled
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -52,29 +61,46 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
 import com.helpdesk.jiraagent.ui.TicketActionUiState
 import com.helpdesk.jiraagent.ui.components.ClickablePhoneText
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
+import com.helpdesk.jiraagent.ui.theme.CslDangerRed
+import com.helpdesk.jiraagent.ui.theme.CslMidnight
+import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.util.DialerLauncher
 import com.helpdesk.jiraagent.util.MessengerApp
 import com.helpdesk.jiraagent.util.MessengerLauncher
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneOffset
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -85,26 +111,26 @@ fun TicketDetailScreen(
     actionState: TicketActionUiState,
     appSettings: AppSettings,
     onExecuteAction: (TicketWorkflowAction, String?, String?) -> Unit,
+    onPostponeTicket: (Long, String, String?) -> Unit,
     onDismissActionMessage: () -> Unit,
     onBack: () -> Unit
 ) {
-    BackHandler(onBack = onBack)
     val context = LocalContext.current
+    BackHandler(onBack = onBack)
 
-    var dialogAction by rememberSaveable { mutableStateOf<TicketWorkflowAction?>(null) }
-    var dialogComment by rememberSaveable { mutableStateOf("") }
+    var commentDialogAction by rememberSaveable { mutableStateOf<TicketWorkflowAction?>(null) }
+    var commentDraft by rememberSaveable { mutableStateOf("") }
+    var showPostponeDialog by rememberSaveable { mutableStateOf(false) }
 
-    if (dialogAction != null && ticket != null) {
-        val currentDialogAction = dialogAction!!
-        val isReject = currentDialogAction == TicketWorkflowAction.REJECT
+    // Optional comment dialog for "Завершить" or "Отклонить"
+    val pendingDialogAction = commentDialogAction
+    if (pendingDialogAction != null) {
+        val isReject = pendingDialogAction == TicketWorkflowAction.REJECT
         AlertDialog(
-            onDismissRequest = {
-                dialogAction = null
-                dialogComment = ""
-            },
+            onDismissRequest = { commentDialogAction = null },
             title = {
                 Text(
-                    text = if (isReject) "Отклонить заявку ${ticket.key}?" else "Завершить заявку ${ticket.key}?",
+                    text = if (isReject) "Отклонить заявку $ticketKey?" else "Завершить заявку $ticketKey?",
                     fontWeight = FontWeight.Bold
                 )
             },
@@ -112,78 +138,91 @@ fun TicketDetailScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = if (isReject) {
-                            "Заявка будет переведена в отклонённые / отменённые. При необходимости укажите причину:"
+                            "При необходимости укажите причину отклонения (будет добавлена в комментарии Jira):"
                         } else {
-                            "Заявка будет переведена в выполненные / закрытые. При необходимости оставьте комментарий:"
+                            "При необходимости добавьте комментарий о выполнении (необязательно):"
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
-                        value = dialogComment,
-                        onValueChange = { dialogComment = it },
+                        value = commentDraft,
+                        onValueChange = { commentDraft = it },
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = {
-                            Text(
-                                if (isReject) "Причина отклонения (необязательно)" else "Комментарий к решению (необязательно)"
-                            )
-                        },
-                        minLines = 2
+                        label = { Text("Комментарий в Jira (необязательно)") },
+                        minLines = 2,
+                        maxLines = 4
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val commentToSend = dialogComment.trim().takeIf { it.isNotEmpty() }
-                        dialogAction = null
-                        dialogComment = ""
-                        onExecuteAction(currentDialogAction, commentToSend, null)
+                        val actionToRun = pendingDialogAction
+                        val comment = commentDraft.trim().takeIf { it.isNotEmpty() }
+                        commentDialogAction = null
+                        commentDraft = ""
+                        onExecuteAction(actionToRun, comment, null)
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isReject) MaterialTheme.colorScheme.error else Color(0xFF1B873F),
-                        contentColor = Color.White
+                        containerColor = if (isReject) CslDangerRed else CslSuccessGreen
                     )
                 ) {
                     Text(if (isReject) "Отклонить" else "Завершить")
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        dialogAction = null
-                        dialogComment = ""
-                    }
-                ) {
+                TextButton(onClick = { commentDialogAction = null }) {
                     Text("Отмена")
                 }
             }
         )
     }
 
-    if (actionState.manualTransitionPrompt &&
-        actionState.availableTransitions.isNotEmpty() &&
-        ticket != null
-    ) {
+    // Postpone ("Отложить на") Calendar + Time dialog
+    if (showPostponeDialog) {
+        PostponeTicketDialog(
+            ticketKey = ticketKey,
+            appSettings = appSettings,
+            onDismiss = { showPostponeDialog = false },
+            onConfirm = { epochMillis, formattedDisplay ->
+                showPostponeDialog = false
+                onPostponeTicket(epochMillis, formattedDisplay, null)
+            }
+        )
+    }
+
+    // Manual transition selector when Jira project uses custom transition names
+    if (actionState.manualTransitionPrompt && actionState.availableTransitions.isNotEmpty()) {
         AlertDialog(
             onDismissRequest = onDismissActionMessage,
             title = {
-                Text("Выберите переход статуса Jira", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Выберите переход статуса Jira",
+                    fontWeight = FontWeight.Bold
+                )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = actionState.statusMessage ?: "Доступные переходы для ${ticket.key}:",
+                        text = actionState.statusMessage
+                            ?: "Выберите подходящий переход для заявки $ticketKey:",
                         style = MaterialTheme.typography.bodySmall
                     )
                     actionState.availableTransitions.forEach { tr ->
                         OutlinedButton(
                             onClick = {
-                                val act = actionState.pendingAction ?: TicketWorkflowAction.TAKE_IN_WORK
-                                onExecuteAction(act, null, tr.id)
+                                val postponeAt = actionState.pendingPostponeAtMillis
+                                val postponeLabel = actionState.pendingPostponeDisplay
+                                if (postponeAt != null && postponeLabel != null) {
+                                    onPostponeTicket(postponeAt, postponeLabel, tr.id)
+                                } else {
+                                    val act = actionState.pendingAction ?: TicketWorkflowAction.TAKE_IN_WORK
+                                    onExecuteAction(act, null, tr.id)
+                                }
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("${tr.name} → ${tr.toStatusName}")
+                            Text(text = "${tr.name} → ${tr.toStatusName}")
                         }
                     }
                 }
@@ -199,23 +238,57 @@ fun TicketDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = CslMidnight,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                ),
                 title = {
-                    Text(
-                        text = ticket?.key ?: ticketKey,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(22.dp)
+                                .background(CslOrange, RoundedCornerShape(2.dp))
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = ticketKey,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = Color.White
+                            )
+                            ticket?.status?.let { st ->
+                                Text(
+                                    text = st,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CslOrange
+                                )
+                            }
+                        }
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Назад",
+                            tint = Color.White
+                        )
                     }
                 },
                 actions = {
-                    if (!ticket?.webUrl.isNullOrBlank()) {
-                        IconButton(onClick = { DialerLauncher.openExternalUrl(context, ticket!!.webUrl) }) {
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Открыть в браузере")
+                    val webUrl = ticket?.webUrl.orEmpty()
+                    if (webUrl.isNotBlank()) {
+                        IconButton(onClick = { DialerLauncher.openBrowser(context, webUrl) }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = "Открыть в Jira",
+                                tint = CslOrange
+                            )
                         }
                     }
                 }
@@ -226,226 +299,491 @@ fun TicketDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (isLoading || actionState.isBusy) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = CslOrange
+                )
             }
 
             if (ticket == null) {
-                Text(
-                    text = if (isLoading) {
-                        "Загрузка данных заявки $ticketKey…"
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(color = CslOrange)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Загрузка заявки $ticketKey…")
                     } else {
-                        "Не удалось найти данные заявки $ticketKey"
+                        Text("Данные заявки $ticketKey не найдены в локальном кэше.")
+                    }
+                }
+                return@Scaffold
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 1. Workflow Action Buttons Card ("В работу", "Отложить на", "Завершить", "Отклонить")
+                WorkflowActionsCard(
+                    actionState = actionState,
+                    onTakeInWork = {
+                        onExecuteAction(TicketWorkflowAction.TAKE_IN_WORK, null, null)
                     },
-                    style = MaterialTheme.typography.bodyLarge
+                    onPostponeClick = {
+                        showPostponeDialog = true
+                    },
+                    onComplete = {
+                        commentDraft = ""
+                        commentDialogAction = TicketWorkflowAction.COMPLETE
+                    },
+                    onReject = {
+                        commentDraft = ""
+                        commentDialogAction = TicketWorkflowAction.REJECT
+                    }
                 )
-                return@Column
-            }
 
-            // 1. Header metadata card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        MetaBadge(ticket.status)
-                        MetaBadge("Приоритет: ${ticket.priority}")
-                        MetaBadge(ticket.customerRequestType ?: ticket.issueType)
-                    }
+                // 2. Phone & Messengers Card (Dialer + Telegram + Viber + WhatsApp)
+                PhoneAndMessengerSection(
+                    phones = ticket.phoneNumbers,
+                    telegramHandles = ticket.telegramHandles.orEmpty(),
+                    onCall = { e164 -> DialerLauncher.openDialer(context, e164) },
+                    onCopy = { e164 -> copyToClipboard(context, e164) }
+                )
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = ticket.summary,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Person,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Клиент: ${ticket.reporterName}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Исполнитель: ${ticket.assigneeName ?: "не назначен"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = if (ticket.assigneeName != null) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Создана: ${formatTicketTime(ticket.createdEpochMillis, ticket.createdIso)} · Проект: ${ticket.projectName}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // 2. Workflow Action Buttons Card ("В работу" + assign logged-in user, "Завершить", "Отклонить")
-            WorkflowActionsCard(
-                actionState = actionState,
-                onTakeInWork = { onExecuteAction(TicketWorkflowAction.TAKE_IN_WORK, null, null) },
-                onComplete = { dialogAction = TicketWorkflowAction.COMPLETE },
-                onReject = { dialogAction = TicketWorkflowAction.REJECT }
-            )
-
-            // 3. Clickable Phone + Messenger Icons Section (Telegram, Viber, WhatsApp)
-            PhoneAndMessengerSection(
-                phones = ticket.phoneNumbers,
-                telegramHandles = ticket.telegramHandles.orEmpty(),
-                onDial = { e164 ->
-                    DialerLauncher.openSystemDialer(
-                        context = context,
-                        phoneInput = e164,
-                        region = appSettings.phoneRegion,
-                        customCountryCode = appSettings.customCountryCode
-                    )
-                },
-                onCopy = { e164 -> copyToClipboard(context, e164) },
-                onOpenMessenger = { app, e164 ->
-                    MessengerLauncher.openChatByPhone(context, app, e164)
-                },
-                onOpenTelegramHandle = { handle ->
-                    MessengerLauncher.openTelegramUsername(context, handle)
-                }
-            )
-
-            // 4. Ticket Description
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "Описание заявки",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (ticket.description.isBlank()) {
-                        Text(
-                            text = "Описание отсутствует",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        ClickablePhoneText(
-                            text = ticket.description,
-                            region = appSettings.phoneRegion,
-                            customCountryCode = appSettings.customCountryCode,
-                            onPhoneClick = { e164 ->
-                                DialerLauncher.openSystemDialer(
-                                    context = context,
-                                    phoneInput = e164,
-                                    region = appSettings.phoneRegion,
-                                    customCountryCode = appSettings.customCountryCode
-                                )
-                            }
-                        )
-                    }
-                }
-            }
-
-            // 5. Comments
-            if (ticket.comments.isNotEmpty()) {
+                // 3. Summary & Metadata Card (Full non-truncated fields!)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = ticket.summary,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        HorizontalDivider()
+
+                        MetadataRow("Клиент / Автор", ticket.reporterName)
+                        if (ticket.reporterLoginOrEmail.isNotBlank()) {
+                            MetadataRow("Контакт в Jira", ticket.reporterLoginOrEmail)
+                        }
+                        MetadataRow("Исполнитель", ticket.assigneeName ?: "Не назначен")
+                        MetadataRow("Проект", "${ticket.projectName} (${ticket.projectKey})")
+                        MetadataRow("Тип обращения", ticket.customerRequestType ?: ticket.issueType)
+                        MetadataRow("Статус", ticket.status)
+                        if (ticket.priority.isNotBlank()) {
+                            MetadataRow("Приоритет", ticket.priority)
+                        }
+                        if (ticket.labels.isNotEmpty()) {
+                            MetadataRow("Метки", ticket.labels.joinToString(", "))
+                        }
+                    }
+                }
+
+                // 4. Description Card with inline clickable phone links
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
-                            text = "Комментарии (${ticket.comments.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            text = "Описание заявки",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = CslOrange
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        ticket.comments.forEachIndexed { index, comment ->
-                            if (index > 0) {
-                                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-                            }
+                        if (ticket.description.isBlank()) {
                             Text(
-                                text = comment.author,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
+                                text = "Описание отсутствует",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                        } else {
                             ClickablePhoneText(
-                                text = comment.body,
-                                region = appSettings.phoneRegion,
+                                text = ticket.description,
+                                phoneRegion = appSettings.phoneRegion,
                                 customCountryCode = appSettings.customCountryCode,
-                                onPhoneClick = { e164 ->
-                                    DialerLauncher.openSystemDialer(
-                                        context = context,
-                                        phoneInput = e164,
-                                        region = appSettings.phoneRegion,
-                                        customCountryCode = appSettings.customCountryCode
-                                    )
-                                }
+                                onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) }
                             )
                         }
                     }
                 }
-            }
 
-            if (ticket.webUrl.isNotBlank()) {
-                OutlinedButton(
-                    onClick = { DialerLauncher.openExternalUrl(context, ticket.webUrl) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Открыть ${ticket.key} в браузере",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                // 5. Comments Card
+                if (ticket.comments.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Последние комментарии (${ticket.comments.size})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = CslOrange
+                            )
+
+                            ticket.comments.forEachIndexed { idx, comment ->
+                                if (idx > 0) HorizontalDivider()
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp),
+                                            tint = CslOrange
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = comment.author,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    ClickablePhoneText(
+                                        text = comment.body,
+                                        phoneRegion = appSettings.phoneRegion,
+                                        customCountryCode = appSettings.customCountryCode,
+                                        onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) },
+                                        textStyle = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun PostponeTicketDialog(
+    ticketKey: String,
+    appSettings: AppSettings,
+    onDismiss: () -> Unit,
+    onConfirm: (Long, String) -> Unit
+) {
+    val defaultTarget = remember {
+        LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.of(12, 0))
+    }
+    var dateText by rememberSaveable {
+        mutableStateOf(defaultTarget.toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT))
+    }
+    var timeText by rememberSaveable {
+        mutableStateOf(defaultTarget.toLocalTime().format(PostponeDateTimeParser.DISPLAY_TIME_DASH_FMT))
+    }
+    var validationError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    var showCalendarPicker by rememberSaveable { mutableStateOf(false) }
+    var showClockPicker by rememberSaveable { mutableStateOf(false) }
+
+    // Visual Material3 DatePickerDialog
+    if (showCalendarPicker) {
+        val currentParsedDate = PostponeDateTimeParser.parseDate(dateText) ?: LocalDate.now().plusDays(1)
+        val initialUtcMillis = currentParsedDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialUtcMillis)
+
+        DatePickerDialog(
+            onDismissRequest = { showCalendarPicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            val pickedDate = Instant.ofEpochMilli(millis)
+                                .atZone(ZoneOffset.UTC)
+                                .toLocalDate()
+                            dateText = pickedDate.format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
+                            validationError = null
+                        }
+                        showCalendarPicker = false
+                    }
+                ) {
+                    Text("Выбрать")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCalendarPicker = false }) {
+                    Text("Отмена")
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
+    // Visual Material3 24h TimePicker Dialog
+    if (showClockPicker) {
+        val currentParsedTime = PostponeDateTimeParser.parseTime(timeText) ?: LocalTime.of(12, 0)
+        val timePickerState = rememberTimePickerState(
+            initialHour = currentParsedTime.hour,
+            initialMinute = currentParsedTime.minute,
+            is24Hour = true
+        )
+
+        AlertDialog(
+            onDismissRequest = { showClockPicker = false },
+            title = { Text("Выберите время пересоздания", fontWeight = FontWeight.Bold) },
+            text = {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    TimePicker(state = timePickerState)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val t = LocalTime.of(timePickerState.hour, timePickerState.minute)
+                        timeText = t.format(PostponeDateTimeParser.DISPLAY_TIME_DASH_FMT)
+                        validationError = null
+                        showClockPicker = false
+                    }
+                ) {
+                    Text("Готово")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClockPicker = false }) {
+                    Text("Отмена")
+                }
+            }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Отложить заявку $ticketKey",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Выберите в календаре или введите дату и время (например, 22.11.2026 и 12-00). Заявка будет закрыта сейчас, а в указанное время автоматически пересоздастся в Jira, выведет уведомление и появится во вкладке «Новые».",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Quick presets
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AssistChip(
+                        onClick = {
+                            val dt = LocalDateTime.now().plusHours(1)
+                            dateText = dt.toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
+                            timeText = dt.toLocalTime().format(PostponeDateTimeParser.DISPLAY_TIME_DASH_FMT)
+                            validationError = null
+                        },
+                        label = { Text("+1 час") }
+                    )
+                    AssistChip(
+                        onClick = {
+                            val dt = LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.of(9, 0))
+                            dateText = dt.toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
+                            timeText = "09-00"
+                            validationError = null
+                        },
+                        label = { Text("Завтра 09-00") }
+                    )
+                    AssistChip(
+                        onClick = {
+                            val dt = LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.of(12, 0))
+                            dateText = dt.toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
+                            timeText = "12-00"
+                            validationError = null
+                        },
+                        label = { Text("Завтра 12-00") }
+                    )
+                    AssistChip(
+                        onClick = {
+                            val extraWork = BelarusWorkCalendar.parseDateSet(appSettings.extraWorkingDates)
+                            val extraHol = BelarusWorkCalendar.parseDateSet(appSettings.extraHolidayDates)
+                            var candidate = LocalDate.now().plusDays(1)
+                            for (i in 0..14) {
+                                if (BelarusWorkCalendar.isWorkingDay(candidate, extraWork, extraHol).first) break
+                                candidate = candidate.plusDays(1)
+                            }
+                            dateText = candidate.format(PostponeDateTimeParser.DISPLAY_DATE_FMT)
+                            timeText = "09-00"
+                            validationError = null
+                        },
+                        label = { Text("След. раб. день 09-00") }
+                    )
+                }
+
+                // Date input + Calendar button
+                OutlinedTextField(
+                    value = dateText,
+                    onValueChange = {
+                        dateText = it
+                        validationError = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Дата (ДД.ММ.ГГГГ)") },
+                    placeholder = { Text("22.11.2026") },
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { showCalendarPicker = true }) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = "Открыть календарь",
+                                tint = CslOrange
+                            )
+                        }
+                    }
+                )
+
+                // Time input + Clock button (supports both 12-00 and 12:00)
+                OutlinedTextField(
+                    value = timeText,
+                    onValueChange = {
+                        timeText = it
+                        validationError = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Время (ЧЧ-ММ или ЧЧ:ММ)") },
+                    placeholder = { Text("12-00") },
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { showClockPicker = true }) {
+                            Icon(
+                                imageVector = Icons.Default.AccessTime,
+                                contentDescription = "Выбрать время",
+                                tint = CslOrange
+                            )
+                        }
+                    }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { showCalendarPicker = true },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Календарь", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = { showClockPicker = true },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.AccessTime, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Часы", maxLines = 1)
+                    }
+                }
+
+                val parsedPreview = remember(dateText, timeText) {
+                    PostponeDateTimeParser.parseToEpochMillis(dateText, timeText)
+                }
+                if (parsedPreview != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Пересоздание назначено на: ${parsedPreview.second}",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+
+                validationError?.let { err ->
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val parsed = PostponeDateTimeParser.parseToEpochMillis(dateText, timeText)
+                    if (parsed == null) {
+                        validationError = "Проверьте формат даты и времени (например: 22.11.2026 и 12-00)"
+                        return@Button
+                    }
+                    if (parsed.first <= System.currentTimeMillis() + 5_000L) {
+                        validationError = "Укажите дату и время в будущем"
+                        return@Button
+                    }
+                    onConfirm(parsed.first, parsed.second)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+            ) {
+                Text("Отложить и закрыть")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        }
+    )
+}
+
 @Composable
 private fun WorkflowActionsCard(
     actionState: TicketActionUiState,
     onTakeInWork: () -> Unit,
+    onPostponeClick: () -> Unit,
     onComplete: () -> Unit,
     onReject: () -> Unit
 ) {
+    val density = LocalDensity.current
+    val btnTextSize = with(density) { 12.5.dp.toSp() }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -454,130 +792,58 @@ private fun WorkflowActionsCard(
             Text(
                 text = "Действия по заявке",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = CslOrange
             )
 
-            // Primary action: Take in work & assign logged-in user
-            Button(
-                onClick = onTakeInWork,
-                enabled = !actionState.isBusy,
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            ) {
-                if (actionState.isBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                } else {
-                    Icon(Icons.Default.AssignmentInd, contentDescription = null, modifier = Modifier.size(20.dp))
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "В работу (назначить меня)",
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            // Secondary row: Complete & Reject — adapts automatically to ultra-narrow screens
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                if (maxWidth >= 280.dp) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = onComplete,
-                            enabled = !actionState.isBusy,
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF1B873F),
-                                contentColor = Color.White
-                            )
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Завершить",
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Button(
-                            onClick = onReject,
-                            enabled = !actionState.isBusy,
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError
-                            )
-                        ) {
-                            Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Отклонить",
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                val singleColumn = maxWidth < 285.dp
+                if (singleColumn) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InWorkButton(btnTextSize, actionState.isBusy, onTakeInWork, Modifier.fillMaxWidth())
+                        PostponeButton(btnTextSize, actionState.isBusy, onPostponeClick, Modifier.fillMaxWidth())
+                        CompleteButton(btnTextSize, actionState.isBusy, onComplete, Modifier.fillMaxWidth())
+                        RejectButton(btnTextSize, actionState.isBusy, onReject, Modifier.fillMaxWidth())
                     }
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = onComplete,
-                            enabled = !actionState.isBusy,
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF1B873F),
-                                contentColor = Color.White
-                            )
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Завершить", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            InWorkButton(btnTextSize, actionState.isBusy, onTakeInWork, Modifier.weight(1f))
+                            PostponeButton(btnTextSize, actionState.isBusy, onPostponeClick, Modifier.weight(1f))
                         }
-                        Button(
-                            onClick = onReject,
-                            enabled = !actionState.isBusy,
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError
-                            )
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Отклонить", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            CompleteButton(btnTextSize, actionState.isBusy, onComplete, Modifier.weight(1f))
+                            RejectButton(btnTextSize, actionState.isBusy, onReject, Modifier.weight(1f))
                         }
                     }
                 }
             }
 
-            if (actionState.statusMessage != null && !actionState.manualTransitionPrompt) {
+            Text(
+                text = "«В работу» назначает вас исполнителем · «Отложить на» закрывает и пересоздаёт по таймеру",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            actionState.statusMessage?.let { msg ->
                 Surface(
+                    shape = RoundedCornerShape(8.dp),
                     color = if (actionState.isError) {
                         MaterialTheme.colorScheme.errorContainer
                     } else {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    },
-                    shape = RoundedCornerShape(10.dp)
+                        MaterialTheme.colorScheme.tertiaryContainer
+                    }
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(10.dp),
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -587,21 +853,21 @@ private fun WorkflowActionsCard(
                                 Icons.Default.CheckCircle
                             },
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(16.dp),
                             tint = if (actionState.isError) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
-                                MaterialTheme.colorScheme.onSecondaryContainer
+                                MaterialTheme.colorScheme.onTertiaryContainer
                             }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = actionState.statusMessage,
+                            text = msg,
                             style = MaterialTheme.typography.bodySmall,
                             color = if (actionState.isError) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
-                                MaterialTheme.colorScheme.onSecondaryContainer
+                                MaterialTheme.colorScheme.onTertiaryContainer
                             }
                         )
                     }
@@ -611,34 +877,118 @@ private fun WorkflowActionsCard(
     }
 }
 
+@Composable
+private fun InWorkButton(
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    busy: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        enabled = !busy,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+    ) {
+        Icon(Icons.Default.AssignmentInd, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text("В работу", fontSize = fontSize, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun PostponeButton(
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    busy: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        enabled = !busy,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary
+        ),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+    ) {
+        Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text("Отложить на", fontSize = fontSize, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun CompleteButton(
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    busy: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        enabled = !busy,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+    ) {
+        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text("Завершить", fontSize = fontSize, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun RejectButton(
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    busy: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = !busy,
+        modifier = modifier,
+        border = BorderStroke(1.dp, CslDangerRed),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = CslDangerRed),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+    ) {
+        Icon(Icons.Default.Cancel, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text("Отклонить", fontSize = fontSize, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PhoneAndMessengerSection(
     phones: List<PhoneMatch>,
     telegramHandles: List<String>,
-    onDial: (String) -> Unit,
-    onCopy: (String) -> Unit,
-    onOpenMessenger: (MessengerApp, String) -> Unit,
-    onOpenTelegramHandle: (String) -> Unit
+    onCall: (String) -> Unit,
+    onCopy: (String) -> Unit
 ) {
+    val context = LocalContext.current
+
     if (phones.isEmpty() && telegramHandles.isEmpty()) {
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Row(
-                modifier = Modifier.padding(14.dp),
+                modifier = Modifier.padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Default.PhoneDisabled,
+                    imageVector = Icons.Default.PhoneDisabled,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "Контактный телефон и мессенджер в полях заявки не обнаружены",
+                    text = "Номера телефонов и никнеймы мессенджеров не обнаружены",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -649,10 +999,11 @@ private fun PhoneAndMessengerSection(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer
-        )
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -660,154 +1011,97 @@ private fun PhoneAndMessengerSection(
         ) {
             Text(
                 text = "Связь с клиентом (звонок и мессенджеры)",
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
+                color = CslOrange
             )
 
             phones.forEach { phone ->
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onDial(phone.e164) },
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onCall(phone.e164) },
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = phone.formattedDisplay,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    color = CslSuccessGreen
                                 )
-                                val subtitle = if (phone.raw.trim() != phone.e164 &&
-                                    phone.raw.trim() != phone.formattedDisplay
-                                ) {
-                                    "Исходный: ${phone.raw} → ${phone.e164} · ${phone.source}"
-                                } else {
-                                    "${phone.e164} · ${phone.source}"
-                                }
                                 Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = "${phone.source} · E.164: ${phone.e164}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
                             IconButton(onClick = { onCopy(phone.e164) }) {
                                 Icon(
-                                    Icons.Default.ContentCopy,
-                                    contentDescription = "Скопировать номер"
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Скопировать номер",
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = { onDial(phone.e164) },
-                            modifier = Modifier.fillMaxWidth(),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary,
-                                contentColor = MaterialTheme.colorScheme.onSecondary
-                            )
-                        ) {
-                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Позвонить ${phone.formattedDisplay}",
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Adaptive 3-messenger row: fits Telegram, Viber & WhatsApp cleanly on any screen
-                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                            if (maxWidth >= 260.dp) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    MessengerActionChip(
-                                        app = MessengerApp.TELEGRAM,
-                                        onClick = { onOpenMessenger(MessengerApp.TELEGRAM, phone.e164) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    MessengerActionChip(
-                                        app = MessengerApp.VIBER,
-                                        onClick = { onOpenMessenger(MessengerApp.VIBER, phone.e164) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    MessengerActionChip(
-                                        app = MessengerApp.WHATSAPP,
-                                        onClick = { onOpenMessenger(MessengerApp.WHATSAPP, phone.e164) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            } else {
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    MessengerActionChip(
-                                        app = MessengerApp.TELEGRAM,
-                                        onClick = { onOpenMessenger(MessengerApp.TELEGRAM, phone.e164) }
-                                    )
-                                    MessengerActionChip(
-                                        app = MessengerApp.VIBER,
-                                        onClick = { onOpenMessenger(MessengerApp.VIBER, phone.e164) }
-                                    )
-                                    MessengerActionChip(
-                                        app = MessengerApp.WHATSAPP,
-                                        onClick = { onOpenMessenger(MessengerApp.WHATSAPP, phone.e164) }
-                                    )
-                                }
+                            Button(
+                                onClick = { onCall(phone.e164) },
+                                colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text("Позвонить", maxLines = 1)
                             }
+                        }
+
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            MessengerActionChip(
+                                app = MessengerApp.TELEGRAM,
+                                label = "Telegram",
+                                onClick = { MessengerLauncher.openTelegramByPhone(context, phone.e164) }
+                            )
+                            MessengerActionChip(
+                                app = MessengerApp.VIBER,
+                                label = "Viber",
+                                onClick = { MessengerLauncher.openViberByPhone(context, phone.e164) }
+                            )
+                            MessengerActionChip(
+                                app = MessengerApp.WHATSAPP,
+                                label = "WhatsApp",
+                                onClick = { MessengerLauncher.openWhatsAppByPhone(context, phone.e164) }
+                            )
                         }
                     }
                 }
             }
 
             if (telegramHandles.isNotEmpty()) {
-                Surface(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = "Telegram-контакт из текста заявки",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    telegramHandles.forEach { handle ->
+                        MessengerActionChip(
+                            app = MessengerApp.TELEGRAM,
+                            label = "Telegram $handle",
+                            onClick = { MessengerLauncher.openTelegramByUsername(context, handle) }
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            telegramHandles.forEach { handle ->
-                                MessengerActionChip(
-                                    app = MessengerApp.TELEGRAM,
-                                    customLabel = "Открыть $handle",
-                                    onClick = { onOpenTelegramHandle(handle) }
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -816,22 +1110,29 @@ private fun PhoneAndMessengerSection(
 }
 
 @Composable
-private fun MetaBadge(text: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = RoundedCornerShape(6.dp)
+private fun MetadataRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
     ) {
         Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer
+            text = "$label:",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(126.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f)
         )
     }
 }
 
-private fun copyToClipboard(context: Context, phoneE164: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("Телефон клиента", phoneE164))
-    Toast.makeText(context, "Скопировано: $phoneE164", Toast.LENGTH_SHORT).show()
+private fun copyToClipboard(context: Context, phone: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("Телефон клиента", phone))
+    Toast.makeText(context, "Скопировано: $phone", Toast.LENGTH_SHORT).show()
 }

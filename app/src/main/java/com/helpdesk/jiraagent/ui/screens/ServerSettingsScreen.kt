@@ -1,6 +1,7 @@
 package com.helpdesk.jiraagent.ui.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -22,10 +23,13 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,6 +65,9 @@ import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.ui.ConnectionTestState
+import com.helpdesk.jiraagent.ui.theme.CslMidnight
+import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.util.DialerLauncher
 
 private val POLL_INTERVAL_OPTIONS = listOf(
@@ -316,27 +323,82 @@ fun ServerSettingsScreen(
             }
         }
 
-        // 2b. Belarus Working Calendar & Working Hours (09:00 - 17:30) Card
+        // 2b. Рабочие дни (календарь РБ) + кнопка уведомлений в нерабочее время
+        val allowOffHours = !draft.workScheduleEnabled
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.4f))
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Календарь рабочих дней РБ и часы звука",
+                    text = "Рабочие дни (календарь РБ)",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
                 )
 
+                Text(
+                    text = if (allowOffHours) {
+                        "Сейчас уведомления в нерабочее время ВКЛЮЧЕНЫ: баннеры и звук приходят круглосуточно (24/7), включая вечера, выходные и праздники."
+                    } else {
+                        "Сейчас уведомления в нерабочее время ОТКЛЮЧЕНЫ: баннеры и звук работают строго в рабочие дни РБ (${draft.workStartTime}–${draft.workEndTime})."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                // Dedicated prominent button requested by user to toggle non-working hours notifications
+                Button(
+                    onClick = {
+                        val updated = draft.copy(workScheduleEnabled = allowOffHours)
+                        draft = updated
+                        onSaveSettings(updated)
+                        val msg = if (!updated.workScheduleEnabled) {
+                            "Уведомления в нерабочее время включены (24/7)"
+                        } else {
+                            "Уведомления в нерабочее время отключены (только рабочие дни РБ)"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (allowOffHours) CslMidnight else CslOrange
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (allowOffHours) {
+                            Icons.Default.NotificationsOff
+                        } else {
+                            Icons.Default.NotificationsActive
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (allowOffHours) {
+                            "Отключить уведомления в нерабочее время"
+                        } else {
+                            "Включить уведомления в нерабочее время"
+                        },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
                 SwitchRow(
-                    title = "Уведомления и звук по календарю РБ",
-                    subtitle = "Включать баннеры и звуковой сигнал только в рабочие дни Республики Беларусь с 09:00 до 17:30 (с учётом праздников и переносов РБ)",
-                    checked = draft.workScheduleEnabled,
-                    onCheckedChange = { draft = draft.copy(workScheduleEnabled = it) }
+                    title = "Уведомления в нерабочее время",
+                    subtitle = "Показывать баннеры и подавать звуковой сигнал также вечером, ночью и в выходные дни",
+                    checked = allowOffHours,
+                    onCheckedChange = { enabledOffHours ->
+                        val updated = draft.copy(workScheduleEnabled = !enabledOffHours)
+                        draft = updated
+                        onSaveSettings(updated)
+                    }
                 )
 
                 Card(
@@ -344,7 +406,7 @@ fun ServerSettingsScreen(
                     shape = RoundedCornerShape(10.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = if (rbCalendarStatus.isAllowedNow) {
-                            MaterialTheme.colorScheme.secondaryContainer
+                            CslSuccessGreen.copy(alpha = 0.12f)
                         } else {
                             MaterialTheme.colorScheme.surfaceVariant
                         }
@@ -356,7 +418,7 @@ fun ServerSettingsScreen(
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = if (rbCalendarStatus.isAllowedNow) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
+                                CslSuccessGreen
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             }
@@ -365,11 +427,7 @@ fun ServerSettingsScreen(
                         Text(
                             text = rbCalendarStatus.detailMessage,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (rbCalendarStatus.isAllowedNow) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -535,9 +593,10 @@ fun ServerSettingsScreen(
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = "Jira Helpdesk Агент · Версия ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})",
+                    text = "Help-CSL · Версия ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})",
                     style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    color = CslOrange
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(

@@ -55,10 +55,10 @@ object NotificationHelper {
         // Silent low-importance channel for persistent background polling status
         val statusChannel = NotificationChannel(
             CHANNEL_MONITOR_SERVICE,
-            "Фоновый мониторинг Jira",
+            "Фоновый мониторинг Help-CSL",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Тихий индикатор работы фонового агента Jira Helpdesk"
+            description = "Тихий индикатор работы фонового агента Help-CSL"
             setShowBadge(false)
             enableVibration(false)
             setSound(null, null)
@@ -95,7 +95,8 @@ object NotificationHelper {
 
         return NotificationCompat.Builder(context, CHANNEL_MONITOR_SERVICE)
             .setSmallIcon(R.drawable.ic_notification_ticket)
-            .setContentTitle("Jira Helpdesk Агент активен")
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("Help-CSL активен")
             .setContentText(statusText)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -108,12 +109,13 @@ object NotificationHelper {
     /**
      * Displays a Heads-Up Notification Banner + sound signal for a client ticket.
      * Strictly respects the Republic of Belarus working days calendar and 09:00–17:30 working hours
-     * unless [bypassWorkSchedule] is explicitly requested (e.g. manual test button).
+     * unless [bypassWorkSchedule] is explicitly requested (e.g. manual test button or user-scheduled postponed ticket).
      */
     fun showClientTicketBanner(
         context: Context,
         ticket: HelpdeskTicket,
-        bypassWorkSchedule: Boolean = false
+        bypassWorkSchedule: Boolean = false,
+        customTitleSuffix: String? = null
     ): Boolean {
         if (!ticket.isClientTicket) return false
         if (!hasNotificationPermission(context)) return false
@@ -153,9 +155,11 @@ object NotificationHelper {
             }
         }
 
+        val titleSuffix = customTitleSuffix ?: "Заявка от клиента"
         val builder = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
             .setSmallIcon(R.drawable.ic_notification_ticket)
-            .setContentTitle("${ticket.key} · Заявка от клиента")
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("${ticket.key} · $titleSuffix")
             .setContentText(
                 if (primaryPhone != null) {
                     "${ticket.summary} (${primaryPhone.formattedDisplay})"

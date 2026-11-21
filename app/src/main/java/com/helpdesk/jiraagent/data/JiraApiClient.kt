@@ -9,6 +9,8 @@ import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
+import com.helpdesk.jiraagent.model.PostponedTicket
+import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -22,6 +24,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -50,6 +54,14 @@ data class WorkflowActionOutcome(
     val statusMessage: String,
     val needsManualTransitionChoice: Boolean = false,
     val pendingAction: TicketWorkflowAction? = null,
+    val availableTransitions: List<JiraTransitionOption> = emptyList()
+)
+
+data class PostponeTicketOutcome(
+    val closedTicket: HelpdeskTicket?,
+    val postponedTicket: PostponedTicket?,
+    val statusMessage: String,
+    val needsManualTransitionChoice: Boolean = false,
     val availableTransitions: List<JiraTransitionOption> = emptyList()
 )
 
@@ -377,6 +389,567 @@ class JiraApiClient {
             throw JiraApiException(
                 "Для заявки $issueKey в текущем статусе нет доступных переходов в Jira"
             )
+        }
+    }
+
+    /**
+     * Captures full metadata of [issueKey] for later recreation, then closes [issueKey] immediately.
+     */
+    suspend fun postponeAndCloseTicket(
+        issueKey: String,
+        fallbackTicket: HelpdeskTicket?,
+        scheduledAtMillis: Long,
+        scheduledDisplay: String,
+        explicitTransitionId: String? = null,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<PostponeTicketOutcome> = withContext(Dispatchers.IO) {
+        runCatching {
+            val draft = capturePostponedDraft(
+                issueKey = issueKey,
+                fallbackTicket = fallbackTicket,
+                scheduledAtMillis = scheduledAtMillis,
+                scheduledDisplay = scheduledDisplay,
+                settings = settings,
+                filterSettings = filterSettings
+            )
+
+            // Offline DEMO tickets close locally
+            if (issueKey.startsWith("DEMO-", ignoreCase = true)) {
+                val closedDemo = fallbackTicket?.copy(
+                    status = "Закрыта (отложена)",
+                    statusCategoryKey = "done"
+                )
+                return@runCatching PostponeTicketOutcome(
+                    closedTicket = closedDemo,
+                    postponedTicket = draft,
+                    statusMessage = "Заявка $issueKey закрыта и отложена до $scheduledDisplay"
+                )
+            }
+
+            val closeComment = "Заявка отложена до $scheduledDisplay (автоматически пересоздастся в Help-CSL)."
+            val closeOutcome = performWorkflowAction(
+                issueKey = issueKey,
+                action = TicketWorkflowAction.COMPLETE,
+                commentText = closeComment,
+                explicitTransitionId = explicitTransitionId,
+                settings = settings,
+                filterSettings = filterSettings
+            ).getOrThrow()
+
+            if (closeOutcome.needsManualTransitionChoice) {
+                return@runCatching PostponeTicketOutcome(
+                    closedTicket = closeOutcome.updatedTicket,
+                    postponedTicket = null,
+                    statusMessage = "Выберите переход закрытия заявки перед откладыванием до $scheduledDisplay:",
+                    needsManualTransitionChoice = true,
+                    availableTransitions = closeOutcome.availableTransitions
+                )
+            }
+
+            PostponeTicketOutcome(
+                closedTicket = closeOutcome.updatedTicket,
+                postponedTicket = draft,
+                statusMessage = "Заявка $issueKey закрыта и пересоздастся $scheduledDisplay"
+            )
+        }
+    }
+
+    /**
+     * Recreates a postponed ticket in Jira (or locally for DEMO-*), returning the newly created
+     * [HelpdeskTicket] ready to appear in "Новые" and trigger a notification banner.
+     */
+    suspend fun recreatePostponedTicket(
+        item: PostponedTicket,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<HelpdeskTicket> = withContext(Dispatchers.IO) {
+        runCatching {
+            val nowMillis = System.currentTimeMillis()
+            val nowIso = java.time.Instant.ofEpochMilli(nowMillis).toString()
+            if (item.originalKey.startsWith("DEMO-", ignoreCase = true) || !settings.isConfigured) {
+                val randomSuffix = (1000..9999).random()
+                val newDemoKey = "DEMO-$randomSuffix"
+                return@runCatching HelpdeskTicket(
+                    id = UUID.randomUUID().toString(),
+                    key = newDemoKey,
+                    summary = item.summary,
+                    description = buildRecreatedDescription(item, includeReporterNote = false),
+                    issueType = item.issueTypeName,
+                    isSubtask = false,
+                    customerRequestType = item.customerRequestTypeName,
+                    hasCustomerPortalInfo = !item.customerRequestTypeName.isNullOrBlank(),
+                    status = "Ожидание поддержки",
+                    statusCategoryKey = "new",
+                    priority = item.priorityName.ifBlank { "Средний" },
+                    projectKey = item.projectKey.ifBlank { "DEMO" },
+                    projectName = item.projectKey.ifBlank { "DEMO" },
+                    reporterName = item.reporterDisplayName.ifBlank { "Клиент" },
+                    reporterLoginOrEmail = item.reporterEmail.orEmpty(),
+                    assigneeName = null,
+                    createdIso = nowIso,
+                    createdEpochMillis = nowMillis,
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMillis,
+                    labels = item.labels.orEmpty(),
+                    phoneNumbers = item.phoneNumbers.orEmpty(),
+                    telegramHandles = item.telegramHandles.orEmpty(),
+                    comments = emptyList(),
+                    webUrl = "",
+                    isClientTicket = true,
+                    filterReason = null
+                )
+            }
+
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+
+            var createdKey: String? = null
+
+            // 1. Try Jira Service Management request creation first if JSM serviceDeskId + requestTypeId exist
+            if (!item.serviceDeskId.isNullOrBlank() && !item.requestTypeId.isNullOrBlank()) {
+                createdKey = tryCreateViaServiceDeskApi(baseUrl, item, settings)
+            }
+
+            // 2. Fallback to standard Jira REST /rest/api/{2|3}/issue with smart adaptive field retry
+            if (createdKey.isNullOrBlank()) {
+                createdKey = createViaCoreIssueApi(baseUrl, preferCloud, item, settings)
+            }
+
+            // Best-effort copy of custom phone fields if any were stored on original issue
+            if (!item.customFieldsJson.isNullOrEmpty()) {
+                runCatching {
+                    updateCustomFieldsBestEffort(baseUrl, preferCloud, createdKey, item.customFieldsJson, settings)
+                }
+            }
+
+            val fetched = fetchTicketByKey(createdKey, settings, filterSettings).getOrNull()
+            val mergedPhones = if (!fetched?.phoneNumbers.isNullOrEmpty()) {
+                fetched!!.phoneNumbers
+            } else {
+                item.phoneNumbers.orEmpty()
+            }
+            val mergedTelegram = if (!fetched?.telegramHandles.isNullOrEmpty()) {
+                fetched!!.telegramHandles.orEmpty()
+            } else {
+                item.telegramHandles.orEmpty()
+            }
+
+            if (fetched != null) {
+                fetched.copy(
+                    customerRequestType = fetched.customerRequestType ?: item.customerRequestTypeName,
+                    phoneNumbers = mergedPhones,
+                    telegramHandles = mergedTelegram,
+                    isClientTicket = true,
+                    filterReason = null
+                )
+            } else {
+                HelpdeskTicket(
+                    id = createdKey,
+                    key = createdKey,
+                    summary = item.summary,
+                    description = buildRecreatedDescription(item, includeReporterNote = true),
+                    issueType = item.issueTypeName,
+                    isSubtask = false,
+                    customerRequestType = item.customerRequestTypeName,
+                    hasCustomerPortalInfo = !item.customerRequestTypeName.isNullOrBlank(),
+                    status = "Ожидание поддержки",
+                    statusCategoryKey = "new",
+                    priority = item.priorityName,
+                    projectKey = item.projectKey,
+                    projectName = item.projectKey,
+                    reporterName = item.reporterDisplayName.ifBlank { "Клиент" },
+                    reporterLoginOrEmail = item.reporterEmail.orEmpty(),
+                    assigneeName = null,
+                    createdIso = nowIso,
+                    createdEpochMillis = nowMillis,
+                    updatedIso = nowIso,
+                    updatedEpochMillis = nowMillis,
+                    labels = item.labels.orEmpty(),
+                    phoneNumbers = mergedPhones,
+                    telegramHandles = mergedTelegram,
+                    comments = emptyList(),
+                    webUrl = "$baseUrl/browse/$createdKey",
+                    isClientTicket = true,
+                    filterReason = null
+                )
+            }
+        }
+    }
+
+    private fun capturePostponedDraft(
+        issueKey: String,
+        fallbackTicket: HelpdeskTicket?,
+        scheduledAtMillis: Long,
+        scheduledDisplay: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): PostponedTicket {
+        val id = UUID.randomUUID().toString()
+        if (issueKey.startsWith("DEMO-", ignoreCase = true) || !settings.isConfigured) {
+            val fb = fallbackTicket
+            return PostponedTicket(
+                id = id,
+                originalKey = issueKey,
+                projectKey = fb?.projectKey?.ifBlank { "DEMO" } ?: "DEMO",
+                issueTypeName = fb?.issueType ?: "Service Request",
+                priorityName = fb?.priority.orEmpty(),
+                summary = fb?.summary ?: issueKey,
+                description = fb?.description.orEmpty(),
+                reporterDisplayName = fb?.reporterName.orEmpty(),
+                reporterEmail = fb?.reporterLoginOrEmail,
+                customerRequestTypeName = fb?.customerRequestType,
+                labels = fb?.labels.orEmpty(),
+                phoneNumbers = fb?.phoneNumbers.orEmpty(),
+                telegramHandles = fb?.telegramHandles.orEmpty(),
+                scheduledAtMillis = scheduledAtMillis,
+                scheduledDisplay = scheduledDisplay
+            )
+        }
+
+        val baseUrl = normalizeBaseUrl(settings.serverUrl)
+        val preferCloud = isCloudTarget(settings, baseUrl)
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?expand=names"
+
+        val req = Request.Builder().url(url).get().applyAuth(settings).build()
+        val rawBody = try {
+            clientFor(settings).newCall(req).execute().use { resp ->
+                val str = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw mapHttpError(resp.code, str)
+                str
+            }
+        } catch (e: Exception) {
+            throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+        }
+
+        val parsedTicket = JiraJsonParser.parseSingleIssue(rawBody, settings, filterSettings) ?: fallbackTicket
+        val root = JsonParser.parseString(rawBody).asJsonObject
+        val fields = root.getAsJsonObject("fields") ?: JsonObject()
+        val namesObj = root.getAsJsonObject("names")
+
+        val projectObj = fields.getAsJsonObject("project")
+        val projectId = projectObj?.takeString("id")
+        val projectKey = projectObj?.takeString("key")
+            ?: parsedTicket?.projectKey
+            ?: issueKey.substringBefore('-', "CSL")
+
+        val issueTypeObj = fields.getAsJsonObject("issuetype")
+        val issueTypeId = issueTypeObj?.takeString("id")
+        val issueTypeName = issueTypeObj?.takeString("name")
+            ?: parsedTicket?.issueType
+            ?: "Task"
+
+        val priorityObj = fields.getAsJsonObject("priority")
+        val priorityId = priorityObj?.takeString("id")
+        val priorityName = priorityObj?.takeString("name") ?: parsedTicket?.priority.orEmpty()
+
+        val reporterObj = fields.getAsJsonObject("reporter")
+        val reporterUsername = reporterObj?.takeString("name")
+        val reporterAccountId = reporterObj?.takeString("accountId")
+        val reporterDisplayName = reporterObj?.takeString("displayName")
+            ?: parsedTicket?.reporterName.orEmpty()
+        val reporterEmail = reporterObj?.takeString("emailAddress")
+            ?: parsedTicket?.reporterLoginOrEmail
+
+        // Extract JSM serviceDeskId & requestTypeId if available, plus custom phone string fields
+        var serviceDeskId: String? = null
+        var requestTypeId: String? = null
+        var customerRequestTypeName: String? = parsedTicket?.customerRequestType
+        val customPhoneFields = mutableMapOf<String, String>()
+
+        for ((fieldKey, fieldVal) in fields.entrySet()) {
+            if (!fieldKey.startsWith("customfield_") || fieldVal == null || fieldVal.isJsonNull) continue
+
+            if (fieldVal.isJsonObject) {
+                val obj = fieldVal.asJsonObject
+                val reqType = obj.getAsJsonObject("requestType")
+                if (reqType != null) {
+                    requestTypeId = reqType.takeString("id") ?: requestTypeId
+                    serviceDeskId = reqType.takeString("serviceDeskId")
+                        ?: obj.takeString("serviceDeskId")
+                        ?: serviceDeskId
+                    customerRequestTypeName = reqType.takeString("name") ?: customerRequestTypeName
+                }
+            } else if (fieldVal.isJsonPrimitive && fieldVal.asJsonPrimitive.isString) {
+                val fieldLabel = namesObj?.takeString(fieldKey)?.lowercase(Locale.ROOT).orEmpty()
+                val looksLikeContactField = PHONE_FIELD_HINTS.any { fieldLabel.contains(it) }
+                val rawStr = fieldVal.asString.trim()
+                if (looksLikeContactField && rawStr.isNotEmpty() && rawStr.length <= 120) {
+                    customPhoneFields[fieldKey] = rawStr
+                }
+            }
+        }
+
+        return PostponedTicket(
+            id = id,
+            originalKey = issueKey,
+            projectKey = projectKey,
+            projectId = projectId,
+            issueTypeId = issueTypeId,
+            issueTypeName = issueTypeName,
+            priorityId = priorityId,
+            priorityName = priorityName,
+            summary = parsedTicket?.summary ?: fields.takeString("summary") ?: issueKey,
+            description = parsedTicket?.description.orEmpty(),
+            reporterDisplayName = reporterDisplayName,
+            reporterUsername = reporterUsername,
+            reporterAccountId = reporterAccountId,
+            reporterEmail = reporterEmail,
+            serviceDeskId = serviceDeskId,
+            requestTypeId = requestTypeId,
+            customerRequestTypeName = customerRequestTypeName,
+            customFieldsJson = customPhoneFields,
+            labels = parsedTicket?.labels.orEmpty(),
+            phoneNumbers = parsedTicket?.phoneNumbers.orEmpty(),
+            telegramHandles = parsedTicket?.telegramHandles.orEmpty(),
+            scheduledAtMillis = scheduledAtMillis,
+            scheduledDisplay = scheduledDisplay
+        )
+    }
+
+    private fun buildRecreatedDescription(
+        item: PostponedTicket,
+        includeReporterNote: Boolean
+    ): String {
+        val sb = StringBuilder()
+        val cleanOriginalDesc = item.description
+            .replace(Regex("\n*\\[Пересоздана из отложенной заявки [^\\]]+]"), "")
+            .trim()
+        if (cleanOriginalDesc.isNotEmpty()) {
+            sb.append(cleanOriginalDesc)
+        }
+
+        // Ensure phone numbers are always present in text if not already included in description
+        val missingPhones = item.phoneNumbers.orEmpty()
+            .map { it.e164 }
+            .filter { e164 -> !cleanOriginalDesc.contains(e164) && !cleanOriginalDesc.contains(e164.removePrefix("+")) }
+        if (missingPhones.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append("\n\n")
+            sb.append("Телефон клиента: ").append(missingPhones.joinToString(", "))
+        }
+
+        if (includeReporterNote && item.reporterDisplayName.isNotBlank() &&
+            !cleanOriginalDesc.contains(item.reporterDisplayName, ignoreCase = true)
+        ) {
+            if (sb.isNotEmpty()) sb.append("\n")
+            sb.append("Клиент: ").append(item.reporterDisplayName)
+        }
+
+        if (sb.isNotEmpty()) sb.append("\n\n")
+        sb.append("[Пересоздана из отложенной заявки ${item.originalKey} · ${item.scheduledDisplay}]")
+        return sb.toString()
+    }
+
+    private fun tryCreateViaServiceDeskApi(
+        baseUrl: String,
+        item: PostponedTicket,
+        settings: AppSettings
+    ): String? {
+        val sdId = item.serviceDeskId ?: return null
+        val rtId = item.requestTypeId ?: return null
+        val url = "$baseUrl/rest/servicedeskapi/request"
+
+        val behalfCandidates = listOfNotNull(
+            item.reporterUsername?.takeIf { it.isNotBlank() },
+            item.reporterAccountId?.takeIf { it.isNotBlank() },
+            item.reporterEmail?.takeIf { it.isNotBlank() }
+        ).distinct()
+
+        val attempts = mutableListOf<String?>()
+        attempts.addAll(behalfCandidates)
+        attempts.add(null) // Final fallback without raiseOnBehalfOf
+
+        for (behalf in attempts) {
+            val reqValues = JsonObject().apply {
+                addProperty("summary", item.summary)
+                addProperty(
+                    "description",
+                    buildRecreatedDescription(item, includeReporterNote = (behalf == null))
+                )
+            }
+            val payload = JsonObject().apply {
+                addProperty("serviceDeskId", sdId)
+                addProperty("requestTypeId", rtId)
+                add("requestFieldValues", reqValues)
+                if (!behalf.isNullOrBlank()) {
+                    addProperty("raiseOnBehalfOf", behalf)
+                }
+            }
+
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("X-ExperimentalApi", "opt-in")
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .applyAuth(settings)
+                    .build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val json = JsonParser.parseString(bodyStr).asJsonObject
+                        val key = json.takeString("issueKey") ?: json.takeString("key")
+                        if (!key.isNullOrBlank()) return key
+                    }
+                }
+            } catch (_: Exception) {
+                // Fall through to next attempt / Core Issue API
+            }
+        }
+        return null
+    }
+
+    private fun createViaCoreIssueApi(
+        baseUrl: String,
+        preferCloud: Boolean,
+        item: PostponedTicket,
+        settings: AppSettings
+    ): String {
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue"
+        val descriptionStr = buildRecreatedDescription(item, includeReporterNote = true)
+
+        val fields = JsonObject().apply {
+            add("project", JsonObject().apply {
+                if (!item.projectId.isNullOrBlank()) {
+                    addProperty("id", item.projectId)
+                } else {
+                    addProperty("key", item.projectKey)
+                }
+            })
+            add("issuetype", JsonObject().apply {
+                if (!item.issueTypeId.isNullOrBlank()) {
+                    addProperty("id", item.issueTypeId)
+                } else {
+                    addProperty("name", item.issueTypeName)
+                }
+            })
+            addProperty("summary", item.summary)
+
+            if (preferCloud) {
+                add("description", buildAdfDocument(descriptionStr))
+            } else {
+                addProperty("description", descriptionStr)
+            }
+
+            if (!item.priorityId.isNullOrBlank()) {
+                add("priority", JsonObject().apply { addProperty("id", item.priorityId) })
+            }
+
+            if (preferCloud && !item.reporterAccountId.isNullOrBlank()) {
+                add("reporter", JsonObject().apply { addProperty("accountId", item.reporterAccountId) })
+            } else if (!preferCloud && !item.reporterUsername.isNullOrBlank()) {
+                add("reporter", JsonObject().apply { addProperty("name", item.reporterUsername) })
+            }
+
+            if (!item.labels.isNullOrEmpty()) {
+                val labelsArr = JsonArray()
+                item.labels.forEach { labelsArr.add(it) }
+                add("labels", labelsArr)
+            }
+
+            item.customFieldsJson?.forEach { (cfKey, cfVal) ->
+                addProperty(cfKey, cfVal)
+            }
+        }
+
+        val protectedFields = setOf("project", "issuetype", "summary")
+        var lastException: Exception? = null
+
+        repeat(4) {
+            val payload = JsonObject().apply { add("fields", fields) }
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .applyAuth(settings)
+                    .build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val json = JsonParser.parseString(bodyStr).asJsonObject
+                        val newKey = json.takeString("key")
+                        if (!newKey.isNullOrBlank()) return newKey
+                    }
+
+                    // If HTTP 400 tells us specific optional fields cannot be set on Create Screen,
+                    // remove them and retry immediately!
+                    if (resp.code == 400) {
+                        val rejectedKeys = runCatching {
+                            JsonParser.parseString(bodyStr)
+                                .asJsonObject
+                                .getAsJsonObject("errors")
+                                ?.keySet()
+                                ?.filter { it !in protectedFields }
+                                .orEmpty()
+                        }.getOrDefault(emptyList())
+
+                        if (rejectedKeys.isNotEmpty()) {
+                            var removedAny = false
+                            for (rk in rejectedKeys) {
+                                if (fields.has(rk)) {
+                                    fields.remove(rk)
+                                    removedAny = true
+                                }
+                            }
+                            if (removedAny) {
+                                lastException = mapHttpError(resp.code, bodyStr)
+                                return@use
+                            }
+                        }
+                    }
+
+                    throw mapHttpError(resp.code, bodyStr)
+                }
+            } catch (e: JiraApiException) {
+                throw e
+            } catch (e: Exception) {
+                throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+        }
+
+        throw (lastException ?: JiraApiException("Не удалось пересоздать отложенную заявку ${item.originalKey}"))
+    }
+
+    private fun updateCustomFieldsBestEffort(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        customFields: Map<String, String>,
+        settings: AppSettings
+    ) {
+        if (customFields.isEmpty()) return
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+        val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey"
+        val fieldsObj = JsonObject().apply {
+            customFields.forEach { (k, v) -> addProperty(k, v) }
+        }
+        val payload = JsonObject().apply { add("fields", fieldsObj) }
+        val req = Request.Builder()
+            .url(url)
+            .put(payload.toString().toRequestBody(jsonMediaType))
+            .applyAuth(settings)
+            .build()
+        clientFor(settings).newCall(req).execute().close()
+    }
+
+    private fun buildAdfDocument(text: String): JsonObject {
+        val textNode = JsonObject().apply {
+            addProperty("type", "text")
+            addProperty("text", text)
+        }
+        val contentArr = JsonArray().apply { add(textNode) }
+        val paragraph = JsonObject().apply {
+            addProperty("type", "paragraph")
+            add("content", contentArr)
+        }
+        val docContent = JsonArray().apply { add(paragraph) }
+        return JsonObject().apply {
+            addProperty("type", "doc")
+            addProperty("version", 1)
+            add("content", docContent)
         }
     }
 
@@ -880,6 +1453,10 @@ class JiraApiClient {
 
         private val WAITING_SUPPORT_KEYWORDS = listOf(
             "ожидание поддержки", "ожидаие поддержки", "ожидает поддержки", "waiting for support"
+        )
+
+        private val PHONE_FIELD_HINTS = listOf(
+            "phone", "телефон", "тел.", "тел ", "мобил", "контакт", "номер связи", "mobile", "callback"
         )
 
         private fun buildClient(trustAllSsl: Boolean): OkHttpClient {

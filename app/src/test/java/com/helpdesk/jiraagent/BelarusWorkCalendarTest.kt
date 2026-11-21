@@ -1,9 +1,11 @@
 package com.helpdesk.jiraagent
 
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
 import com.helpdesk.jiraagent.model.AppSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
@@ -72,5 +74,31 @@ class BelarusWorkCalendarTest {
 
         // Holiday Friday 03.07.2026 at 11:00 -> Independence Day RB, must be silent!
         assertFalse(checkMinsk(2026, 7, 3, 11, 0))
+
+        // When user enables notifications in non-working hours (workScheduleEnabled = false), 24/7 allowed
+        val allowOffHoursSettings = settings.copy(workScheduleEnabled = false)
+        val saturdayNight = LocalDateTime.of(2026, 11, 21, 22, 45)
+            .atZone(BelarusWorkCalendar.MINSK_ZONE)
+            .toInstant()
+        assertTrue(BelarusWorkCalendar.isWorkingTimeNow(allowOffHoursSettings, saturdayNight))
+    }
+
+    @Test
+    fun parsesPostponeDateAndTimeFormatsIncludingDashAndColon() {
+        val parsedDash = PostponeDateTimeParser.parseToEpochMillis(
+            "22.11.2026",
+            "12-00",
+            BelarusWorkCalendar.MINSK_ZONE
+        )
+        assertNotNull(parsedDash)
+        assertEquals("22.11.2026 12:00", parsedDash!!.second)
+
+        val parsedColon = PostponeDateTimeParser.parseToEpochMillis(
+            "22.11.2026",
+            "12:00",
+            BelarusWorkCalendar.MINSK_ZONE
+        )
+        assertNotNull(parsedColon)
+        assertEquals(parsedDash.first, parsedColon!!.first)
     }
 }

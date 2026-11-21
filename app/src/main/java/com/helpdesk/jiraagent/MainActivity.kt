@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Notifications
@@ -33,12 +35,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,6 +65,9 @@ import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.TicketDetailScreen
 import com.helpdesk.jiraagent.ui.screens.TicketsScreen
+import com.helpdesk.jiraagent.ui.theme.CslMidnight
+import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.ui.theme.JiraHelpdeskTheme
 
 private enum class BottomDestination(val label: String) {
@@ -107,6 +115,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val filterSettings by viewModel.filterSettings.collectAsStateWithLifecycle()
     val tickets by viewModel.tickets.collectAsStateWithLifecycle()
+    val postponedTickets by viewModel.postponedTickets.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val selectedTicketKey by viewModel.selectedTicketKey.collectAsStateWithLifecycle()
     val isLoadingDetail by viewModel.isLoadingTicketDetail.collectAsStateWithLifecycle()
@@ -143,66 +152,101 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             onExecuteAction = { action, comment, transitionId ->
                 viewModel.executeTicketAction(activeKey, action, comment, transitionId)
             },
+            onPostponeTicket = { epochMillis, formattedDisplay, transitionId ->
+                viewModel.postponeTicket(activeKey, epochMillis, formattedDisplay, transitionId)
+            },
             onDismissActionMessage = { viewModel.dismissTicketActionFeedback() },
             onBack = { viewModel.closeTicketDetail() }
         )
         return
     }
 
+    val navItemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = CslOrange,
+        selectedTextColor = CslOrange,
+        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = CslMidnight,
+                    titleContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                ),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Signature csl.by 4dp orange vertical accent bar (#F7631B)
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(22.dp)
+                                .background(CslOrange, RoundedCornerShape(2.dp))
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
                         val dotColor = when {
                             !appSettings.isConfigured -> Color(0xFF97A0AF)
-                            syncStatus.lastError != null -> MaterialTheme.colorScheme.error
-                            syncStatus.isServiceRunning || appSettings.pollingEnabled -> Color(0xFF1B873F)
+                            syncStatus.lastError != null -> Color(0xFFF44A40)
+                            syncStatus.isServiceRunning || appSettings.pollingEnabled -> CslSuccessGreen
                             else -> Color(0xFFFFAB00)
                         }
                         Box(
                             modifier = Modifier
-                                .size(10.dp)
+                                .size(9.dp)
                                 .clip(CircleShape)
                                 .background(dotColor)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Jira Helpdesk Агент",
+                            text = "Help-CSL",
                             fontWeight = FontWeight.Bold,
+                            color = Color.White,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
                 actions = {
-                    if (appSettings.isConfigured) {
+                    if (appSettings.isConfigured || postponedTickets.isNotEmpty()) {
                         IconButton(onClick = { viewModel.refreshNow() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Обновить")
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Обновить",
+                                tint = CslOrange
+                            )
                         }
                     }
                 }
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = NavigationBarDefaults.Elevation
+            ) {
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.TICKETS,
                     onClick = { currentTab = BottomDestination.TICKETS },
                     icon = { Icon(Icons.Default.SupportAgent, contentDescription = null) },
-                    label = { Text(BottomDestination.TICKETS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    label = { Text(BottomDestination.TICKETS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    colors = navItemColors
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.FILTER,
                     onClick = { currentTab = BottomDestination.FILTER },
                     icon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                    label = { Text(BottomDestination.FILTER.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    label = { Text(BottomDestination.FILTER.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    colors = navItemColors
                 )
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.SETTINGS,
                     onClick = { currentTab = BottomDestination.SETTINGS },
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text(BottomDestination.SETTINGS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    label = { Text(BottomDestination.SETTINGS.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    colors = navItemColors
                 )
             }
         }
@@ -256,10 +300,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             when (currentTab) {
                 BottomDestination.TICKETS -> TicketsScreen(
                     tickets = tickets,
+                    postponedTickets = postponedTickets,
                     appSettings = appSettings,
                     syncStatus = syncStatus,
                     onTicketClick = { key -> viewModel.openTicket(key) },
-                    onGoToSettings = { currentTab = BottomDestination.SETTINGS },
+                    onCancelPostponed = { id -> viewModel.cancelPostponedTicket(id) },
+                    onRefresh = { viewModel.refreshNow() },
+                    onOpenSettings = { currentTab = BottomDestination.SETTINGS },
                     modifier = Modifier.weight(1f)
                 )
 

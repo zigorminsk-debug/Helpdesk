@@ -14,10 +14,12 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
+import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketComment
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.service.JiraMonitorService
+import com.helpdesk.jiraagent.service.PostponeScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +38,8 @@ data class TicketActionUiState(
     val isError: Boolean = false,
     val manualTransitionPrompt: Boolean = false,
     val pendingAction: TicketWorkflowAction? = null,
+    val pendingPostponeAtMillis: Long? = null,
+    val pendingPostponeDisplay: String? = null,
     val availableTransitions: List<JiraTransitionOption> = emptyList()
 )
 
@@ -48,6 +52,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appSettings: StateFlow<AppSettings> = repository.appSettings
     val filterSettings: StateFlow<FilterSettings> = repository.filterSettings
     val tickets: StateFlow<List<HelpdeskTicket>> = repository.tickets
+    val postponedTickets: StateFlow<List<PostponedTicket>> = repository.postponedTickets
     val syncStatus: StateFlow<SyncStatus> = repository.syncStatus
 
     private val _selectedTicketKey = MutableStateFlow<String?>(null)
@@ -178,13 +183,94 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Postpones [ticketKey] until [scheduledAtMillis]: closes it in Jira now and schedules
+     * automatic recreation + notification at the specified date & time.
+     */
+    fun postponeTicket(
+        ticketKey: String,
+        scheduledAtMillis: Long,
+        scheduledDisplay: String,
+        explicitTransitionId: String? = null
+    ) {
+        val settings = appSettings.value
+        val existingTicket = tickets.value.firstOrNull { it.key.equals(ticketKey, ignoreCase = true) }
+
+        if (!ticketKey.startsWith("DEMO-") && !settings.isConfigured) {
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = "Сначала настройте подключение к Jira",
+                isError = true
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(isBusy = true)
+            apiClient.postponeAndCloseTicket(
+                issueKey = ticketKey,
+                fallbackTicket = existingTicket,
+                scheduledAtMillis = scheduledAtMillis,
+                scheduledDisplay = scheduledDisplay,
+                explicitTransitionId = explicitTransitionId,
+                settings = settings,
+                filterSettings = filterSettings.value
+            ).onSuccess { outcome ->
+                outcome.closedTicket?.let { repository.upsertSingleTicket(it) }
+
+                if (outcome.needsManualTransitionChoice) {
+                    _ticketActionState.value = TicketActionUiState(
+                        isBusy = false,
+                        statusMessage = outcome.statusMessage,
+                        isError = false,
+                        manualTransitionPrompt = true,
+                        pendingAction = TicketWorkflowAction.COMPLETE,
+                        pendingPostponeAtMillis = scheduledAtMillis,
+                        pendingPostponeDisplay = scheduledDisplay,
+                        availableTransitions = outcome.availableTransitions
+                    )
+                    return@onSuccess
+                }
+
+                outcome.postponedTicket?.let { draft ->
+                    repository.addPostponedTicket(draft)
+                    JiraMonitorService.syncServiceState(appContext)
+                }
+
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = outcome.statusMessage,
+                    isError = false
+                )
+                Toast.makeText(
+                    appContext,
+                    "Отложено до $scheduledDisplay. Заявка закрыта и пересоздастся автоматически.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }.onFailure { err ->
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = err.message ?: "Не удалось отложить заявку",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    fun cancelPostponedTicket(postponedId: String) {
+        repository.removePostponedTicket(postponedId)
+        PostponeScheduler.scheduleNextAlarm(appContext)
+        Toast.makeText(appContext, "Отложенное пересоздание отменено", Toast.LENGTH_SHORT).show()
+    }
+
     fun refreshNow() {
         val settings = appSettings.value
-        if (!settings.isConfigured) return
-        if (settings.pollingEnabled) {
+        if (settings.pollingEnabled && settings.isConfigured) {
             JiraMonitorService.triggerImmediatePoll(appContext)
         } else {
             viewModelScope.launch {
+                PostponeScheduler.processDuePostponedTickets(appContext, apiClient)
+                if (!settings.isConfigured) return@launch
                 repository.updateSyncStatus { it.copy(isSyncing = true) }
                 apiClient.fetchRecentTickets(settings, filterSettings.value)
                     .onSuccess { fetched ->
@@ -280,7 +366,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             statusCategoryKey = "new",
             priority = "Высокий",
             projectKey = "DEMO",
-            projectName = "Helpdesk Demo",
+            projectName = "Help-CSL Demo",
             reporterName = "Иван Петров (Клиент)",
             reporterLoginOrEmail = "client@example.com",
             assigneeName = null,
@@ -320,7 +406,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             Toast.makeText(
                 appContext,
-                "Тестовая заявка $demoKey создана во вкладке «Новые». ${schedule.statusTitle} — звук и баннер подавлены по календарю РБ.",
+                "Тестовая заявка $demoKey создана во вкладке «Новые». ${schedule.statusTitle} — звук и баннер отключены (можно включить в Настройках → Рабочие дни).",
                 Toast.LENGTH_LONG
             ).show()
         }

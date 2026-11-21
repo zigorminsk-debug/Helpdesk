@@ -39,33 +39,57 @@ class JiraMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         repository = SettingsRepository.getInstance(applicationContext)
+        PostponeScheduler.scheduleNextAlarm(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopPollingAndService()
-                return START_NOT_STICKY
+                if (repository.postponedTickets.value.isEmpty()) {
+                    stopPollingAndService()
+                    return START_NOT_STICKY
+                }
             }
-            ACTION_POLL_NOW -> {
-                ensureForegroundStarted("Обновление заявок…")
-                serviceScope.launch { pollOnce() }
+            ACTION_PROCESS_POSTPONED -> {
+                ensureForegroundStarted("Пересоздание отложенной заявки…")
+                serviceScope.launch {
+                    PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+                    if (repository.appSettings.value.isConfigured) {
+                        pollOnce()
+                    }
+                    if (!repository.appSettings.value.pollingEnabled &&
+                        repository.postponedTickets.value.isEmpty()
+                    ) {
+                        stopPollingAndService()
+                    }
+                }
                 if (pollingJob?.isActive != true) {
                     startPollingLoop()
                 }
                 return START_STICKY
             }
-            else -> {
-                val settings = repository.appSettings.value
-                if (!settings.isConfigured || !settings.pollingEnabled) {
-                    stopPollingAndService()
-                    return START_NOT_STICKY
+            ACTION_POLL_NOW -> {
+                ensureForegroundStarted("Обновление заявок…")
+                serviceScope.launch {
+                    PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+                    pollOnce()
                 }
-                ensureForegroundStarted("Ожидание новых заявок клиентов…")
-                startPollingLoop()
+                if (pollingJob?.isActive != true) {
+                    startPollingLoop()
+                }
                 return START_STICKY
             }
         }
+
+        val settings = repository.appSettings.value
+        val hasPostponed = repository.postponedTickets.value.isNotEmpty()
+        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) {
+            stopPollingAndService()
+            return START_NOT_STICKY
+        }
+        ensureForegroundStarted("Ожидание новых заявок клиентов…")
+        startPollingLoop()
+        return START_STICKY
     }
 
     private fun ensureForegroundStarted(statusText: String) {
@@ -100,13 +124,29 @@ class JiraMonitorService : Service() {
         pollingJob = serviceScope.launch {
             while (isActive) {
                 val settings = repository.appSettings.value
-                if (!settings.isConfigured || !settings.pollingEnabled) {
+                val hasPostponed = repository.postponedTickets.value.isNotEmpty()
+                if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) {
                     stopPollingAndService()
                     break
                 }
-                pollOnce()
-                val intervalSec = repository.appSettings.value.pollIntervalSeconds.coerceIn(10, 3600)
-                delay(intervalSec * 1000L)
+
+                // Always process due postponed tickets first
+                PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+
+                if (settings.isConfigured && settings.pollingEnabled) {
+                    pollOnce()
+                }
+
+                val intervalMs = repository.appSettings.value.pollIntervalSeconds.coerceIn(10, 3600) * 1000L
+                val nextPostponedAt = repository.postponedTickets.value
+                    .minByOrNull { it.scheduledAtMillis }
+                    ?.scheduledAtMillis
+                val waitMs = if (nextPostponedAt != null) {
+                    (nextPostponedAt - System.currentTimeMillis()).coerceIn(1_000L, intervalMs)
+                } else {
+                    intervalMs
+                }
+                delay(waitMs)
             }
         }
     }
@@ -132,15 +172,20 @@ class JiraMonitorService : Service() {
                 }
             }
 
-            val newCount = tickets.count { it.isClientTicket && it.stage == TicketStage.NEW }
-            val inProgressCount = tickets.count { it.isClientTicket && it.stage == TicketStage.IN_PROGRESS }
+            val allCurrent = repository.tickets.value
+            val newCount = allCurrent.count { it.isClientTicket && it.stage == TicketStage.NEW }
+            val inProgressCount = allCurrent.count { it.isClientTicket && it.stage == TicketStage.IN_PROGRESS }
+            val postponedCount = repository.postponedTickets.value.size
             val timeStr = Instant.ofEpochMilli(nowMillis)
                 .atZone(ZoneId.systemDefault())
                 .toLocalTime()
                 .format(timeFormatter)
 
             val modePrefix = if (schedule.isAllowedNow) "" else "Тихий режим РБ · "
-            updateForegroundText("${modePrefix}Новые: $newCount · В работе: $inProgressCount · $timeStr")
+            val postponedSuffix = if (postponedCount > 0) " · Отложено: $postponedCount" else ""
+            updateForegroundText(
+                "${modePrefix}Новые: $newCount · В работе: $inProgressCount$postponedSuffix · $timeStr"
+            )
             repository.updateSyncStatus {
                 it.copy(
                     isSyncing = false,
@@ -180,12 +225,16 @@ class JiraMonitorService : Service() {
     companion object {
         const val ACTION_START_OR_RESTART = "com.helpdesk.jiraagent.action.START_OR_RESTART"
         const val ACTION_POLL_NOW = "com.helpdesk.jiraagent.action.POLL_NOW"
+        const val ACTION_PROCESS_POSTPONED = "com.helpdesk.jiraagent.action.PROCESS_POSTPONED"
         const val ACTION_STOP = "com.helpdesk.jiraagent.action.STOP"
 
         fun syncServiceState(context: Context) {
             val repo = SettingsRepository.getInstance(context)
             val settings = repo.appSettings.value
-            if (settings.isConfigured && settings.pollingEnabled) {
+            val hasPostponed = repo.postponedTickets.value.isNotEmpty()
+            PostponeScheduler.scheduleNextAlarm(context)
+
+            if ((settings.isConfigured && settings.pollingEnabled) || hasPostponed) {
                 val intent = Intent(context, JiraMonitorService::class.java).apply {
                     action = ACTION_START_OR_RESTART
                 }
@@ -207,6 +256,15 @@ class JiraMonitorService : Service() {
             if (!repo.appSettings.value.isConfigured) return
             val intent = Intent(context, JiraMonitorService::class.java).apply {
                 action = ACTION_POLL_NOW
+            }
+            runCatching {
+                ContextCompat.startForegroundService(context, intent)
+            }
+        }
+
+        fun triggerPostponedCheck(context: Context) {
+            val intent = Intent(context, JiraMonitorService::class.java).apply {
+                action = ACTION_PROCESS_POSTPONED
             }
             runCatching {
                 ContextCompat.startForegroundService(context, intent)

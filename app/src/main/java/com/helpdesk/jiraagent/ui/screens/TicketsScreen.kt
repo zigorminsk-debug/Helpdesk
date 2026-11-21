@@ -1,6 +1,7 @@
 package com.helpdesk.jiraagent.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,9 +9,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,11 +28,13 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.FilterAltOff
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
@@ -43,6 +48,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,6 +59,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -62,10 +69,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
+import com.helpdesk.jiraagent.ui.theme.CslInfoBlue
+import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.util.DialerLauncher
 import com.helpdesk.jiraagent.util.MessengerApp
 import com.helpdesk.jiraagent.util.MessengerLauncher
@@ -90,45 +101,32 @@ private data class TabItemSpec(
 @Composable
 fun TicketsScreen(
     tickets: List<HelpdeskTicket>,
+    postponedTickets: List<PostponedTicket>,
     appSettings: AppSettings,
     syncStatus: SyncStatus,
     onTicketClick: (String) -> Unit,
-    onGoToSettings: () -> Unit,
+    onCancelPostponed: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    var selectedMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
+    var tabMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
 
-    val newTickets = remember(tickets) {
-        tickets
-            .filter { it.isClientTicket && it.stage == TicketStage.NEW }
-            .sortedByDescending { it.createdEpochMillis }
-    }
-    val inProgressTickets = remember(tickets) {
-        tickets
-            .filter { it.isClientTicket && it.stage == TicketStage.IN_PROGRESS }
-            .sortedByDescending { maxOf(it.updatedEpochMillis, it.createdEpochMillis) }
-    }
-    val closedTickets = remember(tickets) {
-        tickets
-            .filter { it.isClientTicket && it.stage == TicketStage.CLOSED }
-            .sortedByDescending { maxOf(it.updatedEpochMillis, it.createdEpochMillis) }
-    }
-    val serviceTickets = remember(tickets) {
-        tickets
-            .filter { !it.isClientTicket }
-            .sortedByDescending { it.createdEpochMillis }
-    }
+    val clientTickets = remember(tickets) { tickets.filter { it.isClientTicket } }
+    val newTickets = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.NEW } }
+    val inProgressTickets = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.IN_PROGRESS } }
+    val closedTickets = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.CLOSED } }
+    val serviceFilteredTickets = remember(tickets) { tickets.filter { !it.isClientTicket } }
 
-    val baseList = when (selectedMode) {
+    val baseList = when (tabMode) {
         TicketTabMode.NEW -> newTickets
         TicketTabMode.IN_PROGRESS -> inProgressTickets
         TicketTabMode.CLOSED -> closedTickets
-        TicketTabMode.FILTERED_SERVICE -> serviceTickets
+        TicketTabMode.FILTERED_SERVICE -> serviceFilteredTickets
     }
 
-    val filteredList = remember(baseList, searchQuery) {
+    val displayedTickets = remember(baseList, searchQuery) {
         val q = searchQuery.trim().lowercase()
         if (q.isEmpty()) {
             baseList
@@ -137,104 +135,54 @@ fun TicketsScreen(
                 t.key.lowercase().contains(q) ||
                     t.summary.lowercase().contains(q) ||
                     t.reporterName.lowercase().contains(q) ||
-                    t.phoneNumbers.any { p ->
-                        p.e164.contains(q) || p.formattedDisplay.lowercase().contains(q) || p.raw.contains(q)
-                    } ||
-                    t.telegramHandles.orEmpty().any { it.lowercase().contains(q) }
+                    t.status.lowercase().contains(q) ||
+                    (t.customerRequestType?.lowercase()?.contains(q) == true) ||
+                    (t.assigneeName?.lowercase()?.contains(q) == true) ||
+                    t.description.lowercase().contains(q) ||
+                    t.phoneNumbers.any { it.e164.contains(q) || it.formattedDisplay.lowercase().contains(q) }
             }
         }
-    }
-
-    val tabs = remember(newTickets.size, inProgressTickets.size, closedTickets.size, serviceTickets.size) {
-        listOf(
-            TabItemSpec(TicketTabMode.NEW, "Новые", newTickets.size, Icons.Default.FiberNew),
-            TabItemSpec(TicketTabMode.IN_PROGRESS, "В работе", inProgressTickets.size, Icons.Default.Build),
-            TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
-            TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceTickets.size, Icons.Default.SmartToy)
-        )
     }
 
     Column(modifier = modifier.fillMaxSize()) {
         if (syncStatus.isSyncing) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = CslOrange
+            )
         }
 
         if (!appSettings.isConfigured) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "Сервер Jira ещё не настроен",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Укажите адрес сервера Jira и учётные данные во вкладке «Настройки».",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(onClick = onGoToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Открыть настройки", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
+            UnconfiguredBanner(onOpenSettings = onOpenSettings)
+        } else {
+            syncStatus.lastError?.let { err ->
+                ErrorBanner(errorMessage = err, onRetry = onRefresh)
             }
         }
 
-        if (syncStatus.lastError != null && appSettings.isConfigured) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.ErrorOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = syncStatus.lastError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            }
-        }
-
+        // Concise single-line search field styled in csl.by palette
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            singleLine = true,
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             placeholder = {
                 Text(
-                    text = "Поиск: номер, тема, клиент, телефон",
+                    text = "Поиск заявки…",
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium
                 )
             },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            leadingIcon = {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = CslOrange
+                )
+            },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { searchQuery = "" }) {
@@ -242,75 +190,64 @@ fun TicketsScreen(
                     }
                 }
             },
-            shape = RoundedCornerShape(12.dp)
+            singleLine = true,
+            shape = RoundedCornerShape(10.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = CslOrange,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                focusedContainerColor = MaterialTheme.colorScheme.surface
+            )
         )
 
-        // Adaptive 4-tab selector: fits 100% within any screen width & system font scale without cutoff
-        AdaptiveTicketTabsBar(
-            tabs = tabs,
-            selectedMode = selectedMode,
-            onSelectMode = { selectedMode = it },
+        val tabSpecs = remember(
+            newTickets.size,
+            inProgressTickets.size,
+            closedTickets.size,
+            serviceFilteredTickets.size
+        ) {
+            listOf(
+                TabItemSpec(TicketTabMode.NEW, "Новые", newTickets.size, Icons.Default.FiberNew),
+                TabItemSpec(TicketTabMode.IN_PROGRESS, "В работе", inProgressTickets.size, Icons.Default.Build),
+                TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
+                TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceFilteredTickets.size, Icons.Default.SmartToy)
+            )
+        }
+
+        AdaptiveFourTabsBar(
+            tabs = tabSpecs,
+            selectedMode = tabMode,
+            onSelect = { tabMode = it },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
         )
 
-        if (filteredList.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = if (selectedMode == TicketTabMode.FILTERED_SERVICE) {
-                            Icons.Default.FilterAltOff
-                        } else {
-                            Icons.Default.Inbox
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(52.dp),
-                        tint = MaterialTheme.colorScheme.outline
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = when (selectedMode) {
-                            TicketTabMode.NEW -> "Новых заявок пока нет"
-                            TicketTabMode.IN_PROGRESS -> "Заявок в работе пока нет"
-                            TicketTabMode.CLOSED -> "Закрытых заявок не найдено"
-                            TicketTabMode.FILTERED_SERVICE -> "Отсеянных сервисных заявок нет"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
+        if (displayedTickets.isEmpty() && postponedTickets.isEmpty()) {
+            EmptyTicketsPlaceholder(
+                isConfigured = appSettings.isConfigured,
+                tabMode = tabMode,
+                hasSearch = searchQuery.isNotBlank(),
+                onRefresh = onRefresh
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(filteredList, key = { it.key }) { ticket ->
+                if (postponedTickets.isNotEmpty()) {
+                    item(key = "postponed_summary_card") {
+                        PostponedTicketsQueueCard(
+                            items = postponedTickets,
+                            onCancel = onCancelPostponed
+                        )
+                    }
+                }
+
+                items(displayedTickets, key = { it.key }) { ticket ->
                     TicketListCard(
                         ticket = ticket,
-                        onOpen = { onTicketClick(ticket.key) },
-                        onCallPhone = { e164 ->
-                            DialerLauncher.openSystemDialer(
-                                context = context,
-                                phoneInput = e164,
-                                region = appSettings.phoneRegion,
-                                customCountryCode = appSettings.customCountryCode
-                            )
-                        },
-                        onOpenMessenger = { app, e164 ->
-                            MessengerLauncher.openChatByPhone(context, app, e164)
-                        },
-                        onOpenTelegramHandle = { handle ->
-                            MessengerLauncher.openTelegramUsername(context, handle)
-                        }
+                        onClick = { onTicketClick(ticket.key) }
                     )
                 }
             }
@@ -319,128 +256,210 @@ fun TicketsScreen(
 }
 
 @Composable
-private fun AdaptiveTicketTabsBar(
+private fun PostponedTicketsQueueCard(
+    items: List<PostponedTicket>,
+    onCancel: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.5f))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = CslOrange,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Отложенные к пересозданию (${items.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+
+            items.forEach { item ->
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${item.originalKey} → ${item.scheduledDisplay}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = CslOrange
+                            )
+                            Text(
+                                text = item.summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            item.lastError?.let { err ->
+                                Text(
+                                    text = err,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { onCancel(item.id) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Отменить пересоздание",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdaptiveFourTabsBar(
     tabs: List<TabItemSpec>,
     selectedMode: TicketTabMode,
-    onSelectMode: (TicketTabMode) -> Unit,
+    onSelect: (TicketTabMode) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier) {
-        if (maxWidth >= 300.dp) {
+        val useTwoRows = maxWidth < 310.dp
+        if (useTwoRows) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tabs.take(2).forEach { tab ->
+                        CompactTabSegment(
+                            tab = tab,
+                            selected = selectedMode == tab.mode,
+                            onClick = { onSelect(tab.mode) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tabs.drop(2).forEach { tab ->
+                        CompactTabSegment(
+                            tab = tab,
+                            selected = selectedMode == tab.mode,
+                            onClick = { onSelect(tab.mode) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        } else {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 tabs.forEach { tab ->
-                    CompactSegmentTab(
-                        spec = tab,
+                    CompactTabSegment(
+                        tab = tab,
                         selected = selectedMode == tab.mode,
-                        onClick = { onSelectMode(tab.mode) },
+                        onClick = { onSelect(tab.mode) },
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
-        } else {
-            // Ultra-narrow screen fallback: clean 2x2 grid
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    tabs.take(2).forEach { tab ->
-                        CompactSegmentTab(
-                            spec = tab,
-                            selected = selectedMode == tab.mode,
-                            onClick = { onSelectMode(tab.mode) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    tabs.drop(2).forEach { tab ->
-                        CompactSegmentTab(
-                            spec = tab,
-                            selected = selectedMode == tab.mode,
-                            onClick = { onSelectMode(tab.mode) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
         }
     }
 }
 
 @Composable
-private fun CompactSegmentTab(
-    spec: TabItemSpec,
+private fun CompactTabSegment(
+    tab: TabItemSpec,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    // Density-bounded font sizes guarantee all 4 tabs & icons stay completely inside screen bounds
-    // even when system accessibility fontScale is set to 130–150%.
-    val countFontSize = with(density) { 13.dp.toSp() }
-    val labelFontSize = with(density) { 10.5.dp.toSp() }
+    val countTextSize = with(density) { 12.dp.toSp() }
+    val titleTextSize = with(density) { 11.dp.toSp() }
 
     val containerColor = if (selected) {
-        MaterialTheme.colorScheme.secondaryContainer
+        MaterialTheme.colorScheme.primaryContainer
     } else {
         MaterialTheme.colorScheme.surface
     }
     val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onSecondaryContainer
+        CslOrange
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
     val borderColor = if (selected) {
-        MaterialTheme.colorScheme.secondary
+        CslOrange
     } else {
         MaterialTheme.colorScheme.outlineVariant
     }
 
     Surface(
-        modifier = modifier.clickable(onClick = onClick),
+        onClick = onClick,
+        modifier = modifier,
         shape = RoundedCornerShape(10.dp),
         color = containerColor,
-        border = BorderStroke(1.dp, borderColor)
+        border = BorderStroke(width = if (selected) 1.5.dp else 1.dp, color = borderColor)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(horizontal = 4.dp, vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center
             ) {
                 Icon(
-                    imageVector = spec.icon,
+                    imageVector = tab.icon,
                     contentDescription = null,
                     tint = contentColor,
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(3.dp))
                 Text(
-                    text = spec.count.toString(),
-                    fontSize = countFontSize,
+                    text = tab.count.toString(),
+                    fontSize = countTextSize,
+                    lineHeight = countTextSize,
                     fontWeight = FontWeight.Bold,
-                    color = contentColor,
-                    maxLines = 1,
-                    softWrap = false
+                    color = if (selected) MaterialTheme.colorScheme.onSurface else contentColor,
+                    maxLines = 1
                 )
             }
-            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = spec.title,
-                fontSize = labelFontSize,
+                text = tab.title,
+                fontSize = titleTextSize,
+                lineHeight = titleTextSize,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = contentColor,
+                color = if (selected) MaterialTheme.colorScheme.onSurface else contentColor,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -454,45 +473,70 @@ private fun CompactSegmentTab(
 @Composable
 private fun TicketListCard(
     ticket: HelpdeskTicket,
-    onOpen: () -> Unit,
-    onCallPhone: (String) -> Unit,
-    onOpenMessenger: (MessengerApp, String) -> Unit,
-    onOpenTelegramHandle: (String) -> Unit
+    onClick: () -> Unit
 ) {
-    val displayMillis = if (ticket.stage == TicketStage.CLOSED && ticket.updatedEpochMillis > 0L) {
-        ticket.updatedEpochMillis
-    } else {
-        ticket.createdEpochMillis
+    val context = LocalContext.current
+    val formattedTime = remember(ticket.createdEpochMillis) {
+        formatShortTime(ticket.createdEpochMillis)
     }
-    val displayIso = if (ticket.stage == TicketStage.CLOSED && ticket.updatedIso.isNotBlank()) {
-        ticket.updatedIso
-    } else {
-        ticket.createdIso
+    val stage = ticket.stage
+
+    val leftStripeColor: Color = when {
+        !ticket.isClientTicket -> MaterialTheme.colorScheme.outline
+        stage == TicketStage.NEW -> CslOrange
+        stage == TicketStage.IN_PROGRESS -> CslInfoBlue
+        else -> CslSuccessGreen
     }
-    val formattedDate = remember(displayMillis, displayIso) {
-        formatTicketTime(displayMillis, displayIso)
+
+    val statusBadgeBg = when {
+        !ticket.isClientTicket -> MaterialTheme.colorScheme.surfaceVariant
+        stage == TicketStage.NEW -> MaterialTheme.colorScheme.primaryContainer
+        stage == TicketStage.IN_PROGRESS -> CslInfoBlue.copy(alpha = 0.14f)
+        else -> CslSuccessGreen.copy(alpha = 0.14f)
+    }
+    val statusBadgeFg = when {
+        !ticket.isClientTicket -> MaterialTheme.colorScheme.onSurfaceVariant
+        stage == TicketStage.NEW -> CslOrange
+        stage == TicketStage.IN_PROGRESS -> CslInfoBlue
+        else -> CslSuccessGreen
     }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpen),
-        shape = RoundedCornerShape(14.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+        ) {
+            // Signature csl.by vertical accent bar on the left edge
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight()
+                    .background(leftStripeColor)
+            )
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
+                // 1. Header row: ONLY Ticket Key on left + Created Time on right -> 100% fits!
                 Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
@@ -500,147 +544,177 @@ private fun TicketListCard(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            maxLines = 1,
-                            softWrap = false
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+
                     Text(
-                        text = ticket.status,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Text(
-                    text = formattedDate,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = ticket.summary,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Person,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "${ticket.reporterName} · ${ticket.customerRequestType ?: ticket.issueType}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (!ticket.assigneeName.isNullOrBlank() && ticket.stage != TicketStage.NEW) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Исполнитель: ${ticket.assigneeName}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (ticket.filterReason != null) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(
-                        text = "Без уведомления: ${ticket.filterReason}",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        text = formattedTime,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
 
-            val tgHandles = ticket.telegramHandles.orEmpty()
-            if (ticket.phoneNumbers.isNotEmpty() || tgHandles.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
+                // 2. Full Status & Request Type row (wraps cleanly, NO ellipsis cutoff!)
+                val typeText = ticket.customerRequestType?.takeIf { it.isNotBlank() } ?: ticket.issueType
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    if (ticket.phoneNumbers.isNotEmpty()) {
-                        val primary = ticket.phoneNumbers.first()
-                        AssistChip(
-                            onClick = { onCallPhone(primary.e164) },
-                            label = {
-                                Text(
-                                    text = primary.formattedDisplay,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Call,
-                                    contentDescription = "Позвонить",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                leadingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
+                    Surface(
+                        color = statusBadgeBg,
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = ticket.status,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = statusBadgeFg
                         )
+                    }
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.align(Alignment.CenterVertically)
+                    if (typeText.isNotBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(6.dp)
                         ) {
-                            MessengerCircleIconButton(
-                                app = MessengerApp.TELEGRAM,
-                                onClick = { onOpenMessenger(MessengerApp.TELEGRAM, primary.e164) }
-                            )
-                            MessengerCircleIconButton(
-                                app = MessengerApp.VIBER,
-                                onClick = { onOpenMessenger(MessengerApp.VIBER, primary.e164) }
-                            )
-                            MessengerCircleIconButton(
-                                app = MessengerApp.WHATSAPP,
-                                onClick = { onOpenMessenger(MessengerApp.WHATSAPP, primary.e164) }
+                            Text(
+                                text = typeText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
+                }
 
-                    tgHandles.forEach { handle ->
-                        MessengerActionChip(
-                            app = MessengerApp.TELEGRAM,
-                            customLabel = handle,
-                            onClick = { onOpenTelegramHandle(handle) }
+                // 3. Full Summary (wraps naturally inside card so multi-line titles are readable)
+                Text(
+                    text = ticket.summary,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                // 4. Full Client / Reporter row (wraps naturally, NO single-line cutoff!)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .size(16.dp),
+                        tint = CslOrange
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = ticket.reporterName,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                if (!ticket.assigneeName.isNullOrBlank()) {
+                    Text(
+                        text = "Исполнитель: ${ticket.assigneeName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CslInfoBlue,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                if (!ticket.isClientTicket && ticket.filterReason != null) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            imageVector = Icons.Default.FilterAltOff,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .padding(top = 1.dp)
+                                .size(14.dp),
+                            tint = MaterialTheme.colorScheme.error
                         )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = ticket.filterReason,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                // 5. Clickable Phone Numbers + Messenger Icons (Telegram / Viber / WhatsApp)
+                if (ticket.phoneNumbers.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ticket.phoneNumbers.take(3).forEach { phone ->
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                AssistChip(
+                                    onClick = { DialerLauncher.openDialer(context, phone.e164) },
+                                    label = {
+                                        Text(
+                                            text = phone.formattedDisplay,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Call,
+                                            contentDescription = "Позвонить",
+                                            modifier = Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    },
+                                    colors = AssistChipDefaults.assistChipColors(
+                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                    )
+                                )
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.align(Alignment.CenterVertically)
+                                ) {
+                                    MessengerCircleIconButton(
+                                        app = MessengerApp.TELEGRAM,
+                                        size = 34.dp,
+                                        onClick = { MessengerLauncher.openTelegramByPhone(context, phone.e164) }
+                                    )
+                                    MessengerCircleIconButton(
+                                        app = MessengerApp.VIBER,
+                                        size = 34.dp,
+                                        onClick = { MessengerLauncher.openViberByPhone(context, phone.e164) }
+                                    )
+                                    MessengerCircleIconButton(
+                                        app = MessengerApp.WHATSAPP,
+                                        size = 34.dp,
+                                        onClick = { MessengerLauncher.openWhatsAppByPhone(context, phone.e164) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (!ticket.telegramHandles.isNullOrEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ticket.telegramHandles.take(2).forEach { handle ->
+                            MessengerActionChip(
+                                app = MessengerApp.TELEGRAM,
+                                label = handle,
+                                onClick = { MessengerLauncher.openTelegramByUsername(context, handle) }
+                            )
+                        }
                     }
                 }
             }
@@ -648,13 +722,127 @@ private fun TicketListCard(
     }
 }
 
-private val CARD_DATE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM HH:mm")
-
-fun formatTicketTime(epochMillis: Long, rawIso: String): String {
-    if (epochMillis > 0L) {
-        return Instant.ofEpochMilli(epochMillis)
-            .atZone(ZoneId.systemDefault())
-            .format(CARD_DATE_FORMATTER)
+@Composable
+private fun UnconfiguredBanner(onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.45f))
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                text = "Подключите сервер Jira в Help-CSL",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Укажите адрес сервера Jira, логин и пароль или токен во вкладке «Настройки», чтобы получать заявки в реальном времени.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Button(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Открыть настройки")
+            }
+        }
     }
-    return rawIso.take(16).replace('T', ' ')
+}
+
+@Composable
+private fun ErrorBanner(errorMessage: String, onRetry: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(onClick = onRetry) {
+                Text("Повтор", maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyTicketsPlaceholder(
+    isConfigured: Boolean,
+    tabMode: TicketTabMode,
+    hasSearch: Boolean,
+    onRefresh: () -> Unit
+) {
+    val emptyMessage = when {
+        hasSearch -> "По вашему поисковому запросу заявки не найдены"
+        !isConfigured -> "Настройте подключение к Jira или отправьте тестовый баннер из раздела «Настройки»"
+        tabMode == TicketTabMode.NEW -> "Новых необработанных заявок сейчас нет"
+        tabMode == TicketTabMode.IN_PROGRESS -> "Заявок со статусом «В работе» сейчас нет"
+        tabMode == TicketTabMode.CLOSED -> "Закрытых заявок клиентов в выборке пока нет"
+        else -> "Отфильтрованных сервисных заявок (zabbix, боты) пока нет"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Default.Inbox,
+                contentDescription = null,
+                modifier = Modifier.size(56.dp),
+                tint = CslOrange.copy(alpha = 0.7f)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = emptyMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (isConfigured) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Button(onClick = onRefresh) {
+                    Text("Обновить сейчас")
+                }
+            }
+        }
+    }
+}
+
+private val cardDateTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM HH:mm")
+
+private fun formatShortTime(epochMillis: Long): String {
+    if (epochMillis <= 0L) return ""
+    return runCatching {
+        Instant.ofEpochMilli(epochMillis)
+            .atZone(ZoneId.systemDefault())
+            .format(cardDateTimeFormatter)
+    }.getOrDefault("")
 }

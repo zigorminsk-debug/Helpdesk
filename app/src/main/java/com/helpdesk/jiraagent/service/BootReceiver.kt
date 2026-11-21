@@ -10,12 +10,17 @@ class BootReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         val repo = SettingsRepository.getInstance(context)
         val settings = repo.appSettings.value
-        if (!settings.isConfigured || !settings.pollingEnabled) return
+
+        // Always re-arm exact alarms for any postponed tickets across reboots or APK updates
+        PostponeScheduler.scheduleNextAlarm(context)
+
+        val hasPostponed = repo.postponedTickets.value.isNotEmpty()
+        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) return
 
         when (action) {
             Intent.ACTION_BOOT_COMPLETED,
             "android.intent.action.QUICKBOOT_POWERON" -> {
-                if (settings.startOnBoot) {
+                if (settings.startOnBoot || hasPostponed) {
                     JiraMonitorService.syncServiceState(context)
                 }
             }

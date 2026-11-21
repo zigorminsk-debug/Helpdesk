@@ -14,6 +14,7 @@ import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
+import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,16 +40,21 @@ class SettingsRepository private constructor(context: Context) {
     val filterSettings: StateFlow<FilterSettings> = _filterSettings.asStateFlow()
 
     private val _tickets = MutableStateFlow(
-        loadCachedTickets().map { ticket ->
-            val eval = TicketFilterEngine.evaluate(
-                ticket = ticket,
-                filter = _filterSettings.value,
-                currentAgentLoginOrEmail = _appSettings.value.usernameOrEmail
-            )
-            ticket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
-        }
+        applyRecreatedOverrides(
+            loadCachedTickets().map { ticket ->
+                val eval = TicketFilterEngine.evaluate(
+                    ticket = ticket,
+                    filter = _filterSettings.value,
+                    currentAgentLoginOrEmail = _appSettings.value.usernameOrEmail
+                )
+                ticket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
+            }
+        )
     )
     val tickets: StateFlow<List<HelpdeskTicket>> = _tickets.asStateFlow()
+
+    private val _postponedTickets = MutableStateFlow(loadPostponedTickets())
+    val postponedTickets: StateFlow<List<PostponedTicket>> = _postponedTickets.asStateFlow()
 
     private val _syncStatus = MutableStateFlow(SyncStatus())
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
@@ -101,10 +107,12 @@ class SettingsRepository private constructor(context: Context) {
 
         // Re-evaluate cached tickets immediately so UI reflects new filter rules without waiting
         val currentAgent = _appSettings.value.usernameOrEmail
-        val updated = _tickets.value.map { ticket ->
-            val eval = TicketFilterEngine.evaluate(ticket, newFilter, currentAgent)
-            ticket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
-        }
+        val updated = applyRecreatedOverrides(
+            _tickets.value.map { ticket ->
+                val eval = TicketFilterEngine.evaluate(ticket, newFilter, currentAgent)
+                ticket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
+            }
+        )
         updateTicketsCache(updated)
     }
 
@@ -121,7 +129,8 @@ class SettingsRepository private constructor(context: Context) {
         polled: List<HelpdeskTicket>,
         isNotificationWindowOpen: Boolean = BelarusWorkCalendar.isWorkingTimeNow(_appSettings.value)
     ): List<HelpdeskTicket> {
-        updateTicketsCache(polled)
+        val adjustedPolled = applyRecreatedOverrides(polled)
+        updateTicketsCache(adjustedPolled)
 
         val baselineDone = cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)
         val silentReseed = cachePrefs.getBoolean(KEY_SILENT_RESEED_ONCE, false)
@@ -130,7 +139,7 @@ class SettingsRepository private constructor(context: Context) {
             ?: mutableSetOf()
 
         if (!baselineDone || silentReseed) {
-            polled.forEach { seenKeys.add(it.key) }
+            adjustedPolled.forEach { seenKeys.add(it.key) }
             cachePrefs.edit()
                 .putBoolean(KEY_SILENT_RESEED_ONCE, false)
                 .remove(KEY_DEFERRED_ALERT_KEYS)
@@ -139,7 +148,7 @@ class SettingsRepository private constructor(context: Context) {
             return emptyList()
         }
 
-        val sortedChronologically = polled.sortedBy { it.createdEpochMillis }
+        val sortedChronologically = adjustedPolled.sortedBy { it.createdEpochMillis }
 
         // Outside RB working days / hours (09:00–17:30): silence notifications & sound,
         // and defer brand-new client tickets until the next RB working window opens.
@@ -181,6 +190,82 @@ class SettingsRepository private constructor(context: Context) {
             current.add(0, ticket)
         }
         updateTicketsCache(current)
+    }
+
+    @Synchronized
+    fun addPostponedTicket(item: PostponedTicket) {
+        val updated = (_postponedTickets.value.filterNot { it.id == item.id } + item)
+            .sortedBy { it.scheduledAtMillis }
+        savePostponedTickets(updated)
+    }
+
+    @Synchronized
+    fun removePostponedTicket(id: String) {
+        val updated = _postponedTickets.value.filterNot { it.id == id }
+        savePostponedTickets(updated)
+    }
+
+    @Synchronized
+    fun updatePostponedTicketError(id: String, error: String) {
+        val updated = _postponedTickets.value.map {
+            if (it.id == id) it.copy(lastError = error) else it
+        }
+        savePostponedTickets(updated)
+    }
+
+    /**
+     * Marks a recreated postponed ticket as seen & guaranteed-client, and places it at the top of "Новые".
+     */
+    @Synchronized
+    fun registerRecreatedPostponedTicket(ticket: HelpdeskTicket) {
+        val recreatedKeys = cachePrefs.getStringSet(KEY_RECREATED_CLIENT_KEYS, emptySet())
+            ?.toMutableSet() ?: mutableSetOf()
+        recreatedKeys.add(ticket.key.uppercase())
+        val boundedRecreated = if (recreatedKeys.size > 300) {
+            recreatedKeys.toList().takeLast(300).toSet()
+        } else {
+            recreatedKeys
+        }
+
+        val seenKeys = cachePrefs.getStringSet(KEY_SEEN_KEYS, emptySet())
+            ?.toMutableSet() ?: mutableSetOf()
+        seenKeys.add(ticket.key)
+
+        cachePrefs.edit()
+            .putStringSet(KEY_RECREATED_CLIENT_KEYS, boundedRecreated)
+            .apply()
+        saveSeenKeys(seenKeys, baselineInitialized = cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, true))
+
+        val clientTicket = ticket.copy(isClientTicket = true, filterReason = null)
+        upsertSingleTicket(clientTicket)
+    }
+
+    private fun applyRecreatedOverrides(list: List<HelpdeskTicket>): List<HelpdeskTicket> {
+        val recreatedKeys = cachePrefs.getStringSet(KEY_RECREATED_CLIENT_KEYS, emptySet()).orEmpty()
+        if (recreatedKeys.isEmpty()) return list
+        return list.map { t ->
+            if (t.key.uppercase() in recreatedKeys) {
+                t.copy(isClientTicket = true, filterReason = null)
+            } else {
+                t
+            }
+        }
+    }
+
+    private fun savePostponedTickets(list: List<PostponedTicket>) {
+        _postponedTickets.value = list
+        runCatching {
+            cachePrefs.edit().putString(KEY_POSTPONED_TICKETS_JSON, gson.toJson(list)).apply()
+        }
+    }
+
+    private fun loadPostponedTickets(): List<PostponedTicket> {
+        val json = cachePrefs.getString(KEY_POSTPONED_TICKETS_JSON, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<PostponedTicket>>() {}.type
+            (gson.fromJson<List<PostponedTicket>>(json, type) ?: emptyList())
+                .sortedBy { it.scheduledAtMillis }
+        }.getOrDefault(emptyList())
     }
 
     fun resetSeenBaseline() {
@@ -374,6 +459,8 @@ class SettingsRepository private constructor(context: Context) {
 
         private const val KEY_SEEN_KEYS = "seen_ticket_keys"
         private const val KEY_DEFERRED_ALERT_KEYS = "deferred_alert_keys"
+        private const val KEY_RECREATED_CLIENT_KEYS = "recreated_client_keys"
+        private const val KEY_POSTPONED_TICKETS_JSON = "postponed_tickets_json"
         private const val KEY_BASELINE_INITIALIZED = "baseline_initialized"
         private const val KEY_SILENT_RESEED_ONCE = "silent_reseed_once"
         private const val KEY_CACHED_TICKETS_JSON = "cached_tickets_json"
