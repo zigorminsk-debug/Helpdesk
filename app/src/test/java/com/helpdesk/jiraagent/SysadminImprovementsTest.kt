@@ -251,8 +251,7 @@ class SysadminImprovementsTest {
             phoneNumbers = listOf(PhoneMatch("+375296543210", "+375296543210", "+375 29 654-32-10", "Тел")),
             comments = emptyList(),
             webUrl = "",
-            isClientTicket = true,
-            stage = TicketStage.NEW
+            isClientTicket = true
         )
         val closedTicket = openTicket.copy(
             id = "2",
@@ -260,8 +259,7 @@ class SysadminImprovementsTest {
             status = "Закрыта",
             statusCategoryKey = "done",
             assigneeName = "Игорь",
-            assigneeLogin = "igor",
-            stage = TicketStage.CLOSED
+            assigneeLogin = "igor"
         )
 
         val matched = HelpCslCallScreeningService.findMatchingTickets(
