@@ -4,6 +4,7 @@ import com.helpdesk.jiraagent.data.JiraJsonParser
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
+import com.helpdesk.jiraagent.model.TicketStage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -13,7 +14,7 @@ import org.junit.Test
 class TicketFilterAndParserTest {
 
     @Test
-    fun jsmServiceRequestFromClientPassesWhileZabbixSenderGoesToService() {
+    fun classifiesNewInProgressClosedAndZabbixServiceTicketsAccurately() {
         val sampleSearchJson = """
             {
               "names": {
@@ -45,7 +46,7 @@ class TicketFilterAndParserTest {
                     "issuetype": { "name": "Service Request", "subtask": false },
                     "status": {
                       "name": "Ожидаие поддержки",
-                      "statusCategory": { "key": "new" }
+                      "statusCategory": { "key": "indeterminate" }
                     },
                     "priority": { "name": "Medium" },
                     "project": { "key": "CSL", "name": "Customer Support Line" },
@@ -60,18 +61,63 @@ class TicketFilterAndParserTest {
                   }
                 },
                 {
+                  "id": "37365",
+                  "key": "CSL-37365",
+                  "fields": {
+                    "summary": "Настройка VPN на ноутбуке",
+                    "description": "Тел +375 44 555-66-77",
+                    "customfield_10010": {
+                      "requestType": { "name": "Настройка ПО" }
+                    },
+                    "issuetype": { "name": "Service Request", "subtask": false },
+                    "status": {
+                      "name": "В работе",
+                      "statusCategory": { "key": "indeterminate" }
+                    },
+                    "assignee": { "displayName": "Иванов И.И." },
+                    "priority": { "name": "Medium" },
+                    "project": { "key": "CSL", "name": "Customer Support Line" },
+                    "reporter": {
+                      "displayName": "ООО Альфа",
+                      "name": "alfa_client"
+                    },
+                    "created": "2026-11-21T11:00:00.000+0300",
+                    "updated": "2026-11-21T12:15:00.000+0300",
+                    "labels": []
+                  }
+                },
+                {
+                  "id": "37360",
+                  "key": "CSL-37360",
+                  "fields": {
+                    "summary": "Замена картриджа",
+                    "description": "Выполнено",
+                    "issuetype": { "name": "Service Request", "subtask": false },
+                    "status": {
+                      "name": "Закрыта",
+                      "statusCategory": { "key": "done" }
+                    },
+                    "priority": { "name": "Low" },
+                    "project": { "key": "CSL", "name": "Customer Support Line" },
+                    "reporter": {
+                      "displayName": "ООО Бета",
+                      "name": "beta_client"
+                    },
+                    "created": "2026-11-21T09:00:00.000+0300",
+                    "updated": "2026-11-21T10:30:00.000+0300",
+                    "labels": []
+                  }
+                },
+                {
                   "id": "37367",
                   "key": "CSL-37367",
                   "fields": {
                     "summary": "High CPU usage on srv-db-01",
                     "description": "Problem started at 12:30:00",
-                    "customfield_10010": {
-                      "requestType": { "name": "Проблемы с ПК/Ноутбуком" }
-                    },
                     "issuetype": { "name": "Service Request", "subtask": false },
                     "status": {
-                      "name": "Ожидаие поддержки",
-                      "statusCategory": { "key": "new" }
+                      "name": "Закрыта",
+                      "statusCategory": { "key": "done" }
                     },
                     "priority": { "name": "High" },
                     "project": { "key": "CSL", "name": "Customer Support Line" },
@@ -81,29 +127,7 @@ class TicketFilterAndParserTest {
                       "emailAddress": "zabbix@company.by"
                     },
                     "created": "2026-11-21T12:30:00.000+0300",
-                    "updated": "2026-11-21T12:30:00.000+0300",
-                    "labels": []
-                  }
-                },
-                {
-                  "id": "37368",
-                  "key": "CSL-37368",
-                  "fields": {
-                    "summary": "Host unreachable",
-                    "description": "Alert via creator field",
-                    "issuetype": { "name": "Сервисный запрос", "subtask": false },
-                    "status": {
-                      "name": "Open",
-                      "statusCategory": { "key": "new" }
-                    },
-                    "priority": { "name": "High" },
-                    "project": { "key": "CSL", "name": "Customer Support Line" },
-                    "reporter": {
-                      "displayName": "Система оповещений",
-                      "name": "zabbix_notify"
-                    },
-                    "created": "2026-11-21T12:31:00.000+0300",
-                    "updated": "2026-11-21T12:31:00.000+0300",
+                    "updated": "2026-11-21T12:35:00.000+0300",
                     "labels": []
                   }
                 }
@@ -115,41 +139,46 @@ class TicketFilterAndParserTest {
         val filter = FilterSettings()
 
         val parsed = JiraJsonParser.parseSearchResponse(sampleSearchJson, settings, filter)
-        assertEquals(3, parsed.size)
+        assertEquals(4, parsed.size)
 
-        // 1. CSL-37366 ("Сейлзмодерн", "Проблемы с ПК/Ноутбуком", "Service Request") MUST be a client ticket!
-        val clientTicket = parsed[0]
-        assertEquals("CSL-37366", clientTicket.key)
-        assertTrue("Client JSM ticket must pass filter", clientTicket.isClientTicket)
-        assertNull(clientTicket.filterReason)
-        assertEquals(2, clientTicket.phoneNumbers.size)
-        assertEquals("+375291234567", clientTicket.phoneNumbers[0].e164)
-        assertEquals("+79162223344", clientTicket.phoneNumbers[1].e164)
+        // 1. CSL-37366 -> "Новые" (even when JSM workflow category is indeterminate!)
+        val newTicket = parsed[0]
+        assertTrue(newTicket.isClientTicket)
+        assertNull(newTicket.filterReason)
+        assertEquals(TicketStage.NEW, newTicket.stage)
+        assertEquals(2, newTicket.phoneNumbers.size)
+        assertEquals("+375291234567", newTicket.phoneNumbers[0].e164)
 
-        // 2. CSL-37367 from sender "Zabbix" MUST go to service tickets even if requestType is JSM!
-        val zabbixTicket1 = parsed[1]
-        assertEquals("CSL-37367", zabbixTicket1.key)
-        assertFalse("Zabbix ticket must be classified as service", zabbixTicket1.isClientTicket)
-        assertTrue(zabbixTicket1.filterReason!!.contains("Сервисный отправитель"))
+        // 2. CSL-37365 -> "В работе"
+        val inProgressTicket = parsed[1]
+        assertTrue(inProgressTicket.isClientTicket)
+        assertEquals(TicketStage.IN_PROGRESS, inProgressTicket.stage)
+        assertEquals("+375445556677", inProgressTicket.phoneNumbers[0].e164)
 
-        // 3. CSL-37368 where login name contains "zabbix" MUST also go to service tickets!
-        val zabbixTicket2 = parsed[2]
-        assertEquals("CSL-37368", zabbixTicket2.key)
-        assertFalse("Zabbix login ticket must be classified as service", zabbixTicket2.isClientTicket)
-        assertTrue(zabbixTicket2.filterReason!!.contains("Сервисный отправитель"))
+        // 3. CSL-37360 -> "Закрытые" (remains isClientTicket = true so it goes to Закрытые, not Сервисные!)
+        val closedClientTicket = parsed[2]
+        assertTrue(closedClientTicket.isClientTicket)
+        assertEquals(TicketStage.CLOSED, closedClientTicket.stage)
+
+        // 4. CSL-37367 from Zabbix -> "Сервисные" (even when closed, Zabbix stays out of Закрытые!)
+        val zabbixTicket = parsed[3]
+        assertFalse(zabbixTicket.isClientTicket)
+        assertTrue(zabbixTicket.filterReason!!.contains("Сервисный отправитель"))
     }
 
     @Test
-    fun buildsExpectedSafeJql() {
+    fun buildsExpectedActiveAndClosedJql() {
         val filter = FilterSettings(
             projectKeys = "CSL",
-            excludeResolvedClosed = true,
             customJqlCondition = "priority in (High, Highest)"
         )
-        val jql = TicketFilterEngine.buildJql(filter)
         assertEquals(
-            "project in (\"CSL\") AND statusCategory != Done AND (priority in (High, Highest)) ORDER BY created DESC",
-            jql
+            "project in (\"CSL\") AND (priority in (High, Highest)) AND statusCategory != Done ORDER BY created DESC",
+            TicketFilterEngine.buildActiveJql(filter)
+        )
+        assertEquals(
+            "project in (\"CSL\") AND (priority in (High, Highest)) AND statusCategory = Done ORDER BY updated DESC",
+            TicketFilterEngine.buildClosedJql(filter)
         )
     }
 }

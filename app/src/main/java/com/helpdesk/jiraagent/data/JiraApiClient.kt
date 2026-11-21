@@ -10,6 +10,8 @@ import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -127,41 +129,76 @@ class JiraApiClient {
     }
 
     /**
-     * Fetches recent tickets from Jira (compatible with Jira Cloud v3 `/search/jql` and Server/DC v2 `/search`).
+     * Fetches active (Новые + В работе) and recently closed (Закрытые) tickets from Jira
+     * concurrently, compatible with both Jira Cloud v3 `/search/jql` and Server/DC v2 `/search`.
      */
     suspend fun fetchRecentTickets(
         settings: AppSettings,
         filterSettings: FilterSettings,
-        maxResults: Int = 40
+        maxResults: Int = 50
     ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
         runCatching {
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
-            val jql = TicketFilterEngine.buildJql(filterSettings)
             val preferCloud = isCloudTarget(settings, baseUrl)
 
-            val responseJson = if (preferCloud) {
-                try {
-                    executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
-                } catch (e: JiraApiException) {
-                    if (e.httpCode == 404 || e.httpCode == 405 || e.httpCode == 410) {
-                        executeV2GetSearch(baseUrl, jql, maxResults, settings)
+            val activeJql = TicketFilterEngine.buildActiveJql(filterSettings)
+            val closedJql = TicketFilterEngine.buildClosedJql(filterSettings)
+
+            coroutineScope {
+                val activeDeferred = async {
+                    val json = executeSearchWithFallback(baseUrl, activeJql, maxResults, preferCloud, settings)
+                    JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
+                }
+                val closedDeferred = async {
+                    if (closedJql == null) {
+                        emptyList()
                     } else {
-                        throw e
+                        runCatching {
+                            val json = executeSearchWithFallback(baseUrl, closedJql, 30, preferCloud, settings)
+                            JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
+                        }.getOrDefault(emptyList())
                     }
                 }
-            } else {
-                try {
+
+                val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
+                for (ticket in activeDeferred.await()) {
+                    mergedByKey[ticket.key] = ticket
+                }
+                for (ticket in closedDeferred.await()) {
+                    mergedByKey.putIfAbsent(ticket.key, ticket)
+                }
+                mergedByKey.values.toList()
+            }
+        }
+    }
+
+    private fun executeSearchWithFallback(
+        baseUrl: String,
+        jql: String,
+        maxResults: Int,
+        preferCloud: Boolean,
+        settings: AppSettings
+    ): String {
+        return if (preferCloud) {
+            try {
+                executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
+            } catch (e: JiraApiException) {
+                if (e.httpCode == 404 || e.httpCode == 405 || e.httpCode == 410) {
                     executeV2GetSearch(baseUrl, jql, maxResults, settings)
-                } catch (e: JiraApiException) {
-                    if (e.httpCode == 404 || e.httpCode == 410) {
-                        executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
-                    } else {
-                        throw e
-                    }
+                } else {
+                    throw e
                 }
             }
-
-            JiraJsonParser.parseSearchResponse(responseJson, settings, filterSettings)
+        } else {
+            try {
+                executeV2GetSearch(baseUrl, jql, maxResults, settings)
+            } catch (e: JiraApiException) {
+                if (e.httpCode == 404 || e.httpCode == 410) {
+                    executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
+                } else {
+                    throw e
+                }
+            }
         }
     }
 

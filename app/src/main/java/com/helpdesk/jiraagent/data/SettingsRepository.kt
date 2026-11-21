@@ -14,6 +14,7 @@ import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.SyncStatus
+import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,11 +25,11 @@ class SettingsRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val gson = Gson()
 
-    private val prefs: SharedPreferences = createSecurePrefsWithFallback(appContext).also {
-        migrateLegacyFilterDefaults(it)
-    }
     private val cachePrefs: SharedPreferences =
         appContext.getSharedPreferences("helpdesk_ticket_cache", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = createSecurePrefsWithFallback(appContext).also {
+        migrateLegacyFilterDefaults(it, cachePrefs)
+    }
 
     private val _appSettings = MutableStateFlow(loadAppSettings())
     val appSettings: StateFlow<AppSettings> = _appSettings.asStateFlow()
@@ -114,19 +115,22 @@ class SettingsRepository private constructor(context: Context) {
         updateTicketsCache(polled)
 
         val baselineDone = cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)
+        val silentReseed = cachePrefs.getBoolean(KEY_SILENT_RESEED_ONCE, false)
         val seenKeys = cachePrefs.getStringSet(KEY_SEEN_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
 
-        if (!baselineDone) {
+        if (!baselineDone || silentReseed) {
             polled.forEach { seenKeys.add(it.key) }
+            cachePrefs.edit().putBoolean(KEY_SILENT_RESEED_ONCE, false).apply()
             saveSeenKeys(seenKeys, baselineInitialized = true)
             return emptyList()
         }
 
         val newClientTickets = mutableListOf<HelpdeskTicket>()
-        // Sort ascending by creation time so notifications arrive in chronological order
+        // Sort ascending by creation time so notifications arrive in chronological order.
+        // Closed tickets never trigger incoming-ticket banners.
         for (ticket in polled.sortedBy { it.createdEpochMillis }) {
             val isUnseen = seenKeys.add(ticket.key)
-            if (isUnseen && ticket.isClientTicket) {
+            if (isUnseen && ticket.isClientTicket && ticket.stage != TicketStage.CLOSED) {
                 newClientTickets.add(ticket)
             }
         }
@@ -260,7 +264,10 @@ class SettingsRepository private constructor(context: Context) {
             }
         }
 
-        private fun migrateLegacyFilterDefaults(prefs: SharedPreferences) {
+        private fun migrateLegacyFilterDefaults(
+            prefs: SharedPreferences,
+            cachePrefs: SharedPreferences
+        ) {
             val savedVersion = prefs.getInt(KEY_FILTER_SCHEMA_VERSION, 1)
             if (savedVersion >= CURRENT_FILTER_SCHEMA_VERSION) return
 
@@ -288,10 +295,14 @@ class SettingsRepository private constructor(context: Context) {
                 editor.putString(KEY_EXCLUDED_KEYWORDS, FilterSettings.DEFAULT_EXCLUDED_LABELS_AND_KEYWORDS)
             }
 
+            if (cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)) {
+                cachePrefs.edit().putBoolean(KEY_SILENT_RESEED_ONCE, true).apply()
+            }
+
             editor.putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION).apply()
         }
 
-        private const val CURRENT_FILTER_SCHEMA_VERSION = 3
+        private const val CURRENT_FILTER_SCHEMA_VERSION = 4
         private const val KEY_FILTER_SCHEMA_VERSION = "filter_schema_version"
 
         private const val KEY_SERVER_URL = "server_url"
@@ -321,6 +332,7 @@ class SettingsRepository private constructor(context: Context) {
 
         private const val KEY_SEEN_KEYS = "seen_ticket_keys"
         private const val KEY_BASELINE_INITIALIZED = "baseline_initialized"
+        private const val KEY_SILENT_RESEED_ONCE = "silent_reseed_once"
         private const val KEY_CACHED_TICKETS_JSON = "cached_tickets_json"
     }
 }

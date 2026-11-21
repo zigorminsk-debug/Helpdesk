@@ -54,14 +54,16 @@ import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.SyncStatus
+import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.util.DialerLauncher
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private enum class TicketTabMode {
-    CLIENT_ONLY,
-    WITH_PHONE,
+    NEW,
+    IN_PROGRESS,
+    CLOSED,
     FILTERED_SERVICE
 }
 
@@ -75,16 +77,34 @@ fun TicketsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var selectedMode by rememberSaveable { mutableStateOf(TicketTabMode.CLIENT_ONLY) }
+    var selectedMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
 
-    val clientTickets = remember(tickets) { tickets.filter { it.isClientTicket } }
-    val withPhoneTickets = remember(clientTickets) { clientTickets.filter { it.phoneNumbers.isNotEmpty() } }
-    val serviceTickets = remember(tickets) { tickets.filter { !it.isClientTicket } }
+    val newTickets = remember(tickets) {
+        tickets
+            .filter { it.isClientTicket && it.stage == TicketStage.NEW }
+            .sortedByDescending { it.createdEpochMillis }
+    }
+    val inProgressTickets = remember(tickets) {
+        tickets
+            .filter { it.isClientTicket && it.stage == TicketStage.IN_PROGRESS }
+            .sortedByDescending { maxOf(it.updatedEpochMillis, it.createdEpochMillis) }
+    }
+    val closedTickets = remember(tickets) {
+        tickets
+            .filter { it.isClientTicket && it.stage == TicketStage.CLOSED }
+            .sortedByDescending { maxOf(it.updatedEpochMillis, it.createdEpochMillis) }
+    }
+    val serviceTickets = remember(tickets) {
+        tickets
+            .filter { !it.isClientTicket }
+            .sortedByDescending { it.createdEpochMillis }
+    }
 
     val baseList = when (selectedMode) {
-        TicketTabMode.CLIENT_ONLY -> clientTickets
-        TicketTabMode.WITH_PHONE -> withPhoneTickets
+        TicketTabMode.NEW -> newTickets
+        TicketTabMode.IN_PROGRESS -> inProgressTickets
+        TicketTabMode.CLOSED -> closedTickets
         TicketTabMode.FILTERED_SERVICE -> serviceTickets
     }
 
@@ -197,16 +217,23 @@ fun TicketsScreen(
         ) {
             item {
                 FilterChip(
-                    selected = selectedMode == TicketTabMode.CLIENT_ONLY,
-                    onClick = { selectedMode = TicketTabMode.CLIENT_ONLY },
-                    label = { Text("Клиентские (${clientTickets.size})", maxLines = 1, softWrap = false) }
+                    selected = selectedMode == TicketTabMode.NEW,
+                    onClick = { selectedMode = TicketTabMode.NEW },
+                    label = { Text("Новые (${newTickets.size})", maxLines = 1, softWrap = false) }
                 )
             }
             item {
                 FilterChip(
-                    selected = selectedMode == TicketTabMode.WITH_PHONE,
-                    onClick = { selectedMode = TicketTabMode.WITH_PHONE },
-                    label = { Text("С телефоном (${withPhoneTickets.size})", maxLines = 1, softWrap = false) }
+                    selected = selectedMode == TicketTabMode.IN_PROGRESS,
+                    onClick = { selectedMode = TicketTabMode.IN_PROGRESS },
+                    label = { Text("В работе (${inProgressTickets.size})", maxLines = 1, softWrap = false) }
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedMode == TicketTabMode.CLOSED,
+                    onClick = { selectedMode = TicketTabMode.CLOSED },
+                    label = { Text("Закрытые (${closedTickets.size})", maxLines = 1, softWrap = false) }
                 )
             }
             item {
@@ -239,8 +266,9 @@ fun TicketsScreen(
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = when (selectedMode) {
-                            TicketTabMode.CLIENT_ONLY -> "Клиентских заявок пока нет"
-                            TicketTabMode.WITH_PHONE -> "Заявок с номером телефона не найдено"
+                            TicketTabMode.NEW -> "Новых заявок пока нет"
+                            TicketTabMode.IN_PROGRESS -> "Заявок в работе пока нет"
+                            TicketTabMode.CLOSED -> "Закрытых заявок не найдено"
                             TicketTabMode.FILTERED_SERVICE -> "Отсеянных сервисных заявок нет"
                         },
                         style = MaterialTheme.typography.titleMedium,
@@ -279,8 +307,18 @@ private fun TicketListCard(
     onOpen: () -> Unit,
     onCallPhone: (String) -> Unit
 ) {
-    val formattedDate = remember(ticket.createdEpochMillis, ticket.createdIso) {
-        formatTicketTime(ticket.createdEpochMillis, ticket.createdIso)
+    val displayMillis = if (ticket.stage == TicketStage.CLOSED && ticket.updatedEpochMillis > 0L) {
+        ticket.updatedEpochMillis
+    } else {
+        ticket.createdEpochMillis
+    }
+    val displayIso = if (ticket.stage == TicketStage.CLOSED && ticket.updatedIso.isNotBlank()) {
+        ticket.updatedIso
+    } else {
+        ticket.createdIso
+    }
+    val formattedDate = remember(displayMillis, displayIso) {
+        formatTicketTime(displayMillis, displayIso)
     }
 
     Card(
@@ -360,6 +398,17 @@ private fun TicketListCard(
                     text = "${ticket.reporterName} · ${ticket.customerRequestType ?: ticket.issueType}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (!ticket.assigneeName.isNullOrBlank() && ticket.stage != TicketStage.NEW) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Исполнитель: ${ticket.assigneeName}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

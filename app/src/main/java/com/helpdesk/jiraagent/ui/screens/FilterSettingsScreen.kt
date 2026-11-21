@@ -54,7 +54,7 @@ fun FilterSettingsScreen(
         draft = currentFilter
     }
 
-    val generatedJql = remember(draft) { TicketFilterEngine.buildJql(draft) }
+    val generatedJql = remember(draft) { TicketFilterEngine.buildActiveJql(draft) }
 
     Column(
         modifier = modifier
@@ -128,13 +128,6 @@ fun FilterSettingsScreen(
                     subtitle = "Включайте, если клиенты создают обращения исключительно через портал Jira Service Management",
                     checked = draft.onlyCustomerPortalRequests,
                     onCheckedChange = { draft = draft.copy(onlyCustomerPortalRequests = it) }
-                )
-
-                SwitchRow(
-                    title = "Скрывать закрытые / решённые заявки",
-                    subtitle = "Запрашивать только активные обращения (statusCategory != Done)",
-                    checked = draft.excludeResolvedClosed,
-                    onCheckedChange = { draft = draft.copy(excludeResolvedClosed = it) }
                 )
 
                 SwitchRow(

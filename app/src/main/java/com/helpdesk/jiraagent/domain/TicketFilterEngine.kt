@@ -11,7 +11,42 @@ data class FilterEvaluation(
 object TicketFilterEngine {
 
     /**
-     * Builds a safe server-side JQL query compatible with both Jira Server/DC and Jira Cloud.
+     * Builds the active (Новые + В работе) JQL query compatible with both Jira Server/DC and Jira Cloud.
+     */
+    fun buildActiveJql(filter: FilterSettings): String {
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return buildJql(filter)
+        }
+
+        val clauses = buildBaseClauses(filter).toMutableList()
+        clauses.add("statusCategory != Done")
+        val wherePart = clauses.joinToString(" AND ")
+        return "$wherePart ORDER BY created DESC"
+    }
+
+    /**
+     * Builds the closed (Закрытые) JQL query ordered by most recently updated/closed first.
+     * Returns null when the user supplied a full custom ORDER BY / statusCategory query.
+     */
+    fun buildClosedJql(filter: FilterSettings): String? {
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return null
+        }
+
+        val clauses = buildBaseClauses(filter).toMutableList()
+        clauses.add("statusCategory = Done")
+        val wherePart = clauses.joinToString(" AND ")
+        return "$wherePart ORDER BY updated DESC"
+    }
+
+    /**
+     * Builds a general JQL query preview / fallback.
      */
     fun buildJql(filter: FilterSettings): String {
         val customTrimmed = filter.customJqlCondition.trim()
@@ -19,33 +54,33 @@ object TicketFilterEngine {
             return customTrimmed
         }
 
-        val clauses = mutableListOf<String>()
+        val clauses = buildBaseClauses(filter)
+        val wherePart = clauses.joinToString(" AND ")
+        return if (wherePart.isEmpty()) {
+            "ORDER BY updated DESC"
+        } else {
+            "$wherePart ORDER BY updated DESC"
+        }
+    }
 
+    private fun buildBaseClauses(filter: FilterSettings): List<String> {
+        val clauses = mutableListOf<String>()
         val projects = splitCsv(filter.projectKeys)
         if (projects.isNotEmpty()) {
             val quoted = projects.joinToString(", ") { "\"${it.replace("\"", "")}\"" }
             clauses.add("project in ($quoted)")
         }
-
-        if (filter.excludeResolvedClosed) {
-            clauses.add("statusCategory != Done")
-        }
-
+        val customTrimmed = filter.customJqlCondition.trim()
         if (customTrimmed.isNotEmpty()) {
             clauses.add("($customTrimmed)")
         }
-
-        val wherePart = clauses.joinToString(" AND ")
-        return if (wherePart.isEmpty()) {
-            "ORDER BY created DESC"
-        } else {
-            "$wherePart ORDER BY created DESC"
-        }
+        return clauses
     }
 
     /**
-     * Evaluates whether [ticket] is a genuine client request (eligible for Heads-Up notification
-     * banner) or a service/automated ticket (such as sender `zabbix`) that must be ignored.
+     * Evaluates whether [ticket] is a genuine client request (placed into Новые / В работе / Закрытые
+     * according to its Jira status) or a service/automated ticket (such as sender `zabbix`) placed
+     * into Сервисные without notification banners.
      */
     fun evaluate(
         ticket: HelpdeskTicket,
@@ -62,8 +97,6 @@ object TicketFilterEngine {
             val senderHaystack = "${ticket.reporterName} | ${ticket.reporterLoginOrEmail}".lowercase()
             val matchedSender = excludedReporters.firstOrNull { pattern ->
                 val p = pattern.lowercase()
-                // Short generic words like "bot" require word boundaries so "rabota" isn't hit;
-                // specific sender names like "zabbix" match anywhere in login/email/displayName.
                 if (p.length <= 3) {
                     Regex("""(?<![a-zа-яё0-9])${Regex.escape(p)}(?![a-zа-яё0-9])""")
                         .containsMatchIn(senderHaystack)
@@ -113,17 +146,7 @@ object TicketFilterEngine {
             )
         }
 
-        // 5. Exclude resolved / closed if enabled
-        if (filter.excludeResolvedClosed &&
-            ticket.statusCategoryKey.equals("done", ignoreCase = true)
-        ) {
-            return FilterEvaluation(
-                isClientTicket = false,
-                reason = "Заявка уже закрыта (${ticket.status})"
-            )
-        }
-
-        // 6. Project whitelist check (if configured)
+        // 5. Project whitelist check (if configured)
         val allowedProjects = splitCsv(filter.projectKeys)
         if (allowedProjects.isNotEmpty() && ticket.projectKey.isNotBlank()) {
             val matchesProject = allowedProjects.any {
@@ -137,7 +160,7 @@ object TicketFilterEngine {
             }
         }
 
-        // 7. Issue Type / Customer Request Type whitelist (if user specified allowed types)
+        // 6. Issue Type / Customer Request Type whitelist (if user specified allowed types)
         val allowedTypes = splitCsv(filter.allowedIssueTypes)
         if (allowedTypes.isNotEmpty()) {
             val typeCandidates = listOfNotNull(ticket.issueType, ticket.customerRequestType)
@@ -154,7 +177,7 @@ object TicketFilterEngine {
             }
         }
 
-        // 8. Excluded Issue Types / Request Types (exact name match so JSM "Service Request"
+        // 7. Excluded Issue Types / Request Types (exact name match so JSM "Service Request"
         // or "Проблемы с ПК/Ноутбуком" is never falsely caught)
         val excludedTypes = splitCsv(filter.excludedIssueTypes)
         if (excludedTypes.isNotEmpty()) {
@@ -175,7 +198,7 @@ object TicketFilterEngine {
             }
         }
 
-        // 9. Excluded Service Labels & Summary Markers
+        // 8. Excluded Service Labels & Summary Markers
         val excludedKeywords = splitCsv(filter.excludedLabelsAndKeywords)
         if (excludedKeywords.isNotEmpty()) {
             val matchedLabel = ticket.labels.firstOrNull { label ->

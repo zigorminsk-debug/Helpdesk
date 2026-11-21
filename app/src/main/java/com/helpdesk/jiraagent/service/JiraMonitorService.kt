@@ -11,6 +11,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -124,13 +125,14 @@ class JiraMonitorService : Service() {
                 NotificationHelper.showClientTicketBanner(applicationContext, ticket)
             }
 
-            val clientCount = tickets.count { it.isClientTicket }
+            val newCount = tickets.count { it.isClientTicket && it.stage == TicketStage.NEW }
+            val inProgressCount = tickets.count { it.isClientTicket && it.stage == TicketStage.IN_PROGRESS }
             val timeStr = Instant.ofEpochMilli(nowMillis)
                 .atZone(ZoneId.systemDefault())
                 .toLocalTime()
                 .format(timeFormatter)
 
-            updateForegroundText("Клиентских заявок: $clientCount · Обновлено в $timeStr")
+            updateForegroundText("Новые: $newCount · В работе: $inProgressCount · Обновлено в $timeStr")
             repository.updateSyncStatus {
                 it.copy(
                     isSyncing = false,

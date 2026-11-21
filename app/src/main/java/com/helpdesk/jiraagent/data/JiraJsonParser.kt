@@ -126,6 +126,7 @@ object JiraJsonParser {
         val createdIso = fields.getStringOrNull("created").orEmpty()
         val updatedIso = fields.getStringOrNull("updated").orEmpty()
         val createdMillis = parseJiraTimestampMillis(createdIso)
+        val updatedMillis = parseJiraTimestampMillis(updatedIso)
 
         val labels = fields.getArrayOrNull("labels")
             ?.mapNotNull { if (it.isJsonPrimitive) it.asString else null }
@@ -183,6 +184,7 @@ object JiraJsonParser {
             createdIso = createdIso,
             createdEpochMillis = createdMillis,
             updatedIso = updatedIso,
+            updatedEpochMillis = updatedMillis,
             labels = labels,
             phoneNumbers = phones,
             comments = comments,
