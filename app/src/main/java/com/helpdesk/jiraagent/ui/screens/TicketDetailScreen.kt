@@ -421,7 +421,7 @@ fun TicketDetailScreen(
                         } else {
                             ClickablePhoneText(
                                 text = ticket.description,
-                                phoneRegion = appSettings.phoneRegion,
+                                region = appSettings.phoneRegion,
                                 customCountryCode = appSettings.customCountryCode,
                                 onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) }
                             )
@@ -467,10 +467,10 @@ fun TicketDetailScreen(
                                     }
                                     ClickablePhoneText(
                                         text = comment.body,
-                                        phoneRegion = appSettings.phoneRegion,
+                                        region = appSettings.phoneRegion,
                                         customCountryCode = appSettings.customCountryCode,
                                         onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) },
-                                        textStyle = MaterialTheme.typography.bodySmall
+                                        style = MaterialTheme.typography.bodySmall
                                     )
                                 }
                             }

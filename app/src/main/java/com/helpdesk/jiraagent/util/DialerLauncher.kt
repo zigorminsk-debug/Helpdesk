@@ -49,6 +49,14 @@ object DialerLauncher {
         }
     }
 
+    fun openDialer(context: Context, phoneInput: String) {
+        openSystemDialer(context = context, phoneInput = phoneInput)
+    }
+
+    fun openBrowser(context: Context, url: String) {
+        openExternalUrl(context = context, url = url)
+    }
+
     fun openExternalUrl(context: Context, url: String) {
         if (url.isBlank()) return
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
