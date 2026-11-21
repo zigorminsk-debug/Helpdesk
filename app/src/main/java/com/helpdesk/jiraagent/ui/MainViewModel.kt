@@ -1550,7 +1550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (ticketKey.startsWith("DEMO-") || !settings.isConfigured) {
             Toast.makeText(appContext, "Списано $safeMinutes мин по $ticketKey (демо)", Toast.LENGTH_SHORT).show()
             if (alsoCompleteTicket) {
-                performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+                executeTicketAction(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
             }
             return
         }
@@ -1581,7 +1581,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 Toast.makeText(appContext, "Worklog: списано $safeMinutes мин ($ticketKey)", Toast.LENGTH_SHORT).show()
                 if (alsoCompleteTicket) {
-                    performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+                    executeTicketAction(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
                 }
             }.onFailure { err ->
                 if ((err as? JiraApiException)?.isNetworkError == true) {
@@ -1599,7 +1599,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isError = false
                     )
                     if (alsoCompleteTicket) {
-                        performTicketWorkflow(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
+                        executeTicketAction(ticketKey, TicketWorkflowAction.COMPLETE, cleanComment.ifBlank { null })
                     }
                     return@onFailure
                 }

@@ -700,7 +700,13 @@ class JiraApiClient {
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
             val preferCloud = isCloudTarget(settings, baseUrl)
             val jql = "text ~ \"$clean\" ORDER BY created DESC"
-            val resultJson = executeJqlSearch(baseUrl, preferCloud, jql, 25, settings)
+            val resultJson = if (preferCloud) {
+                runCatching { executeCloudJqlSearch(baseUrl, jql, 25, settings) }
+                    .getOrElse { executeV2GetSearch(baseUrl, jql, 25, settings) }
+            } else {
+                runCatching { executeV2GetSearch(baseUrl, jql, 25, settings) }
+                    .getOrElse { executeCloudJqlSearch(baseUrl, jql, 25, settings) }
+            }
             JiraJsonParser.parseSearchResponse(resultJson, settings, filterSettings)
                 .filterNot {
                     AdminChatCodec.isAdminChatStorageIssue(

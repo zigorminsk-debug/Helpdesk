@@ -169,6 +169,7 @@ object NotificationHelper {
 
         // 2. Always play the user's selected alert melody & vibrate via AlertSoundPlayer
         AlertSoundPlayer.playTicketAlert(context, appSettings, forcePreview = false)
+        TicketSpeechAnnouncer.announceNewTicketIfEnabled(context, ticket, appSettings)
 
         if (!hasNotificationPermission(context)) return true
 
@@ -274,9 +275,6 @@ object NotificationHelper {
             notificationId,
             builder.build()
         )
-        if (playSound) {
-            TicketSpeechAnnouncer.announceNewTicketIfEnabled(context, ticket, settings)
-        }
         return true
     }
 

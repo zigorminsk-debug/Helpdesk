@@ -61,7 +61,6 @@ class HelpCslCallScreeningService : CallScreeningService() {
                             TicketStage.NEW -> 0
                             TicketStage.IN_PROGRESS -> 1
                             TicketStage.CLOSED -> 2
-                            TicketStage.SERVICE -> 3
                         }
                     }.thenByDescending { it.createdEpochMillis }
                 )
