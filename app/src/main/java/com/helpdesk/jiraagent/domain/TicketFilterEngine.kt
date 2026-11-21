@@ -12,12 +12,9 @@ object TicketFilterEngine {
 
     /**
      * Builds a safe server-side JQL query compatible with both Jira Server/DC and Jira Cloud.
-     * Fine-grained issueType/reporter/keyword filtering runs locally via [evaluate] so non-existent
-     * type names never trigger HTTP 400 JQL validation errors on a specific Jira server.
      */
     fun buildJql(filter: FilterSettings): String {
         val customTrimmed = filter.customJqlCondition.trim()
-        // If user wrote a complete JQL with ORDER BY, respect it directly
         if (customTrimmed.contains("ORDER BY", ignoreCase = true)) {
             return customTrimmed
         }
@@ -48,7 +45,7 @@ object TicketFilterEngine {
 
     /**
      * Evaluates whether [ticket] is a genuine client request (eligible for Heads-Up notification
-     * banner) or an internal/service/monitoring ticket that must be ignored.
+     * banner) or a service/automated ticket (such as sender `zabbix`) that must be ignored.
      */
     fun evaluate(
         ticket: HelpdeskTicket,
@@ -59,7 +56,45 @@ object TicketFilterEngine {
             return FilterEvaluation(isClientTicket = true, reason = null)
         }
 
-        // 1. Exclude subtasks
+        // 1. Excluded Senders (e.g. "zabbix") — checked first so automated senders always go to service tickets
+        val excludedReporters = splitCsv(filter.excludedReporters)
+        if (excludedReporters.isNotEmpty()) {
+            val senderHaystack = "${ticket.reporterName} | ${ticket.reporterLoginOrEmail}".lowercase()
+            val matchedSender = excludedReporters.firstOrNull { pattern ->
+                val p = pattern.lowercase()
+                // Short generic words like "bot" require word boundaries so "rabota" isn't hit;
+                // specific sender names like "zabbix" match anywhere in login/email/displayName.
+                if (p.length <= 3) {
+                    Regex("""(?<![a-zа-яё0-9])${Regex.escape(p)}(?![a-zа-яё0-9])""")
+                        .containsMatchIn(senderHaystack)
+                } else {
+                    senderHaystack.contains(p)
+                }
+            }
+            if (matchedSender != null) {
+                val authorLabel = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail }
+                return FilterEvaluation(
+                    isClientTicket = false,
+                    reason = "Сервисный отправитель: $authorLabel"
+                )
+            }
+        }
+
+        // 2. Ignore tickets created by the current Helpdesk agent themselves (if toggled)
+        val agentId = currentAgentLoginOrEmail.trim()
+        if (filter.ignoreOwnTickets && agentId.isNotEmpty()) {
+            val senderTokens = ticket.reporterLoginOrEmail.split('|').map { it.trim() }
+            if (ticket.reporterName.equals(agentId, ignoreCase = true) ||
+                senderTokens.any { it.equals(agentId, ignoreCase = true) }
+            ) {
+                return FilterEvaluation(
+                    isClientTicket = false,
+                    reason = "Собственная заявка агента (${ticket.reporterName})"
+                )
+            }
+        }
+
+        // 3. Exclude subtasks
         if (filter.excludeSubtasks && ticket.isSubtask) {
             return FilterEvaluation(
                 isClientTicket = false,
@@ -67,7 +102,7 @@ object TicketFilterEngine {
             )
         }
 
-        // 2. Require JSM Customer Portal metadata if toggled
+        // 4. Require JSM Customer Portal metadata if toggled
         if (filter.onlyCustomerPortalRequests &&
             !ticket.hasCustomerPortalInfo &&
             ticket.customerRequestType.isNullOrBlank()
@@ -78,7 +113,7 @@ object TicketFilterEngine {
             )
         }
 
-        // 3. Exclude resolved / closed if enabled
+        // 5. Exclude resolved / closed if enabled
         if (filter.excludeResolvedClosed &&
             ticket.statusCategoryKey.equals("done", ignoreCase = true)
         ) {
@@ -88,7 +123,7 @@ object TicketFilterEngine {
             )
         }
 
-        // 4. Project whitelist check (if configured)
+        // 6. Project whitelist check (if configured)
         val allowedProjects = splitCsv(filter.projectKeys)
         if (allowedProjects.isNotEmpty() && ticket.projectKey.isNotBlank()) {
             val matchesProject = allowedProjects.any {
@@ -102,7 +137,7 @@ object TicketFilterEngine {
             }
         }
 
-        // 5. Issue Type / Customer Request Type whitelist (if user specified allowed types)
+        // 7. Issue Type / Customer Request Type whitelist (if user specified allowed types)
         val allowedTypes = splitCsv(filter.allowedIssueTypes)
         if (allowedTypes.isNotEmpty()) {
             val typeCandidates = listOfNotNull(ticket.issueType, ticket.customerRequestType)
@@ -114,56 +149,33 @@ object TicketFilterEngine {
             if (!matchesAllowed) {
                 return FilterEvaluation(
                     isClientTicket = false,
-                    reason = "Тип не в списке клиентских (${ticket.customerRequestType ?: ticket.issueType})"
+                    reason = "Тип не в списке разрешённых (${ticket.customerRequestType ?: ticket.issueType})"
                 )
             }
         }
 
-        // 6. Excluded Service Issue Types / Request Types
+        // 8. Excluded Issue Types / Request Types (exact name match so JSM "Service Request"
+        // or "Проблемы с ПК/Ноутбуком" is never falsely caught)
         val excludedTypes = splitCsv(filter.excludedIssueTypes)
         if (excludedTypes.isNotEmpty()) {
-            val matchedExcludedType = excludedTypes.firstOrNull { excluded ->
-                ticket.issueType.equals(excluded, ignoreCase = true) ||
-                    ticket.issueType.contains(excluded, ignoreCase = true) ||
-                    (ticket.customerRequestType?.contains(excluded, ignoreCase = true) == true)
-            }
-            if (matchedExcludedType != null) {
+            val reqType = ticket.customerRequestType?.trim().orEmpty()
+            val issType = ticket.issueType.trim()
+
+            if (reqType.isNotEmpty() && excludedTypes.any { reqType.equals(it, ignoreCase = true) }) {
                 return FilterEvaluation(
                     isClientTicket = false,
-                    reason = "Сервисный тип задачи: ${ticket.customerRequestType ?: ticket.issueType}"
+                    reason = "Сервисный тип обращения: $reqType"
+                )
+            }
+            if (excludedTypes.any { issType.equals(it, ignoreCase = true) }) {
+                return FilterEvaluation(
+                    isClientTicket = false,
+                    reason = "Сервисный тип задачи: $issType"
                 )
             }
         }
 
-        // 7. Ignore tickets created by the current Helpdesk agent themselves (if toggled)
-        val agentId = currentAgentLoginOrEmail.trim()
-        if (filter.ignoreOwnTickets && agentId.isNotEmpty()) {
-            if (ticket.reporterLoginOrEmail.equals(agentId, ignoreCase = true) ||
-                ticket.reporterName.equals(agentId, ignoreCase = true)
-            ) {
-                return FilterEvaluation(
-                    isClientTicket = false,
-                    reason = "Собственная заявка агента (${ticket.reporterName})"
-                )
-            }
-        }
-
-        // 8. Excluded Service / Bot / Monitoring Reporters
-        val excludedReporters = splitCsv(filter.excludedReporters)
-        if (excludedReporters.isNotEmpty()) {
-            val reporterCombined = "${ticket.reporterName} ${ticket.reporterLoginOrEmail}".lowercase()
-            val matchedBot = excludedReporters.firstOrNull { pattern ->
-                reporterCombined.contains(pattern.lowercase())
-            }
-            if (matchedBot != null) {
-                return FilterEvaluation(
-                    isClientTicket = false,
-                    reason = "Сервисный автор/бот: ${ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail }}"
-                )
-            }
-        }
-
-        // 9. Excluded Service Labels & Summary Keywords
+        // 9. Excluded Service Labels & Summary Markers
         val excludedKeywords = splitCsv(filter.excludedLabelsAndKeywords)
         if (excludedKeywords.isNotEmpty()) {
             val matchedLabel = ticket.labels.firstOrNull { label ->
@@ -182,7 +194,6 @@ object TicketFilterEngine {
                 if (kwLower.startsWith("[") && kwLower.endsWith("]")) {
                     summaryLower.contains(kwLower)
                 } else {
-                    // Match whole word in summary so short words like "auto" don't hit "automobile"
                     Regex("""(?<![a-zа-яё0-9])${Regex.escape(kwLower)}(?![a-zа-яё0-9])""")
                         .containsMatchIn(summaryLower)
                 }

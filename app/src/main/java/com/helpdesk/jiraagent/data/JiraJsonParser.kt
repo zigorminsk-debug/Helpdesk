@@ -97,16 +97,29 @@ object JiraJsonParser {
             ?: key.substringBefore('-', "")
         val projectName = projectObj?.getStringOrNull("name") ?: projectKey
 
-        val reporterObj = fields.getObjectOrNull("reporter") ?: fields.getObjectOrNull("creator")
-        val reporterName = reporterObj?.getStringOrNull("displayName")
-            ?: reporterObj?.getStringOrNull("name")
-            ?: reporterObj?.getStringOrNull("emailAddress")
+        val reporterObj = fields.getObjectOrNull("reporter")
+        val creatorObj = fields.getObjectOrNull("creator")
+        val primaryAuthorObj = reporterObj ?: creatorObj
+
+        val reporterName = primaryAuthorObj?.getStringOrNull("displayName")
+            ?: primaryAuthorObj?.getStringOrNull("name")
+            ?: primaryAuthorObj?.getStringOrNull("emailAddress")
             ?: "Клиент"
+
+        // Collect all sender identifiers (login, email, displayName, key from both reporter & creator)
+        // so sender rules like "zabbix" match regardless of which Jira field holds the account name.
         val reporterLoginOrEmail = listOfNotNull(
-            reporterObj?.getStringOrNull("emailAddress"),
             reporterObj?.getStringOrNull("name"),
-            reporterObj?.getStringOrNull("key")
-        ).firstOrNull { it.isNotBlank() }.orEmpty()
+            reporterObj?.getStringOrNull("emailAddress"),
+            reporterObj?.getStringOrNull("displayName"),
+            reporterObj?.getStringOrNull("key"),
+            creatorObj?.getStringOrNull("name"),
+            creatorObj?.getStringOrNull("emailAddress"),
+            creatorObj?.getStringOrNull("displayName")
+        ).map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(" | ")
 
         val assigneeName = fields.getObjectOrNull("assignee")?.getStringOrNull("displayName")
 

@@ -191,7 +191,8 @@ fun FilterSettingsScreen(
                     value = draft.excludedReporters,
                     onValueChange = { draft = draft.copy(excludedReporters = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Игнорируемые сервисные авторы / боты") },
+                    label = { Text("Сервисные отправители (уходят в сервисные)") },
+                    placeholder = { Text("Например: zabbix, prometheus, noreply") },
                     minLines = 2
                 )
 

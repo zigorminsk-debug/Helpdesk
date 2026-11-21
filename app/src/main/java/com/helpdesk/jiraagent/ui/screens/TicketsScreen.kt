@@ -4,8 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -66,7 +65,6 @@ private enum class TicketTabMode {
     FILTERED_SERVICE
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TicketsScreen(
     tickets: List<HelpdeskTicket>,
@@ -190,27 +188,34 @@ fun TicketsScreen(
             shape = RoundedCornerShape(12.dp)
         )
 
-        FlowRow(
+        LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            FilterChip(
-                selected = selectedMode == TicketTabMode.CLIENT_ONLY,
-                onClick = { selectedMode = TicketTabMode.CLIENT_ONLY },
-                label = { Text("Клиентские (${clientTickets.size})") }
-            )
-            FilterChip(
-                selected = selectedMode == TicketTabMode.WITH_PHONE,
-                onClick = { selectedMode = TicketTabMode.WITH_PHONE },
-                label = { Text("С телефоном (${withPhoneTickets.size})") }
-            )
-            FilterChip(
-                selected = selectedMode == TicketTabMode.FILTERED_SERVICE,
-                onClick = { selectedMode = TicketTabMode.FILTERED_SERVICE },
-                label = { Text("Сервисные скрытые (${serviceTickets.size})") }
-            )
+            item {
+                FilterChip(
+                    selected = selectedMode == TicketTabMode.CLIENT_ONLY,
+                    onClick = { selectedMode = TicketTabMode.CLIENT_ONLY },
+                    label = { Text("Клиентские (${clientTickets.size})", maxLines = 1, softWrap = false) }
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedMode == TicketTabMode.WITH_PHONE,
+                    onClick = { selectedMode = TicketTabMode.WITH_PHONE },
+                    label = { Text("С телефоном (${withPhoneTickets.size})", maxLines = 1, softWrap = false) }
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedMode == TicketTabMode.FILTERED_SERVICE,
+                    onClick = { selectedMode = TicketTabMode.FILTERED_SERVICE },
+                    label = { Text("Сервисные (${serviceTickets.size})", maxLines = 1, softWrap = false) }
+                )
+            }
         }
 
         if (filteredList.isEmpty()) {
@@ -292,7 +297,10 @@ private fun TicketListCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(6.dp)
@@ -302,21 +310,29 @@ private fun TicketListCard(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = ticket.status,
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Text(
                     text = formattedDate,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline
+                    color = MaterialTheme.colorScheme.outline,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
 

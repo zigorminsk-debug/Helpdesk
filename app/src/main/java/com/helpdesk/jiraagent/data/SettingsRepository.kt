@@ -24,7 +24,9 @@ class SettingsRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val gson = Gson()
 
-    private val prefs: SharedPreferences = createSecurePrefsWithFallback(appContext)
+    private val prefs: SharedPreferences = createSecurePrefsWithFallback(appContext).also {
+        migrateLegacyFilterDefaults(it)
+    }
     private val cachePrefs: SharedPreferences =
         appContext.getSharedPreferences("helpdesk_ticket_cache", Context.MODE_PRIVATE)
 
@@ -34,7 +36,16 @@ class SettingsRepository private constructor(context: Context) {
     private val _filterSettings = MutableStateFlow(loadFilterSettings())
     val filterSettings: StateFlow<FilterSettings> = _filterSettings.asStateFlow()
 
-    private val _tickets = MutableStateFlow(loadCachedTickets())
+    private val _tickets = MutableStateFlow(
+        loadCachedTickets().map { ticket ->
+            val eval = TicketFilterEngine.evaluate(
+                ticket = ticket,
+                filter = _filterSettings.value,
+                currentAgentLoginOrEmail = _appSettings.value.usernameOrEmail
+            )
+            ticket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
+        }
+    )
     val tickets: StateFlow<List<HelpdeskTicket>> = _tickets.asStateFlow()
 
     private val _syncStatus = MutableStateFlow(SyncStatus())
@@ -65,6 +76,7 @@ class SettingsRepository private constructor(context: Context) {
 
     fun saveFilterSettings(newFilter: FilterSettings) {
         prefs.edit()
+            .putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION)
             .putBoolean(KEY_CLIENT_ONLY, newFilter.clientOnlyFilterEnabled)
             .putBoolean(KEY_EXCLUDE_SUBTASKS, newFilter.excludeSubtasks)
             .putBoolean(KEY_ONLY_PORTAL, newFilter.onlyCustomerPortalRequests)
@@ -247,6 +259,40 @@ class SettingsRepository private constructor(context: Context) {
                 context.getSharedPreferences("helpdesk_fallback_settings", Context.MODE_PRIVATE)
             }
         }
+
+        private fun migrateLegacyFilterDefaults(prefs: SharedPreferences) {
+            val savedVersion = prefs.getInt(KEY_FILTER_SCHEMA_VERSION, 1)
+            if (savedVersion >= CURRENT_FILTER_SCHEMA_VERSION) return
+
+            val editor = prefs.edit()
+            val savedTypes = prefs.getString(KEY_EXCLUDED_TYPES, null)
+            if (savedTypes != null && (
+                    savedTypes == FilterSettings.LEGACY_V1_EXCLUDED_ISSUE_TYPES ||
+                        savedTypes.contains("Service", ignoreCase = true) ||
+                        savedTypes.contains("Сервисн", ignoreCase = true) ||
+                        savedTypes.contains("Проблем", ignoreCase = true)
+                )
+            ) {
+                editor.putString(KEY_EXCLUDED_TYPES, FilterSettings.DEFAULT_EXCLUDED_ISSUE_TYPES)
+            }
+
+            val savedReporters = prefs.getString(KEY_EXCLUDED_REPORTERS, null)
+            if (savedReporters == null || savedReporters == FilterSettings.LEGACY_V1_EXCLUDED_REPORTERS) {
+                editor.putString(KEY_EXCLUDED_REPORTERS, FilterSettings.DEFAULT_EXCLUDED_REPORTERS)
+            } else if (!savedReporters.contains("zabbix", ignoreCase = true)) {
+                editor.putString(KEY_EXCLUDED_REPORTERS, "zabbix, $savedReporters")
+            }
+
+            val savedKeywords = prefs.getString(KEY_EXCLUDED_KEYWORDS, null)
+            if (savedKeywords == FilterSettings.LEGACY_V1_EXCLUDED_LABELS_AND_KEYWORDS) {
+                editor.putString(KEY_EXCLUDED_KEYWORDS, FilterSettings.DEFAULT_EXCLUDED_LABELS_AND_KEYWORDS)
+            }
+
+            editor.putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION).apply()
+        }
+
+        private const val CURRENT_FILTER_SCHEMA_VERSION = 3
+        private const val KEY_FILTER_SCHEMA_VERSION = "filter_schema_version"
 
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_SERVER_TYPE = "server_type"
