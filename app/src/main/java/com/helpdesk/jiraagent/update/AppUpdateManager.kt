@@ -41,11 +41,28 @@ object AppUpdateManager {
 
     const val GITHUB_OWNER = "zigorminsk-debug"
     const val GITHUB_REPO = "Helpdesk"
+
+    /**
+     * Primary source: GitHub web Atom feed (`github.com`, NOT `api.github.com`).
+     * Includes all releases & prereleases, SHA-256, and versionCode without the
+     * 60 req/hr unauthenticated IP rate limit that causes HTTP 403 on CGNAT mobile networks.
+     */
+    private const val RELEASES_ATOM_URL =
+        "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases.atom"
+    private const val RELEASES_HTML_URL =
+        "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases"
     private const val RELEASES_API_URL =
         "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=10"
 
+    private const val BROWSER_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+
     private val VERSION_CODE_REGEX = Regex("""versionCode\s*=\s*(\d+)""", RegexOption.IGNORE_CASE)
     private val SHA256_REGEX = Regex("""SHA-256[^0-9a-fA-F]*([0-9a-fA-F]{64})""", RegexOption.IGNORE_CASE)
+    private val ATOM_ENTRY_REGEX = Regex("""<entry\b[^>]*>(.*?)</entry>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+    private val ATOM_TAG_LINK_REGEX = Regex("""href\s*=\s*["']([^"']*/releases/tag/([^"'/?#]+))["']""", RegexOption.IGNORE_CASE)
+    private val HTML_TAG_LINK_REGEX = Regex("""/$GITHUB_OWNER/$GITHUB_REPO/releases/tag/(v?\d+\.\d+\.\d+)""", RegexOption.IGNORE_CASE)
+    private val HTML_TAGS_STRIP_REGEX = Regex("""<[^>]+>""")
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -60,26 +77,182 @@ object AppUpdateManager {
         currentVersionName: String = BuildConfig.VERSION_NAME,
         currentVersionCode: Int = BuildConfig.VERSION_CODE
     ): Result<GitHubReleaseUpdate?> = withContext(Dispatchers.IO) {
-        runCatching {
-            val request = Request.Builder()
-                .url(RELEASES_API_URL)
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "Help-CSL-Android/$currentVersionName")
-                .get()
-                .build()
+        // 1. Primary: GitHub releases.atom feed (no api.github.com 60/hr IP rate limit)
+        val atomAttempt = runCatching {
+            val atomXml = fetchUrlString(
+                url = RELEASES_ATOM_URL,
+                accept = "application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
+            )
+            if (!atomXml.contains("<feed", ignoreCase = true)) {
+                throw IllegalStateException("Некорректный формат ленты релизов GitHub")
+            }
+            findNewestUpdateFromAtom(
+                atomXml = atomXml,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode
+            )
+        }
+        if (atomAttempt.isSuccess) {
+            return@withContext atomAttempt
+        }
 
-            httpClient.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("GitHub API вернул код ${response.code}")
-                }
-                findNewestUpdateFromJson(
-                    releasesJson = bodyStr,
-                    currentVersionName = currentVersionName,
-                    currentVersionCode = currentVersionCode
-                )
+        // 2. Secondary fallback: GitHub releases HTML page (also free of api.github.com 403 rate limits)
+        val htmlAttempt = runCatching {
+            val html = fetchUrlString(
+                url = RELEASES_HTML_URL,
+                accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            )
+            findNewestUpdateFromReleasesHtml(
+                releasesHtml = html,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode
+            )
+        }
+        if (htmlAttempt.isSuccess) {
+            return@withContext htmlAttempt
+        }
+
+        // 3. Tertiary fallback: GitHub REST API
+        val apiAttempt = runCatching {
+            val json = fetchUrlString(
+                url = RELEASES_API_URL,
+                accept = "application/vnd.github+json"
+            )
+            findNewestUpdateFromJson(
+                releasesJson = json,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode
+            )
+        }
+        if (apiAttempt.isSuccess) {
+            return@withContext apiAttempt
+        }
+
+        Result.failure(
+            atomAttempt.exceptionOrNull()
+                ?: htmlAttempt.exceptionOrNull()
+                ?: apiAttempt.exceptionOrNull()
+                ?: IllegalStateException("Не удалось проверить релизы на GitHub")
+        )
+    }
+
+    private fun fetchUrlString(url: String, accept: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", accept)
+            .header("User-Agent", BROWSER_USER_AGENT)
+            .header("Cache-Control", "no-cache")
+            .get()
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val bodyStr = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("GitHub вернул код ${response.code}")
+            }
+            return bodyStr
+        }
+    }
+
+    /**
+     * Parses `https://github.com/zigorminsk-debug/Helpdesk/releases.atom`.
+     */
+    fun findNewestUpdateFromAtom(
+        atomXml: String,
+        currentVersionName: String,
+        currentVersionCode: Int
+    ): GitHubReleaseUpdate? {
+        if (atomXml.isBlank()) return null
+
+        val candidates = mutableListOf<GitHubReleaseUpdate>()
+        for (entryMatch in ATOM_ENTRY_REGEX.findAll(atomXml)) {
+            val entryXml = entryMatch.groupValues[1]
+            val linkMatch = ATOM_TAG_LINK_REGEX.find(entryXml) ?: continue
+            val htmlUrl = decodeXmlEntities(linkMatch.groupValues[1]).trim()
+            val tagName = decodeXmlEntities(linkMatch.groupValues[2]).trim()
+            val cleanVersion = normalizeVersionString(tagName)
+            if (cleanVersion.isEmpty()) continue
+
+            val rawTitle = extractXmlTag(entryXml, "title").orEmpty()
+            val releaseTitle = decodeXmlEntities(rawTitle).trim().ifBlank { "Help-CSL v$cleanVersion" }
+
+            val rawContent = extractXmlTag(entryXml, "content").orEmpty()
+            val decodedHtmlContent = decodeXmlEntities(rawContent)
+            val plainNotes = decodedHtmlContent
+                .replace(Regex("</?(li|p|br|ul|div)\\b[^>]*>", RegexOption.IGNORE_CASE), "\n")
+                .replace(HTML_TAGS_STRIP_REGEX, "")
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+
+            val parsedVersionCode = VERSION_CODE_REGEX.find(decodedHtmlContent)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val parsedSha256 = SHA256_REGEX.find(decodedHtmlContent)?.groupValues?.getOrNull(1)?.lowercase()
+
+            val apkFileName = "help-csl-v$cleanVersion.apk"
+            val apkDownloadUrl =
+                "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/$apkFileName"
+
+            val candidate = GitHubReleaseUpdate(
+                tagName = tagName,
+                versionName = cleanVersion,
+                versionCode = parsedVersionCode,
+                releaseTitle = releaseTitle,
+                releaseNotes = plainNotes,
+                htmlUrl = htmlUrl,
+                apkDownloadUrl = apkDownloadUrl,
+                apkFileName = apkFileName,
+                apkSizeBytes = 0L,
+                expectedSha256 = parsedSha256
+            )
+
+            if (isCandidateNewer(candidate, currentVersionName, currentVersionCode)) {
+                candidates.add(candidate)
             }
         }
+
+        return candidates.maxWithOrNull { a, b -> compareReleases(a, b) }
+    }
+
+    /**
+     * Fallback parser for `https://github.com/zigorminsk-debug/Helpdesk/releases` HTML.
+     */
+    fun findNewestUpdateFromReleasesHtml(
+        releasesHtml: String,
+        currentVersionName: String,
+        currentVersionCode: Int
+    ): GitHubReleaseUpdate? {
+        if (releasesHtml.isBlank()) return null
+
+        val seenTags = HashSet<String>()
+        val candidates = mutableListOf<GitHubReleaseUpdate>()
+
+        for (m in HTML_TAG_LINK_REGEX.findAll(releasesHtml)) {
+            val tagName = m.groupValues[1].trim()
+            if (!seenTags.add(tagName)) continue
+            val cleanVersion = normalizeVersionString(tagName)
+            if (cleanVersion.isEmpty()) continue
+
+            val apkFileName = "help-csl-v$cleanVersion.apk"
+            val candidate = GitHubReleaseUpdate(
+                tagName = tagName,
+                versionName = cleanVersion,
+                versionCode = null,
+                releaseTitle = "Help-CSL v$cleanVersion",
+                releaseNotes = "",
+                htmlUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/tag/$tagName",
+                apkDownloadUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/$apkFileName",
+                apkFileName = apkFileName,
+                apkSizeBytes = 0L,
+                expectedSha256 = null
+            )
+
+            if (isCandidateNewer(candidate, currentVersionName, currentVersionCode)) {
+                candidates.add(candidate)
+            }
+        }
+
+        return candidates.maxWithOrNull { a, b -> compareReleases(a, b) }
     }
 
     /**
@@ -142,6 +315,22 @@ object AppUpdateManager {
         }
 
         return candidates.maxWithOrNull { a, b -> compareReleases(a, b) }
+    }
+
+    private fun extractXmlTag(xml: String, tagName: String): String? {
+        val escaped = Regex.escape(tagName)
+        val r = Regex("<$escaped(?:\\s[^>]*)?>(.*?)</$escaped>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+        return r.find(xml)?.groupValues?.get(1)
+    }
+
+    private fun decodeXmlEntities(raw: String): String {
+        return raw
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
     }
 
     fun isCandidateNewer(
@@ -212,7 +401,7 @@ object AppUpdateManager {
 
             val request = Request.Builder()
                 .url(update.apkDownloadUrl)
-                .header("User-Agent", "Help-CSL-Android/${BuildConfig.VERSION_NAME}")
+                .header("User-Agent", BROWSER_USER_AGENT)
                 .get()
                 .build()
 

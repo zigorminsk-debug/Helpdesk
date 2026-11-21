@@ -776,7 +776,7 @@ fun ServerSettingsScreen(
                     value = samplePhoneInput,
                     onValueChange = { samplePhoneInput = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Тест приведения номера к международному формату") },
+                    label = { Text("Тест формата номера", maxLines = 1) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     trailingIcon = {

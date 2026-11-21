@@ -87,6 +87,46 @@ class AppUpdateAndGifCatalogTest {
     }
 
     @Test
+    fun `findNewestUpdateFromAtom parses GitHub releases atom feed without REST API`() {
+        val sampleAtom = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>tag:github.com,2008:Repository/1428193596/v1.0.15</id>
+                <updated>2026-11-21T13:37:11Z</updated>
+                <link rel="alternate" type="text/html" href="https://github.com/zigorminsk-debug/Helpdesk/releases/tag/v1.0.15"/>
+                <title>Help-CSL v1.0.15</title>
+                <content type="html">&lt;p&gt;Автоматическая сборка &lt;strong&gt;Help-CSL v1.0.15&lt;/strong&gt; (&lt;code&gt;versionCode=1015&lt;/code&gt;).&lt;/p&gt;
+&lt;ul&gt;&lt;li&gt;SHA-256 APK: &lt;code&gt;ebe5c3116507c810ed4312c404e0c9281a0b1a525b379070b057c96061191908&lt;/code&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+              </entry>
+              <entry>
+                <id>tag:github.com,2008:Repository/1428193596/v1.0.14</id>
+                <link rel="alternate" type="text/html" href="https://github.com/zigorminsk-debug/Helpdesk/releases/tag/v1.0.14"/>
+                <title>Help-CSL v1.0.14</title>
+                <content type="html">&lt;p&gt;versionCode=1014&lt;/p&gt;</content>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val found = AppUpdateManager.findNewestUpdateFromAtom(
+            atomXml = sampleAtom,
+            currentVersionName = "1.0.14",
+            currentVersionCode = 1014
+        )
+        assertNotNull(found)
+        assertEquals("1.0.15", found!!.versionName)
+        assertEquals(1015, found.versionCode)
+        assertEquals(
+            "https://github.com/zigorminsk-debug/Helpdesk/releases/download/v1.0.15/help-csl-v1.0.15.apk",
+            found.apkDownloadUrl
+        )
+        assertEquals(
+            "ebe5c3116507c810ed4312c404e0c9281a0b1a525b379070b057c96061191908",
+            found.expectedSha256
+        )
+    }
+
+    @Test
     fun `selected sysadmin empty-screen GIF assets 1 and 7 exist and are valid animated GIF89a`() {
         val items = SysadminGifCatalog.items
         assertEquals(2, items.size)
