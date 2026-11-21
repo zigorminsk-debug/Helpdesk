@@ -11,7 +11,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,15 +29,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +75,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.helpdesk.jiraagent.data.InAppBannerAlert
+import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.MainViewModel
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
@@ -69,6 +87,8 @@ import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
 import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.ui.theme.JiraHelpdeskTheme
+import com.helpdesk.jiraagent.util.DialerLauncher
+import kotlinx.coroutines.delay
 
 private enum class BottomDestination(val label: String) {
     TICKETS("Заявки"),
@@ -121,6 +141,14 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val isLoadingDetail by viewModel.isLoadingTicketDetail.collectAsStateWithLifecycle()
     val ticketActionState by viewModel.ticketActionState.collectAsStateWithLifecycle()
     val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
+    val latestInAppBanner by viewModel.latestInAppBanner.collectAsStateWithLifecycle()
+
+    LaunchedEffect(latestInAppBanner?.timestampMillis) {
+        if (latestInAppBanner != null) {
+            delay(14_000L)
+            viewModel.dismissInAppBanner()
+        }
+    }
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
     var hasNotifPermission by rememberSaveable {
@@ -143,21 +171,39 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val activeKey = selectedTicketKey
     if (activeKey != null) {
         val activeTicket = tickets.firstOrNull { it.key.equals(activeKey, ignoreCase = true) }
-        TicketDetailScreen(
-            ticket = activeTicket,
-            ticketKey = activeKey,
-            isLoading = isLoadingDetail,
-            actionState = ticketActionState,
-            appSettings = appSettings,
-            onExecuteAction = { action, comment, transitionId ->
-                viewModel.executeTicketAction(activeKey, action, comment, transitionId)
-            },
-            onPostponeTicket = { epochMillis, formattedDisplay, transitionId ->
-                viewModel.postponeTicket(activeKey, epochMillis, formattedDisplay, transitionId)
-            },
-            onDismissActionMessage = { viewModel.dismissTicketActionFeedback() },
-            onBack = { viewModel.closeTicketDetail() }
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            TicketDetailScreen(
+                ticket = activeTicket,
+                ticketKey = activeKey,
+                isLoading = isLoadingDetail,
+                actionState = ticketActionState,
+                appSettings = appSettings,
+                onExecuteAction = { action, comment, transitionId ->
+                    viewModel.executeTicketAction(activeKey, action, comment, transitionId)
+                },
+                onPostponeTicket = { epochMillis, formattedDisplay, transitionId ->
+                    viewModel.postponeTicket(activeKey, epochMillis, formattedDisplay, transitionId)
+                },
+                onAddComment = { commentText ->
+                    viewModel.addTicketComment(activeKey, commentText)
+                },
+                onDismissActionMessage = { viewModel.dismissTicketActionFeedback() },
+                onBack = { viewModel.closeTicketDetail() }
+            )
+
+            InAppFloatingBannerOverlay(
+                bannerAlert = latestInAppBanner,
+                onOpenTicket = { key ->
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.dismissInAppBanner()
+                    viewModel.openTicket(key)
+                },
+                onDismiss = {
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.dismissInAppBanner()
+                }
+            )
+        }
         return
     }
 
@@ -169,6 +215,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
     )
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -325,9 +372,141 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     connectionTest = connectionTest,
                     onTestConnection = { candidate -> viewModel.testConnection(candidate) },
                     onSaveSettings = { updated -> viewModel.saveAppSettings(updated) },
+                    onTriggerTestBanner = {
+                        hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
+                        viewModel.triggerTestBannerNotification()
+                    },
                     modifier = Modifier.weight(1f)
                 )
             }
         }
     }
+
+    InAppFloatingBannerOverlay(
+        bannerAlert = latestInAppBanner,
+        onOpenTicket = { key ->
+            AlertSoundPlayer.stopCurrent()
+            viewModel.dismissInAppBanner()
+            viewModel.openTicket(key)
+        },
+        onDismiss = {
+            AlertSoundPlayer.stopCurrent()
+            viewModel.dismissInAppBanner()
+        }
+    )
+    }
 }
+
+@Composable
+private fun InAppFloatingBannerOverlay(
+    bannerAlert: InAppBannerAlert?,
+    onOpenTicket: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    AnimatedVisibility(
+        visible = bannerAlert != null,
+        enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        val alert = bannerAlert ?: return@AnimatedVisibility
+        val ticket = alert.ticket
+        val phone = ticket.phoneNumbers.firstOrNull()
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenTicket(ticket.key) },
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = CslMidnight),
+            border = BorderStroke(2.dp, CslOrange),
+            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.NotificationsActive,
+                        contentDescription = null,
+                        tint = CslOrange,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${ticket.key} · ${alert.titleSuffix}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CslOrange,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Закрыть баннер",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Text(
+                    text = ticket.summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+
+                Text(
+                    text = "Клиент: ${ticket.reporterName}" +
+                        (phone?.let { " · ${it.formattedDisplay}" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFD0D5DD)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { onOpenTicket(ticket.key) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                    ) {
+                        Text("Открыть заявку")
+                    }
+
+                    if (phone != null) {
+                        Button(
+                            onClick = {
+                                AlertSoundPlayer.stopCurrent()
+                                DialerLauncher.openDialer(context, phone.e164)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Позвонить")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

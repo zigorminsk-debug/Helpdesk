@@ -456,6 +456,25 @@ class JiraApiClient {
     }
 
     /**
+     * Posts a standalone text/voice comment to [issueKey] and returns the refreshed ticket.
+     */
+    suspend fun postIssueComment(
+        issueKey: String,
+        commentText: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<HelpdeskTicket?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = commentText.trim()
+            if (clean.isEmpty()) throw JiraApiException("Введите или надиктуйте текст комментария")
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            addCommentToIssue(baseUrl, preferCloud, issueKey, clean, settings)
+            fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+        }
+    }
+
+    /**
      * Recreates a postponed ticket in Jira (or locally for DEMO-*), returning the newly created
      * [HelpdeskTicket] ready to appear in "Новые" and trigger a notification banner.
      */

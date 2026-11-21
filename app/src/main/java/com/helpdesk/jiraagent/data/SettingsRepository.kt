@@ -8,6 +8,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.FilterSettings
@@ -21,6 +22,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+
+data class InAppBannerAlert(
+    val ticket: HelpdeskTicket,
+    val titleSuffix: String,
+    val timestampMillis: Long = System.currentTimeMillis()
+)
 
 class SettingsRepository private constructor(context: Context) {
 
@@ -59,6 +66,21 @@ class SettingsRepository private constructor(context: Context) {
     private val _syncStatus = MutableStateFlow(SyncStatus())
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
 
+    private val _latestInAppBanner = MutableStateFlow<InAppBannerAlert?>(null)
+    val latestInAppBanner: StateFlow<InAppBannerAlert?> = _latestInAppBanner.asStateFlow()
+
+    fun emitInAppBanner(ticket: HelpdeskTicket, titleSuffix: String) {
+        _latestInAppBanner.value = InAppBannerAlert(
+            ticket = ticket,
+            titleSuffix = titleSuffix,
+            timestampMillis = System.currentTimeMillis()
+        )
+    }
+
+    fun dismissInAppBanner() {
+        _latestInAppBanner.value = null
+    }
+
     fun saveAppSettings(newSettings: AppSettings) {
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
         prefs.edit()
@@ -76,6 +98,9 @@ class SettingsRepository private constructor(context: Context) {
             .putString(KEY_WORK_END_TIME, newSettings.workEndTime.trim().ifEmpty { "17:30" })
             .putString(KEY_EXTRA_WORKING_DATES, newSettings.extraWorkingDates.trim())
             .putString(KEY_EXTRA_HOLIDAY_DATES, newSettings.extraHolidayDates.trim())
+            .putString(KEY_ALERT_SOUND_PRESET, newSettings.alertSoundPreset.name)
+            .putString(KEY_CUSTOM_ALERT_SOUND_URI, newSettings.customAlertSoundUri.trim())
+            .putString(KEY_CUSTOM_ALERT_SOUND_TITLE, newSettings.customAlertSoundTitle.trim())
             .putString(KEY_PHONE_REGION, newSettings.phoneRegion.name)
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
@@ -320,6 +345,12 @@ class SettingsRepository private constructor(context: Context) {
             workEndTime = prefs.getString(KEY_WORK_END_TIME, "17:30").orEmpty().ifBlank { "17:30" },
             extraWorkingDates = prefs.getString(KEY_EXTRA_WORKING_DATES, "").orEmpty(),
             extraHolidayDates = prefs.getString(KEY_EXTRA_HOLIDAY_DATES, "").orEmpty(),
+            alertSoundPreset = enumOrDefault(
+                prefs.getString(KEY_ALERT_SOUND_PRESET, null),
+                AlertSoundPreset.CSL_CHIME
+            ),
+            customAlertSoundUri = prefs.getString(KEY_CUSTOM_ALERT_SOUND_URI, "").orEmpty(),
+            customAlertSoundTitle = prefs.getString(KEY_CUSTOM_ALERT_SOUND_TITLE, "").orEmpty(),
             phoneRegion = enumOrDefault(prefs.getString(KEY_PHONE_REGION, null), PhoneRegion.AUTO_BY_RU),
             customCountryCode = prefs.getString(KEY_CUSTOM_COUNTRY_CODE, "+375").orEmpty().ifBlank { "+375" },
             customPhoneFieldNames = prefs.getString(
@@ -441,6 +472,9 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_WORK_END_TIME = "work_end_time"
         private const val KEY_EXTRA_WORKING_DATES = "extra_working_dates"
         private const val KEY_EXTRA_HOLIDAY_DATES = "extra_holiday_dates"
+        private const val KEY_ALERT_SOUND_PRESET = "alert_sound_preset"
+        private const val KEY_CUSTOM_ALERT_SOUND_URI = "custom_alert_sound_uri"
+        private const val KEY_CUSTOM_ALERT_SOUND_TITLE = "custom_alert_sound_title"
         private const val KEY_PHONE_REGION = "phone_region"
         private const val KEY_CUSTOM_COUNTRY_CODE = "custom_country_code"
         private const val KEY_CUSTOM_PHONE_FIELDS = "custom_phone_fields"

@@ -1,6 +1,7 @@
 package com.helpdesk.jiraagent.notification
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,10 +9,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -23,7 +23,7 @@ import com.helpdesk.jiraagent.model.HelpdeskTicket
 
 object NotificationHelper {
 
-    const val CHANNEL_CLIENT_BANNER = "jira_client_tickets_banner_v2"
+    const val CHANNEL_CLIENT_BANNER = "help_csl_urgent_banner_v4"
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
@@ -32,27 +32,24 @@ object NotificationHelper {
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // High-importance channel for Heads-Up Notification Banners of client tickets
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        val audioAttrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-
+        // High-priority urgent channel for floating heads-up banners.
+        // Channel sound is set to null because AlertSoundPlayer directly plays the user's selected
+        // melody reliably across Xiaomi MIUI/HyperOS, Samsung, Huawei, and Pixel devices.
         val bannerChannel = NotificationChannel(
             CHANNEL_CLIENT_BANNER,
-            "Заявки клиентов (всплывающий баннер)",
+            "Новые заявки Help-CSL (срочный баннер)",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Всплывающие баннеры при поступлении новых заявок от клиентов"
+            description = "Срочные всплывающие баннеры о новых заявках клиентов в Help-CSL"
             enableVibration(true)
-            vibrationPattern = longArrayOf(0L, 300L, 150L, 300L)
+            vibrationPattern = longArrayOf(0L, 280L, 120L, 320L)
             enableLights(true)
+            lightColor = 0xFFF7631B.toInt()
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            setSound(soundUri, audioAttrs)
+            setBypassDnd(true)
+            setSound(null, null)
         }
 
-        // Silent low-importance channel for persistent background polling status
         val statusChannel = NotificationChannel(
             CHANNEL_MONITOR_SERVICE,
             "Фоновый мониторинг Help-CSL",
@@ -75,6 +72,28 @@ object NotificationHelper {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
+    }
+
+    /**
+     * Opens the system channel settings screen so Xiaomi MIUI / HyperOS users can toggle
+     * "Всплывающие уведомления" in 1 tap if restricted by the firmware.
+     */
+    fun openBannerChannelSettings(context: Context) {
+        ensureChannels(context)
+        val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_CLIENT_BANNER)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            context.startActivity(intent)
+        }.onFailure {
+            val fallback = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(fallback) }
         }
     }
 
@@ -107,10 +126,10 @@ object NotificationHelper {
     }
 
     /**
-     * Displays a Heads-Up Notification Banner + sound signal for a client ticket.
-     * Strictly respects the Republic of Belarus working days calendar and 09:00–17:30 working hours
-     * unless [bypassWorkSchedule] is explicitly requested (e.g. manual test button or user-scheduled postponed ticket).
+     * Displays a Heads-Up Notification Banner + plays the user's selected alert melody
+     * + shows an in-app banner if Help-CSL is open on screen.
      */
+    @SuppressLint("MissingPermission")
     fun showClientTicketBanner(
         context: Context,
         ticket: HelpdeskTicket,
@@ -118,19 +137,30 @@ object NotificationHelper {
         customTitleSuffix: String? = null
     ): Boolean {
         if (!ticket.isClientTicket) return false
-        if (!hasNotificationPermission(context)) return false
 
-        if (!bypassWorkSchedule) {
-            val appSettings = SettingsRepository.getInstance(context).appSettings.value
-            if (!BelarusWorkCalendar.isWorkingTimeNow(appSettings)) {
-                return false
-            }
+        val repo = SettingsRepository.getInstance(context)
+        val appSettings = repo.appSettings.value
+
+        if (!bypassWorkSchedule && !BelarusWorkCalendar.isWorkingTimeNow(appSettings)) {
+            return false
         }
+
+        val titleSuffix = customTitleSuffix ?: "Заявка от клиента"
+
+        // 1. Always emit in-app top floating banner (visible immediately when Help-CSL is in foreground)
+        repo.emitInAppBanner(ticket, titleSuffix)
+
+        // 2. Always play the user's selected alert melody & vibrate via AlertSoundPlayer
+        AlertSoundPlayer.playTicketAlert(context, appSettings, forcePreview = false)
+
+        if (!hasNotificationPermission(context)) return true
 
         ensureChannels(context)
 
         val openTicketIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_TICKET_KEY, ticket.key)
         }
         val requestCode = ticket.key.hashCode()
@@ -155,7 +185,6 @@ object NotificationHelper {
             }
         }
 
-        val titleSuffix = customTitleSuffix ?: "Заявка от клиента"
         val builder = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
             .setSmallIcon(R.drawable.ic_notification_ticket)
             .setColor(0xFFF7631B.toInt())
@@ -164,18 +193,20 @@ object NotificationHelper {
                 if (primaryPhone != null) {
                     "${ticket.summary} (${primaryPhone.formattedDisplay})"
                 } else {
-                    ticket.summary
+                    "${ticket.summary} · ${ticket.reporterName}"
                 }
             )
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVibrate(longArrayOf(0L, 280L, 120L, 320L))
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setAutoCancel(true)
             .setContentIntent(openPendingIntent)
+            .setFullScreenIntent(openPendingIntent, true)
 
-        // Direct "Позвонить" button right on the Heads-Up banner when a phone number is detected
         if (primaryPhone != null) {
             val dialIntent = Intent(
                 Intent.ACTION_DIAL,

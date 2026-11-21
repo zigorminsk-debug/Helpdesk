@@ -2,6 +2,7 @@ package com.helpdesk.jiraagent
 
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
+import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -100,5 +101,19 @@ class BelarusWorkCalendarTest {
         )
         assertNotNull(parsedColon)
         assertEquals(parsedDash.first, parsedColon!!.first)
+    }
+
+    @Test
+    fun alertSoundPresetDefaultsToAudibleCslChimeAndSupportsCustomMelody() {
+        val defaults = AppSettings()
+        assertEquals(AlertSoundPreset.CSL_CHIME, defaults.alertSoundPreset)
+
+        val custom = defaults.copy(
+            alertSoundPreset = AlertSoundPreset.CUSTOM_URI,
+            customAlertSoundUri = "content://media/internal/audio/media/42",
+            customAlertSoundTitle = "Signal_CSL.mp3"
+        )
+        assertEquals(AlertSoundPreset.CUSTOM_URI, custom.alertSoundPreset)
+        assertEquals("Signal_CSL.mp3", custom.customAlertSoundTitle)
     }
 }

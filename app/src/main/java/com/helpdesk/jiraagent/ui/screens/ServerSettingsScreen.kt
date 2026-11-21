@@ -1,7 +1,15 @@
 package com.helpdesk.jiraagent.ui.screens
 
+import android.app.Activity
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -19,13 +27,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SettingsApplications
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -60,10 +73,13 @@ import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.BuildConfig
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
+import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
+import com.helpdesk.jiraagent.notification.AlertSoundPlayer
+import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.ConnectionTestState
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -85,12 +101,63 @@ fun ServerSettingsScreen(
     connectionTest: ConnectionTestState,
     onTestConnection: (AppSettings) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
+    onTriggerTestBanner: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var draft by remember { mutableStateOf(currentSettings) }
     var showSecret by rememberSaveable { mutableStateOf(false) }
     var samplePhoneInput by rememberSaveable { mutableStateOf("8 (029) 654-32-10") }
+
+    val ringtonePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            @Suppress("DEPRECATION")
+            val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            if (pickedUri != null) {
+                val title = runCatching {
+                    RingtoneManager.getRingtone(context, pickedUri)?.getTitle(context)
+                }.getOrNull().orEmpty().ifBlank { "Системная мелодия" }
+                val updated = draft.copy(
+                    alertSoundPreset = AlertSoundPreset.CUSTOM_URI,
+                    customAlertSoundUri = pickedUri.toString(),
+                    customAlertSoundTitle = title
+                )
+                draft = updated
+                onSaveSettings(updated)
+                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+            }
+        }
+    }
+
+    val audioDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { pickedUri: Uri? ->
+        if (pickedUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    pickedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val fileName = runCatching {
+                context.contentResolver.query(pickedUri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIdx >= 0 && cursor.moveToFirst()) cursor.getString(nameIdx) else null
+                }
+            }.getOrNull().orEmpty().ifBlank { "Аудиофайл с телефона" }
+
+            val updated = draft.copy(
+                alertSoundPreset = AlertSoundPreset.CUSTOM_URI,
+                customAlertSoundUri = pickedUri.toString(),
+                customAlertSoundTitle = fileName
+            )
+            draft = updated
+            onSaveSettings(updated)
+            AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+        }
+    }
 
     LaunchedEffect(currentSettings) {
         draft = currentSettings
@@ -320,6 +387,172 @@ fun ServerSettingsScreen(
                     checked = draft.startOnBoot,
                     onCheckedChange = { draft = draft.copy(startOnBoot = it) }
                 )
+            }
+        }
+
+        // 2a. Выбор мелодии звукового сигнала и всплывающие баннеры
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.45f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Мелодия сигнала и всплывающий баннер",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "Выберите мелодию оповещения о новой заявке (звучит автоматически при поступлении заявки и при срабатывании отложенной заявки):",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                AlertSoundPreset.entries.forEach { preset ->
+                    if (preset == AlertSoundPreset.CUSTOM_URI && draft.customAlertSoundUri.isBlank()) {
+                        return@forEach
+                    }
+                    val isSelected = draft.alertSoundPreset == preset
+                    val subtitleText = if (preset == AlertSoundPreset.CUSTOM_URI) {
+                        "Файл: ${draft.customAlertSoundTitle.ifBlank { "Выбранная мелодия" }}"
+                    } else {
+                        preset.subtitle
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val updated = draft.copy(alertSoundPreset = preset)
+                                draft = updated
+                                onSaveSettings(updated)
+                                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = {
+                                val updated = draft.copy(alertSoundPreset = preset)
+                                draft = updated
+                                onSaveSettings(updated)
+                                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+                            }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = preset.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val existingUri = draft.customAlertSoundUri
+                                .takeIf { it.isNotBlank() }
+                                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                putExtra(
+                                    RingtoneManager.EXTRA_RINGTONE_TYPE,
+                                    RingtoneManager.TYPE_NOTIFICATION or RingtoneManager.TYPE_RINGTONE or RingtoneManager.TYPE_ALARM
+                                )
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Выберите мелодию сигнала Help-CSL")
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, existingUri)
+                            }
+                            runCatching { ringtonePickerLauncher.launch(intent) }
+                                .onFailure {
+                                    Toast.makeText(context, "Не удалось открыть список рингтонов", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("Рингтон телефона", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { audioDocumentLauncher.launch(arrayOf("audio/*")) }
+                                .onFailure {
+                                    Toast.makeText(context, "Не удалось открыть выбор файла", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("Свой MP3/файл", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            AlertSoundPlayer.playTicketAlert(context, draft, forcePreview = true)
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Прослушать")
+                    }
+
+                    OutlinedButton(
+                        onClick = { AlertSoundPlayer.stopCurrent() }
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Стоп")
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onSaveSettings(draft)
+                        onTriggerTestBanner()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = CslMidnight)
+                ) {
+                    Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Тест всплывающего баннера и звука")
+                }
+
+                OutlinedButton(
+                    onClick = { NotificationHelper.openBannerChannelSettings(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.SettingsApplications, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Включить всплывающие баннеры в MIUI / Android")
+                }
             }
         }
 

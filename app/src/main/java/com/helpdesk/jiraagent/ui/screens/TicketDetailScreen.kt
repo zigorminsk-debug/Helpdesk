@@ -1,10 +1,15 @@
 package com.helpdesk.jiraagent.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -37,6 +43,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.Schedule
@@ -112,6 +119,7 @@ fun TicketDetailScreen(
     appSettings: AppSettings,
     onExecuteAction: (TicketWorkflowAction, String?, String?) -> Unit,
     onPostponeTicket: (Long, String, String?) -> Unit,
+    onAddComment: (String) -> Unit,
     onDismissActionMessage: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -120,6 +128,7 @@ fun TicketDetailScreen(
 
     var commentDialogAction by rememberSaveable { mutableStateOf<TicketWorkflowAction?>(null) }
     var commentDraft by rememberSaveable { mutableStateOf("") }
+    var standaloneCommentDraft by rememberSaveable { mutableStateOf("") }
     var showPostponeDialog by rememberSaveable { mutableStateOf(false) }
 
     // Optional comment dialog for "Завершить" or "Отклонить"
@@ -138,19 +147,16 @@ fun TicketDetailScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = if (isReject) {
-                            "При необходимости укажите причину отклонения (будет добавлена в комментарии Jira):"
+                            "Укажите или надиктуйте голосом причину отклонения (будет добавлена в комментарии Jira):"
                         } else {
-                            "При необходимости добавьте комментарий о выполнении (необязательно):"
+                            "Добавьте или надиктуйте голосом комментарий о выполнении (необязательно):"
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
-                    OutlinedTextField(
+                    VoiceCommentTextField(
                         value = commentDraft,
                         onValueChange = { commentDraft = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Комментарий в Jira (необязательно)") },
-                        minLines = 2,
-                        maxLines = 4
+                        label = "Комментарий в Jira (нажмите 🎤 для голоса)"
                     )
                 }
             },
@@ -429,23 +435,58 @@ fun TicketDetailScreen(
                     }
                 }
 
-                // 5. Comments Card
-                if (ticket.comments.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                // 5. Add Comment Card (with Voice Input Microphone) & Comments History
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        Text(
+                            text = "Комментарий к заявке",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = CslOrange
+                        )
+
+                        VoiceCommentTextField(
+                            value = standaloneCommentDraft,
+                            onValueChange = { standaloneCommentDraft = it },
+                            label = "Введите текст или нажмите 🎤 для голосового ввода"
+                        )
+
+                        Button(
+                            onClick = {
+                                val textToSend = standaloneCommentDraft.trim()
+                                if (textToSend.isNotEmpty()) {
+                                    standaloneCommentDraft = ""
+                                    onAddComment(textToSend)
+                                }
+                            },
+                            enabled = standaloneCommentDraft.isNotBlank() && !actionState.isBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                         ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Отправить комментарий")
+                        }
+
+                        if (ticket.comments.isNotEmpty()) {
+                            HorizontalDivider()
                             Text(
-                                text = "Последние комментарии (${ticket.comments.size})",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = CslOrange
+                                text = "История комментариев (${ticket.comments.size})",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
 
                             ticket.comments.forEachIndexed { idx, comment ->
@@ -480,6 +521,74 @@ fun TicketDetailScreen(
             }
         }
     }
+}
+
+@Composable
+private fun VoiceCommentTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (spoken.isNotEmpty()) {
+                val combined = if (value.isBlank()) {
+                    spoken
+                } else {
+                    "${value.trimEnd()} $spoken"
+                }
+                onValueChange(combined)
+            }
+        }
+    }
+
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.fillMaxWidth(),
+        label = { Text(label) },
+        minLines = 2,
+        maxLines = 5,
+        trailingIcon = {
+            IconButton(
+                onClick = {
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(
+                            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                        )
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU")
+                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите текст комментария…")
+                    }
+                    runCatching {
+                        speechLauncher.launch(intent)
+                    }.onFailure {
+                        Toast.makeText(
+                            context,
+                            "На устройстве не найден сервис голосового ввода Google/Android",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = "Голосовой ввод комментария",
+                    tint = CslOrange
+                )
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)

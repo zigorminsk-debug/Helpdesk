@@ -4,6 +4,7 @@ import android.app.Application
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.helpdesk.jiraagent.data.InAppBannerAlert
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.SettingsRepository
@@ -54,6 +55,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tickets: StateFlow<List<HelpdeskTicket>> = repository.tickets
     val postponedTickets: StateFlow<List<PostponedTicket>> = repository.postponedTickets
     val syncStatus: StateFlow<SyncStatus> = repository.syncStatus
+    val latestInAppBanner: StateFlow<InAppBannerAlert?> = repository.latestInAppBanner
+
+    fun dismissInAppBanner() {
+        repository.dismissInAppBanner()
+    }
 
     private val _selectedTicketKey = MutableStateFlow<String?>(null)
     val selectedTicketKey: StateFlow<String?> = _selectedTicketKey.asStateFlow()
@@ -263,6 +269,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Toast.makeText(appContext, "Отложенное пересоздание отменено", Toast.LENGTH_SHORT).show()
     }
 
+    fun addTicketComment(ticketKey: String, commentText: String) {
+        val clean = commentText.trim()
+        if (clean.isEmpty()) return
+        val settings = appSettings.value
+
+        if (ticketKey.startsWith("DEMO-")) {
+            val existing = tickets.value.firstOrNull { it.key == ticketKey } ?: return
+            val nowIso = Instant.now().toString()
+            val author = syncStatus.value.connectedUser
+                ?: settings.usernameOrEmail.ifBlank { "Агент Help-CSL" }
+            val newComment = TicketComment(
+                id = System.currentTimeMillis().toString(),
+                author = author,
+                body = clean,
+                createdIso = nowIso
+            )
+            repository.upsertSingleTicket(
+                existing.copy(comments = existing.comments + newComment)
+            )
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = "Комментарий добавлен",
+                isError = false
+            )
+            return
+        }
+
+        if (!settings.isConfigured) {
+            _ticketActionState.value = TicketActionUiState(
+                isBusy = false,
+                statusMessage = "Сначала настройте подключение к Jira",
+                isError = true
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _ticketActionState.value = TicketActionUiState(isBusy = true)
+            apiClient.postIssueComment(
+                issueKey = ticketKey,
+                commentText = clean,
+                settings = settings,
+                filterSettings = filterSettings.value
+            ).onSuccess { refreshed ->
+                refreshed?.let { repository.upsertSingleTicket(it) }
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = "Комментарий отправлен в Jira",
+                    isError = false
+                )
+            }.onFailure { err ->
+                _ticketActionState.value = TicketActionUiState(
+                    isBusy = false,
+                    statusMessage = err.message ?: "Не удалось отправить комментарий",
+                    isError = true
+                )
+            }
+        }
+    }
+
     fun refreshNow() {
         val settings = appSettings.value
         if (settings.pollingEnabled && settings.isConfigured) {
@@ -398,17 +464,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         repository.upsertSingleTicket(demoTicket)
-
-        val schedule = BelarusWorkCalendar.evaluate(settings, Instant.ofEpochMilli(nowMillis))
-        if (schedule.isAllowedNow) {
-            NotificationHelper.showClientTicketBanner(appContext, demoTicket, bypassWorkSchedule = false)
-            Toast.makeText(appContext, "Тестовый баннер и звук отправлены", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(
-                appContext,
-                "Тестовая заявка $demoKey создана во вкладке «Новые». ${schedule.statusTitle} — звук и баннер отключены (можно включить в Настройках → Рабочие дни).",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        NotificationHelper.showClientTicketBanner(
+            context = appContext,
+            ticket = demoTicket,
+            bypassWorkSchedule = true,
+            customTitleSuffix = "Тестовое уведомление"
+        )
+        Toast.makeText(appContext, "Тестовый баннер и звуковой сигнал отправлены", Toast.LENGTH_SHORT).show()
     }
 }
