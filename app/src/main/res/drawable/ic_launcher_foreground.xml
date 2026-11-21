@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Support headset + ticket silhouette -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28C41.85,28 32,37.85 32,50v12c0,3.31 2.69,6 6,6h4v-16h-4v-2c0,-8.84 7.16,-16 16,-16s16,7.16 16,16v2h-4v16h4c3.31,0 6,-2.69 6,-6V50C76,37.85 66.15,28 54,28z" />
+    <path
+        android:fillColor="#4C9AFF"
+        android:pathData="M45,74h18c2.21,0 4,1.79 4,4s-1.79,4 -4,4H45c-2.21,0 -4,-1.79 -4,-4S42.79,74 45,74z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,49h12v4h-12zM48,56h8v4h-8z" />
+</vector>

@@ -1,0 +1,3 @@
+-keep class com.helpdesk.jiraagent.model.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

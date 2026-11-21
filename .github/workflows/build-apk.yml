@@ -1,0 +1,111 @@
+name: Build & Sign Android APK
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Сборка и подпись APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Настройка и кэширование Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Вычисление номера версии сборки
+        id: version
+        run: |
+          VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
+          APK_NAME="jira-helpdesk-agent-v${VERSION_NAME}.apk"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Сборка версии ${VERSION_NAME} (versionCode=${VERSION_CODE})"
+
+      - name: Проверка постоянного ключа подписи из репозитория
+        run: |
+          test -f keystore/helpdesk-release.p12
+          keytool -list -v \
+            -keystore keystore/helpdesk-release.p12 \
+            -storetype PKCS12 \
+            -storepass "HelpdeskSign2026!" | grep -E "Alias name:|Owner:|Valid from:|SHA256:"
+
+      - name: Запуск модульных тестов и сборка подписанного Release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew testReleaseUnitTest assembleRelease \
+            -PversionCode="${{ steps.version.outputs.version_code }}" \
+            -PversionName="${{ steps.version.outputs.version_name }}" \
+            --no-daemon
+
+      - name: Подготовка APK и проверка подписи apksigner
+        id: verify_apk
+        run: |
+          mkdir -p dist
+          RAW_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          test -n "$RAW_APK"
+          cp "$RAW_APK" "dist/${{ steps.version.outputs.apk_name }}"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          "$APKSIGNER" verify --verbose --print-certs "dist/${{ steps.version.outputs.apk_name }}"
+
+          APK_SHA256=$(sha256sum "dist/${{ steps.version.outputs.apk_name }}" | awk '{print $1}')
+          echo "apk_sha256=${APK_SHA256}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Jira Helpdesk Agent — v${{ steps.version.outputs.version_name }}"
+            echo "- **Версия (`versionName`)**: \`${{ steps.version.outputs.version_name }}\`"
+            echo "- **Код сборки (`versionCode`)**: \`${{ steps.version.outputs.version_code }}\`"
+            echo "- **Файл APK**: \`${{ steps.version.outputs.apk_name }}\`"
+            echo "- **SHA-256 APK**: \`${APK_SHA256}\`"
+            echo "- **Подпись**: Постоянный ключ \`keystore/helpdesk-release.p12\` (обновление поверх поддерживается)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Загрузка APK в артефакты GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: jira-helpdesk-agent-v${{ steps.version.outputs.version_name }}
+          path: dist/${{ steps.version.outputs.apk_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Публикация GitHub Release с подписанным APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.version_name }}"
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          cat <<EOF > dist/release-notes.md
+          Автоматическая сборка **Jira Helpdesk Agent v${{ steps.version.outputs.version_name }}** (\`versionCode=${{ steps.version.outputs.version_code }}\`) из ветки \`${GITHUB_REF_NAME}\` (коммит \`${SHORT_SHA}\`).
+
+          - Подписан постоянным ключом \`keystore/helpdesk-release.p12\` — устанавливается **поверх предыдущей версии** без удаления и потери настроек.
+          - SHA-256 APK: \`${{ steps.verify_apk.outputs.apk_sha256 }}\`
+          EOF
+
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            PRERELEASE_FLAG=""
+          else
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "$TAG" "dist/${{ steps.version.outputs.apk_name }}" \
+            --target "${GITHUB_SHA}" \
+            --title "Jira Helpdesk Agent ${TAG}" \
+            --notes-file dist/release-notes.md \
+            $PRERELEASE_FLAG || echo "Примечание: для автоматического создания Release включите Read and write permissions в Settings → Actions → General → Workflow permissions (APK уже доступен в Artifacts выше)."

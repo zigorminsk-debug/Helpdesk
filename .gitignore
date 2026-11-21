@@ -1,0 +1,21 @@
+# Gradle & Android build outputs
+.gradle/
+build/
+app/build/
+local.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+.cxx/
+captures/
+.externalNativeBuild/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Explicitly keep wrapper & persistent signing key in repository
+!gradle/wrapper/gradle-wrapper.jar
+!keystore/helpdesk-release.p12
+!keystore/signing.properties
