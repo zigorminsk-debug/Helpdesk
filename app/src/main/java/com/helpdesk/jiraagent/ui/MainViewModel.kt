@@ -39,6 +39,7 @@ data class TicketActionUiState(
     val isError: Boolean = false,
     val manualTransitionPrompt: Boolean = false,
     val pendingAction: TicketWorkflowAction? = null,
+    val pendingComment: String? = null,
     val pendingPostponeAtMillis: Long? = null,
     val pendingPostponeDisplay: String? = null,
     val availableTransitions: List<JiraTransitionOption> = emptyList()
@@ -63,6 +64,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedTicketKey = MutableStateFlow<String?>(null)
     val selectedTicketKey: StateFlow<String?> = _selectedTicketKey.asStateFlow()
+
+    private val _returnToMainScreenStamp = MutableStateFlow(0L)
+    val returnToMainScreenStamp: StateFlow<Long> = _returnToMainScreenStamp.asStateFlow()
+
+    private fun navigateToMainScreen() {
+        _selectedTicketKey.value = null
+        _ticketActionState.value = TicketActionUiState()
+        _returnToMainScreenStamp.value = System.currentTimeMillis()
+    }
 
     private val _isLoadingTicketDetail = MutableStateFlow(false)
     val isLoadingTicketDetail: StateFlow<Boolean> = _isLoadingTicketDetail.asStateFlow()
@@ -139,6 +149,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             repository.upsertSingleTicket(updated)
+            if (action == TicketWorkflowAction.COMPLETE) {
+                Toast.makeText(appContext, "Заявка $ticketKey завершена", Toast.LENGTH_SHORT).show()
+                navigateToMainScreen()
+                return
+            }
             _ticketActionState.value = TicketActionUiState(
                 isBusy = false,
                 statusMessage = when (action) {
@@ -171,12 +186,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 filterSettings = filterSettings.value
             ).onSuccess { outcome ->
                 outcome.updatedTicket?.let { repository.upsertSingleTicket(it) }
+                if (action == TicketWorkflowAction.COMPLETE && !outcome.needsManualTransitionChoice) {
+                    Toast.makeText(appContext, outcome.statusMessage, Toast.LENGTH_SHORT).show()
+                    navigateToMainScreen()
+                    return@onSuccess
+                }
                 _ticketActionState.value = TicketActionUiState(
                     isBusy = false,
                     statusMessage = outcome.statusMessage,
                     isError = false,
                     manualTransitionPrompt = outcome.needsManualTransitionChoice,
                     pendingAction = outcome.pendingAction,
+                    pendingComment = if (outcome.needsManualTransitionChoice) commentText else null,
                     availableTransitions = outcome.availableTransitions
                 )
             }.onFailure { err ->

@@ -142,17 +142,24 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val ticketActionState by viewModel.ticketActionState.collectAsStateWithLifecycle()
     val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
     val latestInAppBanner by viewModel.latestInAppBanner.collectAsStateWithLifecycle()
+    val returnToMainScreenStamp by viewModel.returnToMainScreenStamp.collectAsStateWithLifecycle()
+
+    var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
+    var hasNotifPermission by rememberSaveable {
+        mutableStateOf(NotificationHelper.hasNotificationPermission(context))
+    }
+
+    LaunchedEffect(returnToMainScreenStamp) {
+        if (returnToMainScreenStamp > 0L) {
+            currentTab = BottomDestination.TICKETS
+        }
+    }
 
     LaunchedEffect(latestInAppBanner?.timestampMillis) {
         if (latestInAppBanner != null) {
             delay(14_000L)
             viewModel.dismissInAppBanner()
         }
-    }
-
-    var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
-    var hasNotifPermission by rememberSaveable {
-        mutableStateOf(NotificationHelper.hasNotificationPermission(context))
     }
 
     val notifPermissionLauncher = rememberLauncherForActivityResult(

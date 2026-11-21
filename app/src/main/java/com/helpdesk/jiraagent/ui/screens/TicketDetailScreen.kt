@@ -223,7 +223,7 @@ fun TicketDetailScreen(
                                     onPostponeTicket(postponeAt, postponeLabel, tr.id)
                                 } else {
                                     val act = actionState.pendingAction ?: TicketWorkflowAction.TAKE_IN_WORK
-                                    onExecuteAction(act, null, tr.id)
+                                    onExecuteAction(act, actionState.pendingComment, tr.id)
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()

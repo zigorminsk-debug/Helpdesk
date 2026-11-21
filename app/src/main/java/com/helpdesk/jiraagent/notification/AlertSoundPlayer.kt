@@ -3,6 +3,7 @@ package com.helpdesk.jiraagent.notification
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
@@ -23,12 +24,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.exp
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Reliable cross-device alert player for Help-CSL (including Xiaomi MIUI / HyperOS, Samsung, Huawei).
- * When a Bluetooth, wired, or USB headset is connected, plays the alert simultaneously on BOTH
- * the phone's built-in loudspeaker AND the connected headset so an incoming ticket is never missed.
+ * Cross-device alert sound player for Help-CSL, specifically hardened for Xiaomi MIUI / HyperOS.
+ *
+ * When a Bluetooth, BLE, wired, or USB headset is connected, Xiaomi MIUI/HyperOS suppresses
+ * normal alarm/notification/ringtone streams on the built-in speaker. To guarantee audible sound
+ * BOTH in the headset AND on the phone's loudspeaker:
+ *  1) Plays in the connected headset via A2DP/media routing;
+ *  2) Immediately routes to TYPE_BUILTIN_SPEAKER via AudioManager communication device override
+ *     (the same hardware path used by the "Speakerphone" button in calls) and restores audio state.
  */
 object AlertSoundPlayer {
 
@@ -39,7 +46,7 @@ object AlertSoundPlayer {
     private val activeAudioTracks = mutableListOf<AudioTrack>()
 
     @Volatile
-    private var stopJob: Job? = null
+    private var playJob: Job? = null
 
     private data class NoteStep(
         val freqHz: Double,
@@ -54,9 +61,12 @@ object AlertSoundPlayer {
     )
 
     fun stopCurrent() {
-        stopJob?.cancel()
-        stopJob = null
+        playJob?.cancel()
+        playJob = null
+        releaseActivePlayers()
+    }
 
+    private fun releaseActivePlayers() {
         synchronized(playerLock) {
             activeMediaPlayers.forEach { mp ->
                 runCatching {
@@ -93,60 +103,78 @@ object AlertSoundPlayer {
             return
         }
 
-        scope.launch {
-            stopCurrent()
+        playJob?.cancel()
+        releaseActivePlayers()
+
+        playJob = scope.launch {
             val targets = resolveOutputTargets(audioManager)
-            val speakerUsage = chooseSpeakerUsage(audioManager)
+            val speakerUsage = chooseNormalSpeakerUsage(audioManager)
 
-            when (settings.alertSoundPreset) {
+            val resolvedUri: Uri? = when (settings.alertSoundPreset) {
                 AlertSoundPreset.CUSTOM_URI -> {
-                    val customUriStr = settings.customAlertSoundUri.trim()
-                    val played = if (customUriStr.isNotEmpty()) {
-                        playUriDualOutput(
-                            context = appContext,
-                            uri = Uri.parse(customUriStr),
-                            speakerUsage = speakerUsage,
-                            targets = targets
-                        )
-                    } else {
-                        false
-                    }
-                    if (!played) {
-                        playSynthesizedPresetDualOutput(
-                            preset = AlertSoundPreset.CSL_CHIME,
-                            speakerUsage = speakerUsage,
-                            targets = targets
-                        )
-                    }
+                    settings.customAlertSoundUri.trim()
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { runCatching { Uri.parse(it) }.getOrNull() }
                 }
-
                 AlertSoundPreset.SYSTEM_DEFAULT -> {
-                    val sysUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                         ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                    val played = if (sysUri != null) {
-                        playUriDualOutput(
-                            context = appContext,
-                            uri = sysUri,
-                            speakerUsage = speakerUsage,
-                            targets = targets
-                        )
-                    } else {
-                        false
-                    }
-                    if (!played) {
-                        playSynthesizedPresetDualOutput(
-                            preset = AlertSoundPreset.CSL_CHIME,
-                            speakerUsage = speakerUsage,
-                            targets = targets
-                        )
-                    }
                 }
+                else -> null
+            }
 
-                else -> {
-                    playSynthesizedPresetDualOutput(
-                        preset = settings.alertSoundPreset,
-                        speakerUsage = speakerUsage,
+            if (targets.externalHeadset != null && audioManager != null) {
+                // Headset is connected -> Play in Headset + Force Phone Built-in Loudspeaker!
+                if (resolvedUri != null) {
+                    val ok = playUriInHeadsetThenForcedSpeaker(
+                        context = appContext,
+                        audioManager = audioManager,
+                        uri = resolvedUri,
                         targets = targets
+                    )
+                    if (!ok) {
+                        playSynthInHeadsetThenForcedSpeaker(
+                            audioManager = audioManager,
+                            preset = AlertSoundPreset.CSL_CHIME,
+                            targets = targets
+                        )
+                    }
+                } else {
+                    playSynthInHeadsetThenForcedSpeaker(
+                        audioManager = audioManager,
+                        preset = settings.alertSoundPreset,
+                        targets = targets
+                    )
+                }
+            } else {
+                // No headset connected -> Play directly on phone speaker
+                if (resolvedUri != null) {
+                    val ok = playSingleUri(
+                        context = appContext,
+                        uri = resolvedUri,
+                        usage = speakerUsage,
+                        contentType = AudioAttributes.CONTENT_TYPE_SONIFICATION,
+                        preferredDevice = targets.builtInSpeaker,
+                        maxDurationMs = 7_000L
+                    )
+                    if (!ok) {
+                        val (pcm, totalMs) = synthesizePresetPcm(AlertSoundPreset.CSL_CHIME)
+                        playSinglePcmTrack(
+                            pcm = pcm,
+                            totalMs = totalMs,
+                            usage = speakerUsage,
+                            contentType = AudioAttributes.CONTENT_TYPE_SONIFICATION,
+                            preferredDevice = targets.builtInSpeaker
+                        )
+                    }
+                } else {
+                    val (pcm, totalMs) = synthesizePresetPcm(settings.alertSoundPreset)
+                    playSinglePcmTrack(
+                        pcm = pcm,
+                        totalMs = totalMs,
+                        usage = speakerUsage,
+                        contentType = AudioAttributes.CONTENT_TYPE_SONIFICATION,
+                        preferredDevice = targets.builtInSpeaker
                     )
                 }
             }
@@ -154,8 +182,285 @@ object AlertSoundPlayer {
     }
 
     /**
-     * Detects both the phone's built-in speaker and any connected Bluetooth / wired / USB headset.
+     * Plays a synthesized melody first in the connected headset (A2DP/wired) and immediately
+     * afterwards on the phone's built-in loudspeaker using hardware speakerphone routing.
      */
+    private suspend fun playSynthInHeadsetThenForcedSpeaker(
+        audioManager: AudioManager,
+        preset: AlertSoundPreset,
+        targets: OutputRoutingTargets
+    ) {
+        val (pcm, totalMs) = synthesizePresetPcm(preset)
+
+        // 1. Play clearly in the connected headset (normal A2DP / wired mode)
+        playSinglePcmTrack(
+            pcm = pcm,
+            totalMs = totalMs,
+            usage = AudioAttributes.USAGE_MEDIA,
+            contentType = AudioAttributes.CONTENT_TYPE_MUSIC,
+            preferredDevice = targets.externalHeadset
+        )
+
+        // 2. Force hardware speakerphone route on the phone and play out of the built-in loudspeaker
+        withForcedPhoneLoudspeaker(audioManager, targets.builtInSpeaker) { commSpeaker ->
+            playSinglePcmTrack(
+                pcm = pcm,
+                totalMs = totalMs,
+                usage = AudioAttributes.USAGE_VOICE_COMMUNICATION,
+                contentType = AudioAttributes.CONTENT_TYPE_SPEECH,
+                preferredDevice = commSpeaker ?: targets.builtInSpeaker
+            )
+        }
+    }
+
+    /**
+     * Plays a ringtone/MP3 URI first in the connected headset and immediately afterwards
+     * on the phone's built-in loudspeaker using hardware speakerphone routing.
+     */
+    private suspend fun playUriInHeadsetThenForcedSpeaker(
+        context: Context,
+        audioManager: AudioManager,
+        uri: Uri,
+        targets: OutputRoutingTargets
+    ): Boolean {
+        // 1. Play in the connected headset (up to 3.5s)
+        val okHeadset = playSingleUri(
+            context = context,
+            uri = uri,
+            usage = AudioAttributes.USAGE_MEDIA,
+            contentType = AudioAttributes.CONTENT_TYPE_MUSIC,
+            preferredDevice = targets.externalHeadset,
+            maxDurationMs = 3_500L
+        )
+        if (!okHeadset) return false
+
+        // 2. Play on the phone's built-in loudspeaker (up to 3.5s)
+        withForcedPhoneLoudspeaker(audioManager, targets.builtInSpeaker) { commSpeaker ->
+            playSingleUri(
+                context = context,
+                uri = uri,
+                usage = AudioAttributes.USAGE_VOICE_COMMUNICATION,
+                contentType = AudioAttributes.CONTENT_TYPE_SPEECH,
+                preferredDevice = commSpeaker ?: targets.builtInSpeaker,
+                maxDurationMs = 3_500L
+            )
+        }
+        return true
+    }
+
+    /**
+     * Temporarily switches Android / Xiaomi HyperOS audio routing to the built-in speakerphone
+     * (bypassing Bluetooth A2DP speaker suppression) and cleanly restores all state in finally.
+     */
+    private suspend fun withForcedPhoneLoudspeaker(
+        audioManager: AudioManager,
+        fallbackSpeaker: AudioDeviceInfo?,
+        block: suspend (AudioDeviceInfo?) -> Unit
+    ) {
+        val prevMode = audioManager.mode
+        // Never interrupt an active GSM/VoIP call
+        if (prevMode == AudioManager.MODE_IN_CALL || prevMode == AudioManager.MODE_RINGTONE) {
+            return
+        }
+
+        @Suppress("DEPRECATION")
+        val prevSpeakerOn = audioManager.isSpeakerphoneOn
+        val prevCallVol = runCatching {
+            audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        }.getOrDefault(0)
+        val maxCallVol = runCatching {
+            audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+        }.getOrDefault(7).coerceAtLeast(1)
+
+        val focusAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(focusAttrs)
+            .setOnAudioFocusChangeListener { }
+            .build()
+
+        var volumeAdjusted = false
+        try {
+            runCatching { audioManager.requestAudioFocus(focusRequest) }
+            runCatching {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+            }
+
+            runCatching { audioManager.mode = AudioManager.MODE_IN_COMMUNICATION }
+
+            var commSpeaker: AudioDeviceInfo? = null
+            var routedViaCommDevice = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                commSpeaker = runCatching {
+                    audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                }.getOrNull()
+                if (commSpeaker != null) {
+                    routedViaCommDevice = runCatching {
+                        audioManager.setCommunicationDevice(commSpeaker)
+                    }.getOrDefault(false)
+                }
+            }
+            if (!routedViaCommDevice) {
+                @Suppress("DEPRECATION")
+                runCatching { audioManager.isSpeakerphoneOn = true }
+            }
+
+            // Ensure loudspeaker voice-call stream volume is clearly audible
+            val targetCallVol = computeDesiredSpeakerCallVolume(audioManager, maxCallVol)
+            if (targetCallVol > prevCallVol) {
+                runCatching {
+                    audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, targetCallVol, 0)
+                    volumeAdjusted = true
+                }
+            }
+
+            // Give the hardware speaker amplifier 150ms to open before the first note
+            delay(150L)
+
+            block(commSpeaker ?: fallbackSpeaker)
+        } finally {
+            releaseActivePlayers()
+            if (volumeAdjusted) {
+                runCatching {
+                    audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, prevCallVol, 0)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching { audioManager.clearCommunicationDevice() }
+            }
+            @Suppress("DEPRECATION")
+            runCatching { audioManager.isSpeakerphoneOn = prevSpeakerOn }
+            runCatching { audioManager.mode = prevMode }
+            runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
+        }
+    }
+
+    private fun computeDesiredSpeakerCallVolume(audioManager: AudioManager, maxCallVol: Int): Int {
+        val ringMax = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING).coerceAtLeast(1)
+        val ringVol = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+        val alarmMax = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM).coerceAtLeast(1)
+        val alarmVol = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+
+        val ratio = maxOf(
+            ringVol.toDouble() / ringMax.toDouble(),
+            alarmVol.toDouble() / alarmMax.toDouble(),
+            0.85
+        ).coerceIn(0.75, 1.0)
+
+        return (maxCallVol * ratio).roundToInt().coerceIn(1, maxCallVol)
+    }
+
+    private suspend fun playSinglePcmTrack(
+        pcm: ShortArray,
+        totalMs: Int,
+        usage: Int,
+        contentType: Int,
+        preferredDevice: AudioDeviceInfo?
+    ) {
+        val sampleRate = 44_100
+        val track = runCatching {
+            val byteSize = pcm.size * 2
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(usage)
+                        .setContentType(contentType)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(byteSize)
+                .build()
+                .also { built ->
+                    if (preferredDevice != null) {
+                        runCatching { built.setPreferredDevice(preferredDevice) }
+                    }
+                    built.write(pcm, 0, pcm.size)
+                }
+        }.getOrNull() ?: return
+
+        synchronized(playerLock) {
+            activeAudioTracks.add(track)
+        }
+        try {
+            runCatching { track.play() }
+            delay(totalMs.toLong() + 180L)
+        } finally {
+            synchronized(playerLock) {
+                activeAudioTracks.remove(track)
+            }
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
+    }
+
+    private suspend fun playSingleUri(
+        context: Context,
+        uri: Uri,
+        usage: Int,
+        contentType: Int,
+        preferredDevice: AudioDeviceInfo?,
+        maxDurationMs: Long
+    ): Boolean {
+        val mp = runCatching {
+            MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(usage)
+                        .setContentType(contentType)
+                        .build()
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredDevice != null) {
+                    runCatching { setPreferredDevice(preferredDevice) }
+                }
+                setDataSource(context, uri)
+                isLooping = false
+                prepare()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredDevice != null) {
+                    runCatching { setPreferredDevice(preferredDevice) }
+                }
+            }
+        }.getOrNull() ?: return false
+
+        synchronized(playerLock) {
+            activeMediaPlayers.add(mp)
+        }
+        try {
+            val clipDuration = runCatching { mp.duration.toLong() }.getOrDefault(maxDurationMs)
+            val waitMs = if (clipDuration > 150L) {
+                minOf(clipDuration + 150L, maxDurationMs)
+            } else {
+                maxDurationMs
+            }
+            mp.start()
+            delay(waitMs)
+            return true
+        } catch (_: Exception) {
+            return false
+        } finally {
+            synchronized(playerLock) {
+                activeMediaPlayers.remove(mp)
+            }
+            runCatching {
+                if (mp.isPlaying) mp.stop()
+            }
+            runCatching { mp.release() }
+        }
+    }
+
     private fun resolveOutputTargets(audioManager: AudioManager?): OutputRoutingTargets {
         if (audioManager == null) return OutputRoutingTargets(null, null)
         val outputs = runCatching {
@@ -164,7 +469,6 @@ object AlertSoundPlayer {
 
         val speaker = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
 
-        // Priority order: stereo A2DP / BLE / Wired / USB first, SCO last
         val preferredHeadsetTypes = buildList {
             add(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -193,7 +497,7 @@ object AlertSoundPlayer {
         )
     }
 
-    private fun chooseSpeakerUsage(audioManager: AudioManager?): Int {
+    private fun chooseNormalSpeakerUsage(audioManager: AudioManager?): Int {
         if (audioManager == null) return AudioAttributes.USAGE_ALARM
         val alarmVol = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
         val ringVol = audioManager.getStreamVolume(AudioManager.STREAM_RING)
@@ -206,115 +510,7 @@ object AlertSoundPlayer {
         }
     }
 
-    /**
-     * Plays a ringtone/MP3 URI on the phone speaker AND (if connected) simultaneously in the headset.
-     */
-    private fun playUriDualOutput(
-        context: Context,
-        uri: Uri,
-        speakerUsage: Int,
-        targets: OutputRoutingTargets
-    ): Boolean {
-        val createdPlayers = mutableListOf<MediaPlayer>()
-        return try {
-            val dualCapable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-                targets.externalHeadset != null &&
-                targets.builtInSpeaker != null
-
-            if (dualCapable) {
-                // 1. Phone built-in speaker player
-                createPreparedMediaPlayer(
-                    context = context,
-                    uri = uri,
-                    usage = speakerUsage,
-                    preferredDevice = targets.builtInSpeaker
-                )?.let { createdPlayers.add(it) }
-
-                // 2. Connected headset player
-                createPreparedMediaPlayer(
-                    context = context,
-                    uri = uri,
-                    usage = AudioAttributes.USAGE_MEDIA,
-                    preferredDevice = targets.externalHeadset
-                )?.let { createdPlayers.add(it) }
-            } else {
-                // No external headset connected (or API 26-27): play on speaker/sonification strategy
-                createPreparedMediaPlayer(
-                    context = context,
-                    uri = uri,
-                    usage = speakerUsage,
-                    preferredDevice = targets.builtInSpeaker
-                )?.let { createdPlayers.add(it) }
-            }
-
-            if (createdPlayers.isEmpty()) return false
-
-            synchronized(playerLock) {
-                activeMediaPlayers.addAll(createdPlayers)
-            }
-            createdPlayers.forEach { mp ->
-                runCatching { mp.start() }
-            }
-
-            // Cap long ringtone/MP3 files at 7 seconds so alert finishes cleanly
-            stopJob = scope.launch {
-                delay(7_000L)
-                stopCurrent()
-            }
-            true
-        } catch (_: Exception) {
-            createdPlayers.forEach { runCatching { it.release() } }
-            false
-        }
-    }
-
-    private fun createPreparedMediaPlayer(
-        context: Context,
-        uri: Uri,
-        usage: Int,
-        preferredDevice: AudioDeviceInfo?
-    ): MediaPlayer? {
-        return runCatching {
-            val contentType = if (usage == AudioAttributes.USAGE_MEDIA) {
-                AudioAttributes.CONTENT_TYPE_MUSIC
-            } else {
-                AudioAttributes.CONTENT_TYPE_SONIFICATION
-            }
-            MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(usage)
-                        .setContentType(contentType)
-                        .build()
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredDevice != null) {
-                    runCatching { setPreferredDevice(preferredDevice) }
-                }
-                setDataSource(context, uri)
-                isLooping = false
-                prepare()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && preferredDevice != null) {
-                    runCatching { setPreferredDevice(preferredDevice) }
-                }
-                setOnCompletionListener { player ->
-                    runCatching { player.release() }
-                    synchronized(playerLock) {
-                        activeMediaPlayers.remove(player)
-                    }
-                }
-            }
-        }.getOrNull()
-    }
-
-    /**
-     * Synthesizes a multi-tone PCM chime and plays it simultaneously on BOTH the phone speaker
-     * and any connected Bluetooth / wired / USB headset.
-     */
-    private fun playSynthesizedPresetDualOutput(
-        preset: AlertSoundPreset,
-        speakerUsage: Int,
-        targets: OutputRoutingTargets
-    ) {
+    private fun synthesizePresetPcm(preset: AlertSoundPreset): Pair<ShortArray, Int> {
         val sequence = when (preset) {
             AlertSoundPreset.CSL_CHIME -> listOf(
                 NoteStep(freqHz = 783.99, secondFreqHz = 1567.98, durationMs = 150, pauseAfterMs = 45),
@@ -371,7 +567,7 @@ object AlertSoundPlayer {
                 } else {
                     0.0
                 }
-                val combined = ((primaryWave + overtoneWave) / 1.35) * env * 0.92
+                val combined = ((primaryWave + overtoneWave) / 1.35) * env * 0.95
                 pcm[cursor + i] = (combined * Short.MAX_VALUE).toInt()
                     .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                     .toShort()
@@ -379,91 +575,7 @@ object AlertSoundPlayer {
             cursor += noteSamples + (sampleRate * step.pauseAfterMs) / 1000
         }
 
-        val createdTracks = mutableListOf<AudioTrack>()
-        if (targets.externalHeadset != null && targets.builtInSpeaker != null) {
-            // 1. Track pinned to the phone's built-in loudspeaker
-            buildStaticTrack(
-                pcm = pcm,
-                sampleRate = sampleRate,
-                usage = speakerUsage,
-                preferredDevice = targets.builtInSpeaker
-            )?.let { createdTracks.add(it) }
-
-            // 2. Track pinned to the connected Bluetooth / wired / USB headset
-            buildStaticTrack(
-                pcm = pcm,
-                sampleRate = sampleRate,
-                usage = AudioAttributes.USAGE_MEDIA,
-                preferredDevice = targets.externalHeadset
-            )?.let { createdTracks.add(it) }
-        } else {
-            buildStaticTrack(
-                pcm = pcm,
-                sampleRate = sampleRate,
-                usage = speakerUsage,
-                preferredDevice = targets.builtInSpeaker
-            )?.let { createdTracks.add(it) }
-        }
-
-        if (createdTracks.isEmpty()) return
-
-        synchronized(playerLock) {
-            activeAudioTracks.addAll(createdTracks)
-        }
-        createdTracks.forEach { track ->
-            runCatching { track.play() }
-        }
-
-        stopJob = scope.launch {
-            delay(totalMs.toLong() + 300L)
-            synchronized(playerLock) {
-                createdTracks.forEach { track ->
-                    if (activeAudioTracks.remove(track)) {
-                        runCatching { track.stop() }
-                        runCatching { track.release() }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun buildStaticTrack(
-        pcm: ShortArray,
-        sampleRate: Int,
-        usage: Int,
-        preferredDevice: AudioDeviceInfo?
-    ): AudioTrack? {
-        return runCatching {
-            val byteSize = pcm.size * 2
-            val contentType = if (usage == AudioAttributes.USAGE_MEDIA) {
-                AudioAttributes.CONTENT_TYPE_MUSIC
-            } else {
-                AudioAttributes.CONTENT_TYPE_SONIFICATION
-            }
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(usage)
-                        .setContentType(contentType)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(byteSize)
-                .build()
-
-            if (preferredDevice != null) {
-                runCatching { track.setPreferredDevice(preferredDevice) }
-            }
-            track.write(pcm, 0, pcm.size)
-            track
-        }.getOrNull()
+        return pcm to totalMs
     }
 
     private fun vibrateDevice(context: Context) {
