@@ -76,6 +76,7 @@ import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
 import com.helpdesk.jiraagent.ui.theme.CslInfoBlue
+import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
 import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.util.DialerLauncher
@@ -525,27 +526,42 @@ private fun TicketListCard(
                 .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // 1. Header row: ONLY Ticket Key on left + Created Time on right -> 100% fits!
+            // 1. Header row: Prominent Client Name on top-left + Created Time on top-right
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(6.dp)
+                        modifier = Modifier.weight(1f, fill = false),
+                        color = CslMidnight,
+                        shape = RoundedCornerShape(7.dp)
                     ) {
-                        Text(
-                            text = ticket.key,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = CslOrange
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = ticket.reporterName.ifBlank { "Клиент" },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White
+                            )
+                        }
                     }
+
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     Text(
                         text = formattedTime,
+                        modifier = Modifier.padding(top = 5.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -594,35 +610,27 @@ private fun TicketListCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                // 4. Full Client / Reporter row (wraps naturally, NO single-line cutoff!)
-                Row(
+                // 4. Ticket Key moved down in smaller font (+ Assignee if present)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        modifier = Modifier
-                            .padding(top = 2.dp)
-                            .size(16.dp),
-                        tint = CslOrange
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = ticket.reporterName,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                if (!ticket.assigneeName.isNullOrBlank()) {
-                    Text(
-                        text = "Исполнитель: ${ticket.assigneeName}",
+                        text = "№ ${ticket.key}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = CslInfoBlue,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    if (!ticket.assigneeName.isNullOrBlank()) {
+                        Text(
+                            text = "• Исполнитель: ${ticket.assigneeName}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CslInfoBlue,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
 
                 if (!ticket.isClientTicket && ticket.filterReason != null) {

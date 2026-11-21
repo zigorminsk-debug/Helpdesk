@@ -442,9 +442,9 @@ private fun InAppFloatingBannerOverlay(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "${ticket.key} · ${alert.titleSuffix}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
+                        text = "${ticket.reporterName.ifBlank { "Клиент" }} · ${alert.titleSuffix}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
                         color = CslOrange,
                         modifier = Modifier.weight(1f)
                     )
@@ -469,9 +469,9 @@ private fun InAppFloatingBannerOverlay(
                 )
 
                 Text(
-                    text = "Клиент: ${ticket.reporterName}" +
+                    text = "№ ${ticket.key}" +
                         (phone?.let { " · ${it.formattedDisplay}" } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFFD0D5DD)
                 )
 

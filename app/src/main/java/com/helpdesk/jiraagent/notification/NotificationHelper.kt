@@ -185,15 +185,16 @@ object NotificationHelper {
             }
         }
 
+        val clientLabel = ticket.reporterName.ifBlank { "Клиент" }
         val builder = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
             .setSmallIcon(R.drawable.ic_notification_ticket)
             .setColor(0xFFF7631B.toInt())
-            .setContentTitle("${ticket.key} · $titleSuffix")
+            .setContentTitle("$clientLabel · $titleSuffix")
             .setContentText(
                 if (primaryPhone != null) {
-                    "${ticket.summary} (${primaryPhone.formattedDisplay})"
+                    "${ticket.summary} (${primaryPhone.formattedDisplay}) · № ${ticket.key}"
                 } else {
-                    "${ticket.summary} · ${ticket.reporterName}"
+                    "${ticket.summary} · № ${ticket.key}"
                 }
             )
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
