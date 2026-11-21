@@ -58,7 +58,7 @@ object AppUpdateManager {
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 
     private val VERSION_CODE_REGEX = Regex("""versionCode\s*=\s*(\d+)""", RegexOption.IGNORE_CASE)
-    private val SHA256_REGEX = Regex("""SHA-256[^0-9a-fA-F]*([0-9a-fA-F]{64})""", RegexOption.IGNORE_CASE)
+    private val SHA256_REGEX = Regex("""SHA-256[^\r\n]{0,60}?\b([0-9a-fA-F]{64})\b""", RegexOption.IGNORE_CASE)
     private val ATOM_ENTRY_REGEX = Regex("""<entry\b[^>]*>(.*?)</entry>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
     private val ATOM_TAG_LINK_REGEX = Regex("""href\s*=\s*["']([^"']*/releases/tag/([^"'/?#]+))["']""", RegexOption.IGNORE_CASE)
     private val HTML_TAG_LINK_REGEX = Regex("""/$GITHUB_OWNER/$GITHUB_REPO/releases/tag/(v?\d+\.\d+\.\d+)""", RegexOption.IGNORE_CASE)
