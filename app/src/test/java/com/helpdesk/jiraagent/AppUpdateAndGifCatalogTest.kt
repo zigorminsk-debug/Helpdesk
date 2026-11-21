@@ -1,13 +1,16 @@
 package com.helpdesk.jiraagent
 
+import com.helpdesk.jiraagent.data.HabrRssParser
 import com.helpdesk.jiraagent.ui.components.SysadminGifCatalog
 import com.helpdesk.jiraagent.update.AppUpdateManager
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.time.LocalDate
 
 class AppUpdateAndGifCatalogTest {
 
@@ -105,6 +108,61 @@ class AppUpdateAndGifCatalogTest {
             gifFile.inputStream().use { it.read(header) }
             val magic = String(header, Charsets.US_ASCII)
             assertTrue("Expected GIF header in ${item.assetPath}, got $magic", magic == "GIF89a" || magic == "GIF87a")
+        }
+    }
+
+    @Test
+    fun `habr rss parser extracts clean Russian titles urls tags and strips html`() {
+        val sampleRss = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <channel>
+                <title><![CDATA[Все публикации подряд на Хабре]]></title>
+                <item>
+                  <guid isPermaLink="true">https://habr.com/ru/articles/1110676/</guid>
+                  <pubDate>Sat, 21 Nov 2026 13:02:16 GMT</pubDate>
+                  <title><![CDATA[Эволюция NFQWS2 ASUS Community (+&nbsp;Keenetic)]]></title>
+                  <description><![CDATA[<img src="https://habrastorage.org/test.png"/><p>История адаптации &laquo;nfqws2&raquo; &mdash; для роутеров ASUS и OpenWrt.</p> <a href="https://habr.com/ru/articles/1110676/?utm_source=habrahabr#habracut">Читать далее</a>]]></description>
+                  <link>https://habr.com/ru/articles/1110676/?utm_source=habrahabr&amp;utm_medium=rss&amp;utm_campaign=1110676#habracut</link>
+                  <dc:creator>Profy13</dc:creator>
+                  <category><![CDATA[Сетевое оборудование]]></category>
+                  <category><![CDATA[Системное администрирование]]></category>
+                </item>
+              </channel>
+            </rss>
+        """.trimIndent()
+
+        val items = HabrRssParser.parse(
+            rssXml = sampleRss,
+            maxItems = 10,
+            nowDateMinsk = LocalDate.of(2026, 11, 21)
+        )
+        assertEquals(1, items.size)
+        val first = items.first()
+        assertEquals("Эволюция NFQWS2 ASUS Community (+ Keenetic)", first.title)
+        assertEquals("https://habr.com/ru/articles/1110676/", first.url)
+        assertEquals("История адаптации «nfqws2» — для роутеров ASUS и OpenWrt.", first.summary)
+        assertFalse(first.summary.contains("Читать далее"))
+        assertEquals("Profy13", first.author)
+        assertEquals("Сегодня, 16:02", first.publishedLabel)
+        assertEquals(listOf("Сетевое оборудование", "Системное администрирование"), first.tags)
+    }
+
+    @Test
+    fun `launcher mipmap icon resources exist across all densities`() {
+        val resRoot = listOf(
+            File("src/main/res"),
+            File("app/src/main/res")
+        ).firstOrNull { it.exists() }
+        assertNotNull("res directory should exist", resRoot)
+
+        val densities = listOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+        val files = listOf("ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png")
+        for (d in densities) {
+            for (f in files) {
+                val iconFile = File(resRoot!!, "mipmap-$d/$f")
+                assertTrue("Missing launcher icon ${iconFile.path}", iconFile.exists() && iconFile.length() > 1000L)
+            }
         }
     }
 }
