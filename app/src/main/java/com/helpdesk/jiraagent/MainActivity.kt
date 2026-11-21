@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,6 +50,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarDefaults
@@ -78,6 +80,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.helpdesk.jiraagent.data.InAppBannerAlert
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.MainViewModel
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
@@ -118,11 +121,26 @@ class MainActivity : ComponentActivity() {
         handleNotificationIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        val updateState = viewModel.appUpdateState.value
+        if (updateState.needsInstallPermission &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.canRequestPackageInstalls()
+        ) {
+            viewModel.installReadyUpdateApk()
+        }
+    }
+
     private fun handleNotificationIntent(intent: Intent?) {
         val ticketKey = intent?.getStringExtra(NotificationHelper.EXTRA_OPEN_TICKET_KEY)
         if (!ticketKey.isNullOrBlank()) {
             viewModel.openTicket(ticketKey)
             intent.removeExtra(NotificationHelper.EXTRA_OPEN_TICKET_KEY)
+        }
+        if (intent?.getBooleanExtra(NotificationHelper.EXTRA_TRIGGER_APP_UPDATE, false) == true) {
+            intent.removeExtra(NotificationHelper.EXTRA_TRIGGER_APP_UPDATE)
+            viewModel.checkForAppUpdate(manual = true, autoStartDownload = true)
         }
     }
 }
@@ -141,6 +159,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val isLoadingDetail by viewModel.isLoadingTicketDetail.collectAsStateWithLifecycle()
     val ticketActionState by viewModel.ticketActionState.collectAsStateWithLifecycle()
     val connectionTest by viewModel.connectionTest.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val latestInAppBanner by viewModel.latestInAppBanner.collectAsStateWithLifecycle()
     val returnToMainScreenStamp by viewModel.returnToMainScreenStamp.collectAsStateWithLifecycle()
 
@@ -351,6 +370,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 }
             }
 
+            if (appUpdateState.availableUpdate != null && !appUpdateState.bannerDismissed) {
+                AppUpdateTopBanner(
+                    state = appUpdateState,
+                    onDownloadAndInstall = { viewModel.downloadAndInstallAppUpdate() },
+                    onInstallReady = { viewModel.installReadyUpdateApk() },
+                    onDismiss = { viewModel.dismissAppUpdateBanner() }
+                )
+            }
+
             when (currentTab) {
                 BottomDestination.TICKETS -> TicketsScreen(
                     tickets = tickets,
@@ -377,12 +405,16 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 BottomDestination.SETTINGS -> ServerSettingsScreen(
                     currentSettings = appSettings,
                     connectionTest = connectionTest,
+                    appUpdateState = appUpdateState,
                     onTestConnection = { candidate -> viewModel.testConnection(candidate) },
                     onSaveSettings = { updated -> viewModel.saveAppSettings(updated) },
                     onTriggerTestBanner = {
                         hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
                         viewModel.triggerTestBannerNotification()
                     },
+                    onCheckForUpdate = { viewModel.checkForAppUpdate(manual = true) },
+                    onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
+                    onInstallReadyUpdate = { viewModel.installReadyUpdateApk() },
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -516,4 +548,114 @@ private fun InAppFloatingBannerOverlay(
         }
     }
 }
+
+@Composable
+private fun AppUpdateTopBanner(
+    state: AppUpdateUiState,
+    onDownloadAndInstall: () -> Unit,
+    onInstallReady: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val update = state.availableUpdate ?: return
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CslMidnight),
+        border = BorderStroke(1.dp, CslOrange)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SystemUpdate,
+                    contentDescription = null,
+                    tint = CslOrange,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Новая версия Help-CSL v${update.versionName}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = state.statusMessage ?: "Доступно обновление на GitHub",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFD0D5E2),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (!state.isDownloading) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Button(
+                        onClick = {
+                            if (state.readyApkPath != null) {
+                                onInstallReady()
+                            } else {
+                                onDownloadAndInstall()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CslOrange,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text(
+                            text = if (state.readyApkPath != null) "Установить" else "Обновить",
+                            maxLines = 1
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Скрыть",
+                            tint = Color(0xFFB0B8CC),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
+            if (state.isDownloading) {
+                val progress = if (state.totalBytes > 0L) {
+                    (state.downloadedBytes.toFloat() / state.totalBytes.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    null
+                }
+                if (progress != null) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = CslOrange
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = CslOrange
+                    )
+                }
+            }
+        }
+    }
+}
+
 

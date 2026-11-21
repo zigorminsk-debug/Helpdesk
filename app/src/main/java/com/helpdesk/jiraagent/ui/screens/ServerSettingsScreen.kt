@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SettingsApplications
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -49,10 +50,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +83,7 @@ import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.ConnectionTestState
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -99,9 +103,13 @@ private val POLL_INTERVAL_OPTIONS = listOf(
 fun ServerSettingsScreen(
     currentSettings: AppSettings,
     connectionTest: ConnectionTestState,
+    appUpdateState: AppUpdateUiState = AppUpdateUiState(),
     onTestConnection: (AppSettings) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onTriggerTestBanner: () -> Unit = {},
+    onCheckForUpdate: () -> Unit = {},
+    onDownloadAndInstallUpdate: () -> Unit = {},
+    onInstallReadyUpdate: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -818,23 +826,173 @@ fun ServerSettingsScreen(
             Text("Сохранить настройки", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
 
-        // 4. Version & Signing info card
+        // 4. GitHub Auto-Update & Version card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
-            Column(modifier = Modifier.padding(14.dp)) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = CslOrange
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Автообновление с GitHub",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Установлена: v${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Автоматически проверять новые версии",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "При запуске и в фоне проверять релизы на GitHub и предлагать обновление",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.autoCheckUpdates,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(autoCheckUpdates = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                val availableUpdate = appUpdateState.availableUpdate
+                if (availableUpdate != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Доступна новая версия: Help-CSL v${availableUpdate.versionName}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+
+                            if (appUpdateState.isDownloading) {
+                                val progress = if (appUpdateState.totalBytes > 0L) {
+                                    (appUpdateState.downloadedBytes.toFloat() / appUpdateState.totalBytes.toFloat())
+                                        .coerceIn(0f, 1f)
+                                } else {
+                                    null
+                                }
+                                if (progress != null) {
+                                    LinearProgressIndicator(
+                                        progress = { progress },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    val doneMb = appUpdateState.downloadedBytes / (1024f * 1024f)
+                                    val totalMb = appUpdateState.totalBytes / (1024f * 1024f)
+                                    Text(
+                                        text = String.format(
+                                            java.util.Locale.US,
+                                            "Скачано %.1f / %.1f МБ (%d%%)",
+                                            doneMb,
+                                            totalMb,
+                                            (progress * 100).toInt()
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                } else {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        if (appUpdateState.readyApkPath != null) {
+                                            onInstallReadyUpdate()
+                                        } else {
+                                            onDownloadAndInstallUpdate()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        if (appUpdateState.readyApkPath != null) {
+                                            "Установить скачанный APK (v${availableUpdate.versionName})"
+                                        } else {
+                                            "Скачать и обновить до v${availableUpdate.versionName}"
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                appUpdateState.statusMessage?.let { status ->
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (appUpdateState.isError) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onCheckForUpdate,
+                    enabled = !appUpdateState.isChecking && !appUpdateState.isDownloading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (appUpdateState.isChecking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Проверка GitHub…")
+                    } else {
+                        Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Проверить наличие новой версии")
+                    }
+                }
+
                 Text(
-                    text = "Help-CSL · Версия ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = CslOrange
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Пакет: ${BuildConfig.APPLICATION_ID} · Подписано постоянным ключом репозитория (поддерживается обновление APK поверх без удаления).",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "Пакет: ${BuildConfig.APPLICATION_ID} · Обновление ставится поверх текущей версии с сохранением всех настроек.",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }

@@ -84,6 +84,7 @@ data class AppSettings(
     val pollingEnabled: Boolean = true,
     val pollIntervalSeconds: Int = 30,
     val startOnBoot: Boolean = true,
+    val autoCheckUpdates: Boolean = true,
     val workScheduleEnabled: Boolean = true,
     val workStartTime: String = "09:00",
     val workEndTime: String = "17:30",

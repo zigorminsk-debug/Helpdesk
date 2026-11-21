@@ -20,6 +20,7 @@ import com.helpdesk.jiraagent.R
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.update.GitHubReleaseUpdate
 
 object NotificationHelper {
 
@@ -27,7 +28,9 @@ object NotificationHelper {
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
+    const val UPDATE_NOTIFICATION_ID = 1002
     const val EXTRA_OPEN_TICKET_KEY = "extra_open_ticket_key"
+    const val EXTRA_TRIGGER_APP_UPDATE = "extra_trigger_app_update"
 
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -239,5 +242,41 @@ object NotificationHelper {
             builder.build()
         )
         return true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showAppUpdateNotification(
+        context: Context,
+        update: GitHubReleaseUpdate
+    ) {
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val updateIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_TRIGGER_APP_UPDATE, true)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            UPDATE_NOTIFICATION_ID,
+            updateIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFF7631B.toInt())
+            .setContentTitle("Доступно обновление Help-CSL v${update.versionName}")
+            .setContentText("Нажмите, чтобы автоматически скачать и установить новую версию с GitHub")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Обновить", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(UPDATE_NOTIFICATION_ID, notification)
     }
 }

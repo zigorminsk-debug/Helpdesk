@@ -75,6 +75,7 @@ import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
+import com.helpdesk.jiraagent.ui.components.SysadminEmptyStatePanel
 import com.helpdesk.jiraagent.ui.theme.CslInfoBlue
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -246,11 +247,23 @@ fun TicketsScreen(
                     }
                 }
 
-                items(displayedTickets, key = { it.key }) { ticket ->
-                    TicketListCard(
-                        ticket = ticket,
-                        onClick = { onTicketClick(ticket.key) }
-                    )
+                if (displayedTickets.isEmpty()) {
+                    item(key = "empty_tickets_gif") {
+                        EmptyTicketsPlaceholder(
+                            isConfigured = appSettings.isConfigured,
+                            tabMode = tabMode,
+                            hasSearch = searchQuery.isNotBlank(),
+                            onRefresh = onRefresh,
+                            scrollable = false
+                        )
+                    }
+                } else {
+                    items(displayedTickets, key = { it.key }) { ticket ->
+                        TicketListCard(
+                            ticket = ticket,
+                            onClick = { onTicketClick(ticket.key) }
+                        )
+                    }
                 }
             }
         }
@@ -798,7 +811,8 @@ private fun EmptyTicketsPlaceholder(
     isConfigured: Boolean,
     tabMode: TicketTabMode,
     hasSearch: Boolean,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    scrollable: Boolean = true
 ) {
     val emptyMessage = when {
         hasSearch -> "По вашему поисковому запросу заявки не найдены"
@@ -809,34 +823,12 @@ private fun EmptyTicketsPlaceholder(
         else -> "Отфильтрованных сервисных заявок (zabbix, боты) пока нет"
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(28.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Default.Inbox,
-                contentDescription = null,
-                modifier = Modifier.size(56.dp),
-                tint = CslOrange.copy(alpha = 0.7f)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = emptyMessage,
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (isConfigured) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Button(onClick = onRefresh) {
-                    Text("Обновить сейчас")
-                }
-            }
-        }
-    }
+    SysadminEmptyStatePanel(
+        emptyStatusText = emptyMessage,
+        showRefreshButton = isConfigured,
+        onRefreshNow = onRefresh,
+        scrollable = scrollable
+    )
 }
 
 private val cardDateTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM HH:mm")

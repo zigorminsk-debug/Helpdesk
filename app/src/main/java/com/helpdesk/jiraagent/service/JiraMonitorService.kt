@@ -14,6 +14,7 @@ import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.update.AppUpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,6 +36,8 @@ class JiraMonitorService : Service() {
     private val apiClient = JiraApiClient()
 
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+    private var lastUpdateCheckEpochMillis: Long = 0L
+    private var lastNotifiedUpdateTag: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -135,6 +138,20 @@ class JiraMonitorService : Service() {
 
                 if (settings.isConfigured && settings.pollingEnabled) {
                     pollOnce()
+                }
+
+                // Periodically check GitHub Releases for new APK versions (every 90 minutes)
+                if (settings.autoCheckUpdates) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdateCheckEpochMillis >= 90L * 60_000L) {
+                        lastUpdateCheckEpochMillis = now
+                        AppUpdateManager.checkForUpdate().onSuccess { update ->
+                            if (update != null && update.tagName != lastNotifiedUpdateTag) {
+                                lastNotifiedUpdateTag = update.tagName
+                                NotificationHelper.showAppUpdateNotification(applicationContext, update)
+                            }
+                        }
+                    }
                 }
 
                 val intervalMs = repository.appSettings.value.pollIntervalSeconds.coerceIn(10, 3600) * 1000L

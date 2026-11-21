@@ -21,16 +21,34 @@ import com.helpdesk.jiraagent.model.TicketComment
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.service.JiraMonitorService
 import com.helpdesk.jiraagent.service.PostponeScheduler
+import com.helpdesk.jiraagent.update.AppUpdateManager
+import com.helpdesk.jiraagent.update.GitHubReleaseUpdate
+import com.helpdesk.jiraagent.update.InstallLaunchResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import java.time.Instant
 
 data class ConnectionTestState(
     val isTesting: Boolean = false,
     val isSuccess: Boolean? = null,
     val message: String? = null
+)
+
+data class AppUpdateUiState(
+    val isChecking: Boolean = false,
+    val availableUpdate: GitHubReleaseUpdate? = null,
+    val bannerDismissed: Boolean = false,
+    val isDownloading: Boolean = false,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val readyApkPath: String? = null,
+    val needsInstallPermission: Boolean = false,
+    val statusMessage: String? = null,
+    val isError: Boolean = false
 )
 
 data class TicketActionUiState(
@@ -83,8 +101,171 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _connectionTest = MutableStateFlow(ConnectionTestState())
     val connectionTest: StateFlow<ConnectionTestState> = _connectionTest.asStateFlow()
 
+    private val _appUpdateState = MutableStateFlow(AppUpdateUiState())
+    val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
+
     init {
         JiraMonitorService.syncServiceState(appContext)
+        if (repository.appSettings.value.autoCheckUpdates) {
+            checkForAppUpdate(manual = false)
+        }
+    }
+
+    fun checkForAppUpdate(manual: Boolean, autoStartDownload: Boolean = false) {
+        if (_appUpdateState.value.isChecking || _appUpdateState.value.isDownloading) return
+
+        viewModelScope.launch {
+            _appUpdateState.update {
+                it.copy(
+                    isChecking = true,
+                    statusMessage = if (manual) "Проверка обновлений на GitHub…" else it.statusMessage,
+                    isError = false
+                )
+            }
+
+            AppUpdateManager.checkForUpdate().onSuccess { update ->
+                if (update != null) {
+                    _appUpdateState.update {
+                        it.copy(
+                            isChecking = false,
+                            availableUpdate = update,
+                            bannerDismissed = false,
+                            statusMessage = "Найдена новая версия v${update.versionName}",
+                            isError = false
+                        )
+                    }
+                    if (autoStartDownload) {
+                        downloadAndInstallAppUpdate()
+                    }
+                } else {
+                    _appUpdateState.update {
+                        it.copy(
+                            isChecking = false,
+                            availableUpdate = null,
+                            statusMessage = if (manual) "Установлена актуальная версия программы" else null,
+                            isError = false
+                        )
+                    }
+                    if (manual) {
+                        Toast.makeText(appContext, "У вас уже установлена последняя версия", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }.onFailure { err ->
+                _appUpdateState.update {
+                    it.copy(
+                        isChecking = false,
+                        statusMessage = if (manual) {
+                            "Не удалось проверить обновления: ${err.message ?: "ошибка сети"}"
+                        } else {
+                            null
+                        },
+                        isError = manual
+                    )
+                }
+            }
+        }
+    }
+
+    fun downloadAndInstallAppUpdate() {
+        val update = _appUpdateState.value.availableUpdate ?: return
+        if (_appUpdateState.value.isDownloading) return
+
+        viewModelScope.launch {
+            _appUpdateState.update {
+                it.copy(
+                    isDownloading = true,
+                    downloadedBytes = 0L,
+                    totalBytes = update.apkSizeBytes,
+                    needsInstallPermission = false,
+                    statusMessage = "Скачивание Help-CSL v${update.versionName}…",
+                    isError = false
+                )
+            }
+
+            AppUpdateManager.downloadUpdateApk(
+                context = appContext,
+                update = update,
+                onProgress = { done, total ->
+                    _appUpdateState.update {
+                        it.copy(downloadedBytes = done, totalBytes = total)
+                    }
+                }
+            ).onSuccess { apkFile ->
+                val result = AppUpdateManager.launchApkInstaller(appContext, apkFile)
+                when (result) {
+                    InstallLaunchResult.LAUNCHED -> {
+                        _appUpdateState.update {
+                            it.copy(
+                                isDownloading = false,
+                                readyApkPath = apkFile.absolutePath,
+                                needsInstallPermission = false,
+                                statusMessage = "Подтвердите установку обновления в окне Android",
+                                isError = false
+                            )
+                        }
+                    }
+
+                    InstallLaunchResult.NEEDS_INSTALL_PERMISSION -> {
+                        _appUpdateState.update {
+                            it.copy(
+                                isDownloading = false,
+                                readyApkPath = apkFile.absolutePath,
+                                needsInstallPermission = true,
+                                statusMessage = "Разрешите установку обновлений для Help-CSL и нажмите «Установить APK»",
+                                isError = false
+                            )
+                        }
+                        Toast.makeText(
+                            appContext,
+                            "Включите разрешение «Установка неизвестных приложений» для Help-CSL",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    InstallLaunchResult.ERROR -> {
+                        _appUpdateState.update {
+                            it.copy(
+                                isDownloading = false,
+                                readyApkPath = apkFile.absolutePath,
+                                statusMessage = "Не удалось открыть системный установщик APK",
+                                isError = true
+                            )
+                        }
+                    }
+                }
+            }.onFailure { err ->
+                _appUpdateState.update {
+                    it.copy(
+                        isDownloading = false,
+                        statusMessage = err.message ?: "Ошибка скачивания обновления с GitHub",
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    fun installReadyUpdateApk() {
+        val path = _appUpdateState.value.readyApkPath ?: return
+        val file = File(path)
+        if (!file.exists()) {
+            downloadAndInstallAppUpdate()
+            return
+        }
+        val result = AppUpdateManager.launchApkInstaller(appContext, file)
+        if (result == InstallLaunchResult.LAUNCHED) {
+            _appUpdateState.update {
+                it.copy(
+                    needsInstallPermission = false,
+                    statusMessage = "Подтвердите установку обновления в окне Android",
+                    isError = false
+                )
+            }
+        }
+    }
+
+    fun dismissAppUpdateBanner() {
+        _appUpdateState.update { it.copy(bannerDismissed = true) }
     }
 
     fun openTicket(ticketKey: String) {

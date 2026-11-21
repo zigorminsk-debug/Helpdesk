@@ -93,6 +93,7 @@ class SettingsRepository private constructor(context: Context) {
             .putBoolean(KEY_POLLING_ENABLED, newSettings.pollingEnabled)
             .putInt(KEY_POLL_INTERVAL, newSettings.pollIntervalSeconds)
             .putBoolean(KEY_START_ON_BOOT, newSettings.startOnBoot)
+            .putBoolean(KEY_AUTO_CHECK_UPDATES, newSettings.autoCheckUpdates)
             .putBoolean(KEY_WORK_SCHEDULE_ENABLED, newSettings.workScheduleEnabled)
             .putString(KEY_WORK_START_TIME, newSettings.workStartTime.trim().ifEmpty { "09:00" })
             .putString(KEY_WORK_END_TIME, newSettings.workEndTime.trim().ifEmpty { "17:30" })
@@ -340,6 +341,7 @@ class SettingsRepository private constructor(context: Context) {
             pollingEnabled = prefs.getBoolean(KEY_POLLING_ENABLED, true),
             pollIntervalSeconds = prefs.getInt(KEY_POLL_INTERVAL, 30),
             startOnBoot = prefs.getBoolean(KEY_START_ON_BOOT, true),
+            autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             workScheduleEnabled = prefs.getBoolean(KEY_WORK_SCHEDULE_ENABLED, true),
             workStartTime = prefs.getString(KEY_WORK_START_TIME, "09:00").orEmpty().ifBlank { "09:00" },
             workEndTime = prefs.getString(KEY_WORK_END_TIME, "17:30").orEmpty().ifBlank { "17:30" },
@@ -467,6 +469,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_POLLING_ENABLED = "polling_enabled"
         private const val KEY_POLL_INTERVAL = "poll_interval"
         private const val KEY_START_ON_BOOT = "start_on_boot"
+        private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_WORK_SCHEDULE_ENABLED = "work_schedule_enabled"
         private const val KEY_WORK_START_TIME = "work_start_time"
         private const val KEY_WORK_END_TIME = "work_end_time"
