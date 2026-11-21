@@ -49,10 +49,16 @@ jobs:
       - name: Запуск модульных тестов и сборка подписанного Release APK
         run: |
           chmod +x gradlew
+          set -o pipefail
           ./gradlew testReleaseUnitTest assembleRelease \
             -PversionCode="${{ steps.version.outputs.version_code }}" \
             -PversionName="${{ steps.version.outputs.version_name }}" \
-            --no-daemon
+            --no-daemon 2>&1 | tee gradle-build.log || {
+              grep -E "^e: |FAILED|Exception:|What went wrong:" -A 4 gradle-build.log | head -n 40 | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+              exit 1
+            }
 
       - name: Подготовка APK и проверка подписи apksigner
         id: verify_apk

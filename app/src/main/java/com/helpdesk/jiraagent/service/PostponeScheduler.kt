@@ -1,5 +1,6 @@
 package com.helpdesk.jiraagent.service
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
@@ -16,6 +17,7 @@ object PostponeScheduler {
     private const val ALARM_REQUEST_CODE = 4901
     private val processingMutex = Mutex()
 
+    @SuppressLint("ScheduleExactAlarm", "MissingPermission")
     fun scheduleNextAlarm(context: Context) {
         val appContext = context.applicationContext
         val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
