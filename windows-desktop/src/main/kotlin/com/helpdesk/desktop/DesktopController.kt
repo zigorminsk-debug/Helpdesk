@@ -69,6 +69,7 @@ data class DesktopUiState(
     val settings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
     val minimizeToTray: Boolean = true,
+    val respectWorkScheduleOnDesktop: Boolean = false,
     val tickets: List<HelpdeskTicket> = emptyList(),
     val postponedTickets: List<PostponedTicket> = emptyList(),
     val selectedTicketKey: String? = null,
@@ -131,6 +132,7 @@ class DesktopController(
 
     private val persisted = storage.loadState()
     private val notifiedTicketKeys = persisted.seenTicketKeys.toMutableSet()
+    private val deferredTicketKeys = persisted.deferredAlertKeys.toMutableSet()
     private var baselineInitialized: Boolean = persisted.baselineInitialized
     private var seenChatIds: Set<String> = persisted.cachedChatMessages.map { it.id }.toSet()
 
@@ -139,6 +141,7 @@ class DesktopController(
             settings = persisted.appSettings,
             filterSettings = persisted.filterSettings,
             minimizeToTray = persisted.minimizeToTray,
+            respectWorkScheduleOnDesktop = persisted.respectWorkScheduleOnDesktop,
             connectedUserName = persisted.connectedUserName,
             tickets = persisted.cachedTickets,
             postponedTickets = persisted.postponedTickets,
@@ -154,6 +157,7 @@ class DesktopController(
 
     private var pollingJob: Job? = null
     private var onBringWindowToFront: (() -> Unit)? = null
+    private var onSystemTrayNotify: ((title: String, message: String) -> Unit)? = null
 
     init {
         loadHabrFeed(force = false)
@@ -178,8 +182,17 @@ class DesktopController(
         onBringWindowToFront = activator
     }
 
+    fun bindTrayNotifier(notifier: (title: String, message: String) -> Unit) {
+        onSystemTrayNotify = notifier
+    }
+
     fun setMinimizeToTray(enabled: Boolean) {
         _state.update { it.copy(minimizeToTray = enabled) }
+        persistCurrentState()
+    }
+
+    fun setRespectWorkScheduleOnDesktop(enabled: Boolean) {
+        _state.update { it.copy(respectWorkScheduleOnDesktop = enabled) }
         persistCurrentState()
     }
 
@@ -364,6 +377,7 @@ class DesktopController(
     }
 
     fun dismissPopupAlert() {
+        DesktopNativePopupManager.dismiss()
         _state.update { it.copy(activePopupAlert = null) }
     }
 
@@ -375,12 +389,14 @@ class DesktopController(
                     appSettings = cur.settings,
                     filterSettings = cur.filterSettings,
                     minimizeToTray = cur.minimizeToTray,
+                    respectWorkScheduleOnDesktop = cur.respectWorkScheduleOnDesktop,
                     connectedUserName = cur.connectedUserName,
                     resolvedChatRoomKey = cur.chatRoomKey,
                     resolvedRepairRoomKey = cur.repairRoomKey,
                     pinnedShiftNote = cur.chatPinnedNote,
                     baselineInitialized = baselineInitialized,
                     seenTicketKeys = synchronized(notifiedTicketKeys) { notifiedTicketKeys.toSet() },
+                    deferredAlertKeys = synchronized(notifiedTicketKeys) { deferredTicketKeys.toSet() },
                     postponedTickets = cur.postponedTickets,
                     repairItems = cur.repairItems,
                     clientDirectory = cur.clientsDirectory,
@@ -482,17 +498,33 @@ class DesktopController(
                     val nowStr = java.time.LocalTime.now()
                         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))
                     val freshNewClientTickets = mutableListOf<HelpdeskTicket>()
+                    val allowAlertsNow = isDesktopAlertAllowedNow(
+                        settings = _state.value.settings,
+                        respectScheduleOnDesktop = _state.value.respectWorkScheduleOnDesktop
+                    )
                     synchronized(notifiedTicketKeys) {
                         if (!baselineInitialized || (isInitialBoot && notifiedTicketKeys.isEmpty())) {
                             fetched.forEach { notifiedTicketKeys.add(it.key) }
+                            deferredTicketKeys.clear()
                             baselineInitialized = true
                         } else {
-                            for (t in fetched) {
-                                if (t.isClientTicket &&
-                                    t.stage == TicketStage.NEW &&
-                                    notifiedTicketKeys.add(t.key)
-                                ) {
-                                    freshNewClientTickets.add(t)
+                            val chronological = fetched.sortedBy { it.createdEpochMillis }
+                            if (!allowAlertsNow) {
+                                for (t in chronological) {
+                                    val isUnseen = notifiedTicketKeys.add(t.key)
+                                    if (isUnseen && t.isClientTicket && t.stage != TicketStage.CLOSED) {
+                                        deferredTicketKeys.add(t.key)
+                                    }
+                                }
+                            } else {
+                                for (t in chronological) {
+                                    val wasDeferred = deferredTicketKeys.remove(t.key)
+                                    val isUnseen = notifiedTicketKeys.add(t.key)
+                                    if (t.isClientTicket && t.stage != TicketStage.CLOSED) {
+                                        if (isUnseen || (wasDeferred && t.stage == TicketStage.NEW)) {
+                                            freshNewClientTickets.add(t)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -541,10 +573,56 @@ class DesktopController(
         }
     }
 
-    private fun triggerNewTicketAlerts(freshTickets: List<HelpdeskTicket>) {
+    private fun isDesktopAlertAllowedNow(
+        settings: AppSettings,
+        respectScheduleOnDesktop: Boolean
+    ): Boolean {
+        if (!respectScheduleOnDesktop) return true
+        return BelarusWorkCalendar.evaluate(settings).isAllowedNow
+    }
+
+    private fun emitDesktopAlert(alert: DesktopToastAlert, playSound: Boolean = true) {
         val settings = _state.value.settings
-        val schedule = BelarusWorkCalendar.evaluate(settings)
-        if (!schedule.isAllowedNow) return
+        _state.update { it.copy(activePopupAlert = alert) }
+        DesktopNativePopupManager.showAlert(
+            alert = alert,
+            onTakeInWork = if (alert.ticketKey != null && !alert.isStormSummary) {
+                { key ->
+                    _state.update { it.copy(activePopupAlert = null) }
+                    performTicketAction(key, TicketWorkflowAction.TAKE_IN_WORK)
+                }
+            } else null,
+            onOpen = {
+                bringWindowToFrontAndOpenTicket(alert.ticketKey)
+            },
+            onDismissed = {
+                _state.update { st ->
+                    if (st.activePopupAlert?.id == alert.id) st.copy(activePopupAlert = null) else st
+                }
+            }
+        )
+        runCatching { onSystemTrayNotify?.invoke(alert.title, alert.subtitle) }
+        if (playSound) {
+            DesktopSoundPlayer.playAlert(settings.alertSoundPreset, settings.customAlertSoundUri)
+        }
+    }
+
+    fun triggerTestNotification() {
+        val sampleTicket = _state.value.tickets.firstOrNull { it.isClientTicket }
+        val alert = DesktopToastAlert(
+            id = "test-${System.currentTimeMillis()}",
+            title = "🔔 Тест уведомления · ${sampleTicket?.key ?: "CSL-TEST"}",
+            subtitle = sampleTicket?.summary ?: "Проверка всплывающего баннера и звукового сигнала Help-CSL в системном трее Windows.",
+            ticketKey = sampleTicket?.key,
+            isStormSummary = true
+        )
+        emitDesktopAlert(alert, playSound = true)
+    }
+
+    private fun triggerNewTicketAlerts(freshTickets: List<HelpdeskTicket>) {
+        val cur = _state.value
+        val settings = cur.settings
+        if (!isDesktopAlertAllowedNow(settings, cur.respectWorkScheduleOnDesktop)) return
 
         val alert = if (settings.stormProtectionEnabled && freshTickets.size >= 4) {
             DesktopToastAlert(
@@ -555,7 +633,7 @@ class DesktopController(
                 isStormSummary = true
             )
         } else {
-            val top = freshTickets.first()
+            val top = freshTickets.last()
             DesktopToastAlert(
                 id = "ticket-${top.key}-${System.currentTimeMillis()}",
                 title = "🔔 ${top.reporterName.ifBlank { "Новая заявка" }} · ${top.key}",
@@ -565,10 +643,9 @@ class DesktopController(
             )
         }
 
-        _state.update { it.copy(activePopupAlert = alert) }
-        DesktopSoundPlayer.playAlert(settings.alertSoundPreset, settings.customAlertSoundUri)
+        emitDesktopAlert(alert, playSound = true)
         if (settings.ttsReadoutMode == TtsReadoutMode.ALWAYS) {
-            val top = freshTickets.first()
+            val top = freshTickets.last()
             DesktopSoundPlayer.speakTicketSummaryWindows(top.reporterName, top.summary)
         }
     }
@@ -1329,17 +1406,17 @@ class DesktopController(
                             _state.value.settings.adminChatNotificationsEnabled
                         ) {
                             val lastMsg = unseenForeign.last()
-                            if (BelarusWorkCalendar.evaluate(_state.value.settings).isAllowedNow) {
-                                DesktopSoundPlayer.playAlert(_state.value.settings.alertSoundPreset)
-                            }
-                            _state.update {
-                                it.copy(
-                                    activePopupAlert = DesktopToastAlert(
+                            val curSt = _state.value
+                            val allowNow = isDesktopAlertAllowedNow(curSt.settings, curSt.respectWorkScheduleOnDesktop)
+                            if (allowNow) {
+                                emitDesktopAlert(
+                                    alert = DesktopToastAlert(
                                         id = "chat-${lastMsg.id}",
                                         title = "💬 Чат инженеров · ${lastMsg.authorDisplayName}",
                                         subtitle = lastMsg.text.take(120),
                                         ticketKey = null
-                                    )
+                                    ),
+                                    playSound = true
                                 )
                             }
                         }

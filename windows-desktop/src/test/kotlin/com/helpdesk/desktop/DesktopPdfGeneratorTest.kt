@@ -99,4 +99,22 @@ class DesktopPdfGeneratorTest {
 
         pdfFile.delete()
     }
+
+    @Test
+    fun `desktop sound player builds valid 16 bit stereo RIFF WAV and desktop schedule defaults to 24x7`() {
+        val (pcm, wav) = DesktopSoundPlayer.buildStereoPcmAndWav(
+            listOf(587.33 to 120, 783.99 to 150)
+        )
+        assertTrue(pcm.isNotEmpty(), "Stereo PCM must not be empty")
+        assertTrue(pcm.size % 4 == 0, "16-bit 2-channel stereo frames must be 4-byte aligned")
+        assertTrue(wav.size == 44 + pcm.size, "RIFF WAV header must be 44 bytes")
+        assertTrue(String(wav, 0, 4, Charsets.US_ASCII) == "RIFF")
+        assertTrue(String(wav, 8, 4, Charsets.US_ASCII) == "WAVE")
+
+        val defaultState = DesktopPersistedState()
+        assertFalse(
+            defaultState.respectWorkScheduleOnDesktop,
+            "Desktop tray notifications must default to 24/7 active mode so weekends/evenings are never muted unexpectedly"
+        )
+    }
 }

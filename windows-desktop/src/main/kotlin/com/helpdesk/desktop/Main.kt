@@ -15,24 +15,25 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
-import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberTrayState
 import androidx.compose.ui.window.rememberWindowState
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.TicketStage
-import kotlinx.coroutines.delay
-import java.awt.GraphicsEnvironment
+import java.awt.Frame
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
+import javax.swing.SwingUtilities
 
 fun main(args: Array<String>) = application {
     val startMinimized = args.any { it.equals("--minimized", ignoreCase = true) }
@@ -59,49 +60,69 @@ fun main(args: Array<String>) = application {
         }
     }
     val appIconPainter = remember(appIconBitmap) { BitmapPainter(appIconBitmap) }
-
-    LaunchedEffect(Unit) {
-        controller.bindWindowActivator {
-            isMainWindowVisible = true
-            if (mainWindowState.isMinimized) {
-                mainWindowState.isMinimized = false
-            }
-        }
-    }
-
-    // Auto-hide popup alert after 18 seconds if untouched
-    LaunchedEffect(state.activePopupAlert?.id) {
-        val currentId = state.activePopupAlert?.id ?: return@LaunchedEffect
-        delay(18_000L)
-        if (controller.state.value.activePopupAlert?.id == currentId) {
-            controller.dismissPopupAlert()
-        }
-    }
+    var mainComposeWindow by remember { mutableStateOf<ComposeWindow?>(null) }
 
     // Windows System Tray
     val trayState = rememberTrayState()
     val newQueueCount = remember(state.tickets) {
         state.tickets.count { it.isClientTicket && it.stage == TicketStage.NEW }
     }
+
+    val restoreMainWindow: () -> Unit = {
+        SwingUtilities.invokeLater {
+            isMainWindowVisible = true
+            mainWindowState.isMinimized = false
+            mainComposeWindow?.apply {
+                isVisible = true
+                extendedState = Frame.NORMAL
+                toFront()
+                requestFocus()
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        controller.bindWindowActivator {
+            restoreMainWindow()
+        }
+        controller.bindTrayNotifier { title, message ->
+            runCatching {
+                trayState.sendNotification(
+                    Notification(
+                        title = title,
+                        message = message,
+                        type = Notification.Type.Warning
+                    )
+                )
+            }
+        }
+    }
+
+    // When minimizeToTray is active, clicking the taskbar minimize button (_) also hides to system tray
+    LaunchedEffect(mainWindowState.isMinimized, state.minimizeToTray) {
+        if (state.minimizeToTray && mainWindowState.isMinimized) {
+            isMainWindowVisible = false
+            mainWindowState.isMinimized = false
+        }
+    }
+
     Tray(
         icon = appIconPainter,
         state = trayState,
         tooltip = "Help-CSL v${controller.currentVersion} · Новых заявок: $newQueueCount",
-        onAction = {
-            isMainWindowVisible = true
-            mainWindowState.isMinimized = false
-        },
+        onAction = { restoreMainWindow() },
         menu = {
             Item(
                 "Открыть Help-CSL (Новых: $newQueueCount)",
-                onClick = {
-                    isMainWindowVisible = true
-                    mainWindowState.isMinimized = false
-                }
+                onClick = { restoreMainWindow() }
             )
             Item(
                 "Синхронизировать заявки сейчас",
                 onClick = { controller.refreshTickets(silent = false) }
+            )
+            Item(
+                "Проверить уведомление и звук",
+                onClick = { controller.triggerTestNotification() }
             )
             Separator()
             Item(
@@ -111,27 +132,30 @@ fun main(args: Array<String>) = application {
         }
     )
 
-    // Main Application Window
-    if (isMainWindowVisible) {
-        Window(
-            onCloseRequest = {
-                if (state.minimizeToTray) {
-                    isMainWindowVisible = false
-                } else {
-                    exitApplication()
-                }
-            },
-            state = mainWindowState,
-            title = "Help-CSL v${controller.currentVersion} — Служба технической поддержки (Windows)",
-            icon = appIconPainter
-        ) {
-            HelpCslDesktopTheme {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    DesktopTopNavigationHeader(
-                        state = state,
-                        version = controller.currentVersion,
-                        appIconBitmap = appIconBitmap,
-                        newQueueCount = newQueueCount,
+    // Main Application Window (kept mounted with visible=isMainWindowVisible for reliable background tray operation)
+    Window(
+        onCloseRequest = {
+            if (state.minimizeToTray) {
+                isMainWindowVisible = false
+            } else {
+                exitApplication()
+            }
+        },
+        visible = isMainWindowVisible,
+        state = mainWindowState,
+        title = "Help-CSL v${controller.currentVersion} — Служба технической поддержки (Windows)",
+        icon = appIconPainter
+    ) {
+        SideEffect {
+            mainComposeWindow = window
+        }
+        HelpCslDesktopTheme {
+            Column(modifier = Modifier.fillMaxSize()) {
+                DesktopTopNavigationHeader(
+                    state = state,
+                    version = controller.currentVersion,
+                    appIconBitmap = appIconBitmap,
+                    newQueueCount = newQueueCount,
                         onSelectTab = { controller.selectTab(it) },
                         onRefresh = { controller.refreshTickets(silent = false) },
                         onOpenAnalytics = { showShiftAnalytics = true },
@@ -228,111 +252,6 @@ fun main(args: Array<String>) = application {
                 }
             }
         }
-    }
-
-    // Bottom-Right Always-On-Top Popup Toast Banner for New Tickets & Chat
-    state.activePopupAlert?.let { alert ->
-        val bounds = remember {
-            runCatching {
-                GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
-            }.getOrNull()
-        }
-        val toastWidth = 420
-        val toastHeight = 148
-        val posX = ((bounds?.maxX?.toInt() ?: 1920) - toastWidth - 20).coerceAtLeast(20)
-        val posY = ((bounds?.maxY?.toInt() ?: 1040) - toastHeight - 20).coerceAtLeast(20)
-
-        Window(
-            onCloseRequest = { controller.dismissPopupAlert() },
-            state = rememberWindowState(
-                placement = WindowPlacement.Floating,
-                position = WindowPosition(posX.dp, posY.dp),
-                size = DpSize(toastWidth.dp, toastHeight.dp)
-            ),
-            undecorated = true,
-            transparent = true,
-            resizable = false,
-            alwaysOnTop = true,
-            focusable = false,
-            title = "Help-CSL Уведомление"
-        ) {
-            HelpCslDesktopTheme {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = DesktopColors.CslMidnight,
-                    contentColor = Color.White,
-                    border = BorderStroke(2.dp, DesktopColors.CslOrange),
-                    shadowElevation = 10.dp,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(12.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = alert.title,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.5.sp,
-                                color = DesktopColors.CslOrange,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "✕",
-                                fontSize = 14.sp,
-                                color = Color.White.copy(alpha = 0.75f),
-                                modifier = Modifier
-                                    .padding(start = 8.dp)
-                                    .clickable { controller.dismissPopupAlert() }
-                            )
-                        }
-
-                        Text(
-                            text = alert.subtitle,
-                            fontSize = 12.5.sp,
-                            color = Color.White,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (alert.ticketKey != null && !alert.isStormSummary) {
-                                OutlinedButton(
-                                    onClick = {
-                                        val key = alert.ticketKey
-                                        controller.dismissPopupAlert()
-                                        controller.performTicketAction(key, TicketWorkflowAction.TAKE_IN_WORK)
-                                    },
-                                    border = BorderStroke(1.dp, DesktopColors.CslOrange),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text("▶ В работу", color = Color.White, fontSize = 11.5.sp)
-                                }
-                                Spacer(Modifier.width(8.dp))
-                            }
-                            Button(
-                                onClick = { controller.bringWindowToFrontAndOpenTicket(alert.ticketKey) },
-                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                            ) {
-                                Text("Открыть", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 @Composable
@@ -424,8 +343,13 @@ private fun DesktopTopNavigationHeader(
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White
                     )
+                    val alertModeLabel = when {
+                        !state.respectWorkScheduleOnDesktop -> "🔔 Уведомления 24/7"
+                        rbStatus.isAllowedNow -> "🔔 РБ смена"
+                        else -> "🌙 Тихий РБ"
+                    }
                     Text(
-                        text = "${if (rbStatus.isAllowedNow) "🔔 РБ смена" else "🌙 Тихий РБ"} · ${state.lastSyncDisplay}",
+                        text = "$alertModeLabel · ${state.lastSyncDisplay}",
                         fontSize = 10.sp,
                         color = Color.White.copy(alpha = 0.72f)
                     )

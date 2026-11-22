@@ -18,18 +18,29 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle
 import org.apache.pdfbox.pdmodel.font.PDType0Font
 import org.apache.pdfbox.pdmodel.font.PDType1Font
 import org.apache.pdfbox.pdmodel.font.PDFont
+import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Cursor
 import java.awt.Desktop
+import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.GraphicsEnvironment
 import java.awt.Image
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
 import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -37,6 +48,14 @@ import java.util.concurrent.TimeUnit
 import javax.imageio.ImageIO
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
+import javax.swing.BorderFactory
+import javax.swing.JButton
+import javax.swing.JDialog
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.JTextArea
+import javax.swing.SwingUtilities
+import javax.swing.Timer
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.exp
@@ -58,22 +77,38 @@ object DesktopSoundPlayer {
                 if (preset == AlertSoundPreset.CUSTOM_URI && customWavPath.isNotBlank()) {
                     val f = File(customWavPath)
                     if (f.exists()) {
-                        AudioSystem.getAudioInputStream(f).use { stream ->
-                            val clip = AudioSystem.getClip()
-                            clip.open(stream)
-                            clip.start()
-                            Thread.sleep((clip.microsecondLength / 1000L).coerceIn(400L, 8_000L))
-                            clip.close()
+                        val playedViaJava = runCatching {
+                            AudioSystem.getAudioInputStream(f).use { stream ->
+                                val clip = AudioSystem.getClip()
+                                clip.open(stream)
+                                clip.start()
+                                Thread.sleep((clip.microsecondLength / 1000L).coerceIn(400L, 8_000L))
+                                clip.close()
+                            }
+                            true
+                        }.getOrDefault(false)
+                        if (playedViaJava || playWavViaWindowsSoundPlayer(f)) {
                             return@thread
                         }
                     }
                 }
                 val notes: List<Pair<Double, Int>> = when (preset) {
-                    AlertSoundPreset.CSL_CHIME -> listOf(587.33 to 150, 783.99 to 150, 1046.50 to 260, 0.0 to 70, 1046.50 to 240)
-                    AlertSoundPreset.DISPATCH_PULSE -> listOf(880.0 to 160, 0.0 to 80, 880.0 to 160, 0.0 to 80, 1174.66 to 260)
-                    AlertSoundPreset.HARMONIC_CHORD -> listOf(523.25 to 180, 659.25 to 180, 783.99 to 320)
-                    AlertSoundPreset.URGENT_ALARM -> listOf(987.77 to 140, 783.99 to 140, 987.77 to 140, 783.99 to 140, 1318.51 to 300)
-                    AlertSoundPreset.SYSTEM_DEFAULT, AlertSoundPreset.CUSTOM_URI -> listOf(659.25 to 160, 880.0 to 240)
+                    AlertSoundPreset.CSL_CHIME -> listOf(
+                        587.33 to 160, 783.99 to 160, 1046.50 to 270, 0.0 to 70,
+                        783.99 to 140, 1046.50 to 300
+                    )
+                    AlertSoundPreset.DISPATCH_PULSE -> listOf(
+                        880.0 to 170, 0.0 to 80, 880.0 to 170, 0.0 to 80, 1174.66 to 300
+                    )
+                    AlertSoundPreset.HARMONIC_CHORD -> listOf(
+                        523.25 to 190, 659.25 to 190, 783.99 to 340
+                    )
+                    AlertSoundPreset.URGENT_ALARM -> listOf(
+                        987.77 to 150, 783.99 to 150, 987.77 to 150, 783.99 to 150, 1318.51 to 340
+                    )
+                    AlertSoundPreset.SYSTEM_DEFAULT, AlertSoundPreset.CUSTOM_URI -> listOf(
+                        659.25 to 180, 880.0 to 280
+                    )
                 }
                 playSynthesizedSequence(notes)
             }.onFailure {
@@ -82,10 +117,8 @@ object DesktopSoundPlayer {
         }
     }
 
-    private fun playSynthesizedSequence(notes: List<Pair<Double, Int>>) {
-        val sampleRate = 44100f
-        val format = AudioFormat(sampleRate, 16, 1, true, false)
-        val bos = ByteArrayOutputStream()
+    internal fun buildStereoPcmAndWav(notes: List<Pair<Double, Int>>, sampleRate: Int = 44100): Pair<ByteArray, ByteArray> {
+        val pcmBos = ByteArrayOutputStream()
         for ((freq, durationMs) in notes) {
             val totalSamples = ((durationMs / 1000.0) * sampleRate).toInt().coerceAtLeast(1)
             for (i in 0 until totalSamples) {
@@ -93,24 +126,104 @@ object DesktopSoundPlayer {
                     0.0
                 } else {
                     val t = i / sampleRate.toDouble()
-                    val attack = (i / (sampleRate * 0.012)).coerceAtMost(1.0)
-                    val decay = exp(-2.8 * t)
+                    val attack = (i / (sampleRate * 0.010)).coerceAtMost(1.0)
+                    val decay = exp(-2.3 * t)
                     val fundamental = sin(2.0 * PI * freq * t)
-                    val overtone = 0.28 * sin(2.0 * PI * (freq * 2.0) * t)
-                    (fundamental + overtone) * attack * decay * 0.65
+                    val overtone = 0.32 * sin(2.0 * PI * (freq * 2.0) * t)
+                    val fifth = 0.14 * sin(2.0 * PI * (freq * 1.5) * t)
+                    ((fundamental + overtone + fifth) / 1.46) * attack * decay * 0.90
                 }
-                val pcm = (sampleVal * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                bos.write(pcm and 0xFF)
-                bos.write((pcm shr 8) and 0xFF)
+                val pcm = (sampleVal * Short.MAX_VALUE).toInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                val lo = pcm and 0xFF
+                val hi = (pcm shr 8) and 0xFF
+                // 2-channel Stereo (Left + Right) for universal Windows WASAPI/USB/Bluetooth compatibility
+                pcmBos.write(lo)
+                pcmBos.write(hi)
+                pcmBos.write(lo)
+                pcmBos.write(hi)
             }
         }
-        val data = bos.toByteArray()
-        AudioSystem.getSourceDataLine(format).use { line ->
-            line.open(format)
-            line.start()
-            line.write(data, 0, data.size)
-            line.drain()
+        val pcmData = pcmBos.toByteArray()
+
+        val channels = 2
+        val bitsPerSample = 16
+        val byteRate = sampleRate * channels * (bitsPerSample / 8)
+        val blockAlign = channels * (bitsPerSample / 8)
+        val wavBuffer = ByteBuffer.allocate(44 + pcmData.size).order(ByteOrder.LITTLE_ENDIAN)
+        wavBuffer.put("RIFF".toByteArray(Charsets.US_ASCII))
+        wavBuffer.putInt(36 + pcmData.size)
+        wavBuffer.put("WAVE".toByteArray(Charsets.US_ASCII))
+        wavBuffer.put("fmt ".toByteArray(Charsets.US_ASCII))
+        wavBuffer.putInt(16)
+        wavBuffer.putShort(1) // PCM
+        wavBuffer.putShort(channels.toShort())
+        wavBuffer.putInt(sampleRate)
+        wavBuffer.putInt(byteRate)
+        wavBuffer.putShort(blockAlign.toShort())
+        wavBuffer.putShort(bitsPerSample.toShort())
+        wavBuffer.put("data".toByteArray(Charsets.US_ASCII))
+        wavBuffer.putInt(pcmData.size)
+        wavBuffer.put(pcmData)
+
+        return pcmData to wavBuffer.array()
+    }
+
+    private fun playSynthesizedSequence(notes: List<Pair<Double, Int>>) {
+        val sampleRate = 44100
+        val (stereoPcm, wavBytes) = buildStereoPcmAndWav(notes, sampleRate)
+        val stereoFormat = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
+
+        // 1. Primary: Stereo SourceDataLine
+        val playedLine = runCatching {
+            AudioSystem.getSourceDataLine(stereoFormat).use { line ->
+                line.open(stereoFormat)
+                line.start()
+                line.write(stereoPcm, 0, stereoPcm.size)
+                line.drain()
+            }
+            true
+        }.getOrDefault(false)
+        if (playedLine) return
+
+        // 2. Fallback: Java Sound Clip from in-memory RIFF/WAV
+        val playedClip = runCatching {
+            AudioSystem.getAudioInputStream(ByteArrayInputStream(wavBytes)).use { ais ->
+                val clip = AudioSystem.getClip()
+                clip.open(ais)
+                clip.start()
+                Thread.sleep((clip.microsecondLength / 1000L).coerceIn(350L, 6_000L))
+                clip.close()
+            }
+            true
+        }.getOrDefault(false)
+        if (playedClip) return
+
+        // 3. Native Windows winmm.dll fallback via System.Media.SoundPlayer
+        val outDir = File(System.getProperty("java.io.tmpdir"), "HelpCSL-Audio").apply { mkdirs() }
+        val tempWav = File(outDir, "helpcsl_alert.wav")
+        runCatching { tempWav.writeBytes(wavBytes) }
+        if (!playWavViaWindowsSoundPlayer(tempWav)) {
+            runCatching { Toolkit.getDefaultToolkit().beep() }
         }
+    }
+
+    private fun playWavViaWindowsSoundPlayer(wavFile: File): Boolean {
+        val isWin = System.getProperty("os.name").orEmpty().contains("win", ignoreCase = true)
+        if (!isWin || !wavFile.exists()) return false
+        return runCatching {
+            val escapedPath = wavFile.absolutePath.replace("'", "''")
+            val proc = ProcessBuilder(
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "(New-Object System.Media.SoundPlayer '$escapedPath').PlaySync()"
+            ).start()
+            proc.waitFor(10, TimeUnit.SECONDS) && proc.exitValue() == 0
+        }.getOrDefault(false)
     }
 
     fun speakTicketSummaryWindows(clientName: String, summary: String) {
@@ -130,6 +243,187 @@ object DesktopSoundPlayer {
                     "-Command",
                     "Add-Type -AssemblyName System.Speech; \$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; \$s.Speak('$safeText')"
                 ).start().waitFor(15, TimeUnit.SECONDS)
+            }
+        }
+    }
+}
+
+/**
+ * Hardware-independent Swing Always-On-Top Popup Toast Window at the bottom-right corner above
+ * the Windows taskbar. Works 100% reliably even when the main Compose window is hidden in the
+ * Windows system tray (`visible = false`), minimized, or when Windows 11 Focus Assist is active.
+ */
+object DesktopNativePopupManager {
+
+    @Volatile
+    private var activeDialog: JDialog? = null
+
+    @Volatile
+    private var dismissTimer: Timer? = null
+
+    fun showAlert(
+        alert: DesktopToastAlert,
+        onTakeInWork: ((String) -> Unit)?,
+        onOpen: () -> Unit,
+        onDismissed: () -> Unit
+    ) {
+        if (GraphicsEnvironment.isHeadless()) return
+
+        SwingUtilities.invokeLater {
+            runCatching {
+                dismissCurrentInternal(notifyCallback = false)
+
+                val dialog = JDialog(null as java.awt.Frame?, "Help-CSL Уведомление", false).apply {
+                    isUndecorated = true
+                    runCatching { type = java.awt.Window.Type.POPUP }
+                    isAlwaysOnTop = true
+                    focusableWindowState = false
+                }
+
+                val bgNavy = Color(4, 9, 30)
+                val borderOrange = Color(247, 99, 27)
+                val btnDark = Color(19, 30, 62)
+
+                val root = JPanel(BorderLayout(0, 8)).apply {
+                    background = bgNavy
+                    border = BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(borderOrange, 2),
+                        BorderFactory.createEmptyBorder(12, 14, 12, 14)
+                    )
+                }
+
+                // Top Row: Title + Close button
+                val headerPanel = JPanel(BorderLayout(8, 0)).apply {
+                    isOpaque = false
+                }
+                val titleLabel = JLabel(alert.title).apply {
+                    foreground = borderOrange
+                    font = Font("Segoe UI", Font.BOLD, 14)
+                }
+                val closeLabel = JLabel("✕").apply {
+                    foreground = Color(203, 213, 225)
+                    font = Font("Segoe UI", Font.BOLD, 14)
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    addMouseListener(object : MouseAdapter() {
+                        override fun mouseClicked(e: MouseEvent?) {
+                            dismissCurrentInternal(notifyCallback = false)
+                            onDismissed()
+                        }
+                    })
+                }
+                headerPanel.add(titleLabel, BorderLayout.CENTER)
+                headerPanel.add(closeLabel, BorderLayout.EAST)
+
+                // Middle: Wrapped ticket summary (clickable to open)
+                val bodyArea = JTextArea(alert.subtitle.take(180)).apply {
+                    isEditable = false
+                    isFocusable = false
+                    isOpaque = false
+                    lineWrap = true
+                    wrapStyleWord = true
+                    foreground = Color.WHITE
+                    font = Font("Segoe UI", Font.PLAIN, 13)
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    addMouseListener(object : MouseAdapter() {
+                        override fun mouseClicked(e: MouseEvent?) {
+                            dismissCurrentInternal(notifyCallback = false)
+                            onOpen()
+                        }
+                    })
+                }
+
+                // Bottom Row: Action Buttons («▶ В работу» + «Открыть»)
+                val actionsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0)).apply {
+                    isOpaque = false
+                }
+
+                val ticketKey = alert.ticketKey
+                if (ticketKey != null && !alert.isStormSummary && onTakeInWork != null) {
+                    val takeBtn = JButton("▶ В работу").apply {
+                        isFocusable = false
+                        background = btnDark
+                        foreground = Color.WHITE
+                        font = Font("Segoe UI", Font.BOLD, 12)
+                        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                        border = BorderFactory.createCompoundBorder(
+                            BorderFactory.createLineBorder(borderOrange, 1),
+                            BorderFactory.createEmptyBorder(5, 12, 5, 12)
+                        )
+                        addActionListener {
+                            dismissCurrentInternal(notifyCallback = false)
+                            onTakeInWork(ticketKey)
+                        }
+                    }
+                    actionsPanel.add(takeBtn)
+                }
+
+                val openBtn = JButton("Открыть").apply {
+                    isFocusable = false
+                    background = borderOrange
+                    foreground = Color.WHITE
+                    font = Font("Segoe UI", Font.BOLD, 12)
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    border = BorderFactory.createEmptyBorder(6, 14, 6, 14)
+                    addActionListener {
+                        dismissCurrentInternal(notifyCallback = false)
+                        onOpen()
+                    }
+                }
+                actionsPanel.add(openBtn)
+
+                root.add(headerPanel, BorderLayout.NORTH)
+                root.add(bodyArea, BorderLayout.CENTER)
+                root.add(actionsPanel, BorderLayout.SOUTH)
+
+                val toastWidth = 430
+                val toastHeight = 152
+                root.preferredSize = Dimension(toastWidth, toastHeight)
+                dialog.contentPane = root
+                dialog.pack()
+                dialog.setSize(toastWidth, toastHeight)
+
+                val maxBounds = runCatching {
+                    GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+                }.getOrNull()
+                val screenSize = runCatching { Toolkit.getDefaultToolkit().screenSize }.getOrNull()
+                val rightEdge = maxBounds?.maxX?.toInt() ?: screenSize?.width ?: 1920
+                val bottomEdge = maxBounds?.maxY?.toInt() ?: ((screenSize?.height ?: 1080) - 48)
+                val posX = (rightEdge - toastWidth - 18).coerceAtLeast(16)
+                val posY = (bottomEdge - toastHeight - 18).coerceAtLeast(16)
+                dialog.setLocation(posX, posY)
+
+                dialog.isVisible = true
+                dialog.toFront()
+                activeDialog = dialog
+
+                val timer = Timer(35_000) {
+                    dismissCurrentInternal(notifyCallback = false)
+                    onDismissed()
+                }.apply {
+                    isRepeats = false
+                    start()
+                }
+                dismissTimer = timer
+            }
+        }
+    }
+
+    fun dismiss() {
+        if (GraphicsEnvironment.isHeadless()) return
+        SwingUtilities.invokeLater {
+            dismissCurrentInternal(notifyCallback = false)
+        }
+    }
+
+    private fun dismissCurrentInternal(notifyCallback: Boolean) {
+        runCatching { dismissTimer?.stop() }
+        dismissTimer = null
+        val prev = activeDialog
+        activeDialog = null
+        if (prev != null) {
+            runCatching {
+                prev.isVisible = false
+                prev.dispose()
             }
         }
     }

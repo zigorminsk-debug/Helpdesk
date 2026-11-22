@@ -314,12 +314,27 @@ fun DesktopSettingsWorkspace(
 
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Switch(
-                        checked = draft.workScheduleEnabled,
-                        onCheckedChange = { draft = draft.copy(workScheduleEnabled = it) }
+                        checked = state.respectWorkScheduleOnDesktop,
+                        onCheckedChange = { enabled ->
+                            controller.setRespectWorkScheduleOnDesktop(enabled)
+                            draft = draft.copy(workScheduleEnabled = enabled)
+                        }
                     )
                     Column {
-                        Text("Рабочие дни Республики Беларусь", fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
-                        Text("${scheduleStatus.statusTitle} — ${scheduleStatus.detailMessage}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "Ограничивать уведомления на этом ПК рабочими днями и часами РБ",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.5.sp
+                        )
+                        Text(
+                            if (!state.respectWorkScheduleOnDesktop) {
+                                "Сейчас: 🔔 Круглосуточно 24/7 (рекомендуется для ПК) — всплывающие баннеры и звук работают в любое время и в выходные, пока программа свёрнута в системный трей."
+                            } else {
+                                "${scheduleStatus.statusTitle} — ${scheduleStatus.detailMessage}"
+                            },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
 
@@ -375,7 +390,13 @@ fun DesktopSettingsWorkspace(
                         )
                     }
                     OutlinedButton(onClick = { DesktopSoundPlayer.playAlert(draft.alertSoundPreset, draft.customAlertSoundUri) }) {
-                        Text("🔊 Тест", fontSize = 12.sp)
+                        Text("🔊 Тест звука", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = { controller.triggerTestNotification() },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("🔔 Тест баннера + звука", fontSize = 12.sp)
                     }
                 }
 
