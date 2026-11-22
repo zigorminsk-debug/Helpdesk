@@ -22,6 +22,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.text.Collator
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -88,6 +89,12 @@ sealed class ConfluenceBlock {
     data class Image(val url: String, val alt: String = "", val caption: String? = null) : ConfluenceBlock()
 }
 
+data class ConfluenceInlineTab(
+    val id: String,
+    val title: String,
+    val blocks: List<ConfluenceBlock>
+)
+
 data class ConfluencePageDetail(
     val id: String,
     val title: String,
@@ -99,8 +106,10 @@ data class ConfluencePageDetail(
     val webUrl: String,
     val breadcrumbs: List<ConfluenceBreadcrumb>,
     val childPages: List<ConfluencePageSummary>,
+    val inlineTabs: List<ConfluenceInlineTab> = emptyList(),
     val attachments: List<ConfluenceAttachment>,
-    val blocks: List<ConfluenceBlock>
+    val blocks: List<ConfluenceBlock>,
+    val hasSubstantialBody: Boolean = true
 ) {
     val updatedDisplay: String get() = updatedLabel
     val ancestors: List<ConfluenceBreadcrumb> get() = breadcrumbs
@@ -532,67 +541,191 @@ class ConfluenceWikiClient {
         }
     }
 
-    suspend fun fetchSpaces(settings: AppSettings): Result<List<ConfluenceSpace>> = withContext(Dispatchers.IO) {
-        runCatching {
+    private fun fetchPaginatedPages(
+        pathWithoutStartAndLimit: String,
+        defaultSpaceKey: String,
+        settings: AppSettings,
+        pageSize: Int = 100,
+        maxTotal: Int = 2000
+    ): List<ConfluencePageSummary> {
+        val collected = LinkedHashMap<String, ConfluencePageSummary>()
+        var start = 0
+        val sep = if ('?' in pathWithoutStartAndLimit) '&' else '?'
+        while (start < maxTotal) {
             val (_, json) = executeRestGetJson(
-                "space?limit=100&expand=homepage,description.plain",
+                "$pathWithoutStartAndLimit${sep}limit=$pageSize&start=$start",
                 settings
             )
-            val results = json.optArray("results") ?: JsonArray()
-            results.mapNotNull { el ->
-                val obj = el.asObj() ?: return@mapNotNull null
-                val key = obj.optStr("key").orEmpty()
-                val name = obj.optStr("name").orEmpty()
-                if (key.isEmpty()) return@mapNotNull null
-                val type = obj.optStr("type") ?: "global"
-                val homepageId = obj.optObj("homepage")?.optStr("id")
-                val desc = obj.optObj("description")?.optObj("plain")?.optStr("value")
-                    ?.let { ConfluenceHtmlParser.cleanText(it) }
-                    .orEmpty()
-                ConfluenceSpace(
-                    key = key,
-                    name = name.ifBlank { key },
-                    type = type,
-                    homepageId = homepageId,
-                    description = desc
+            val results = json.optArray("results") ?: break
+            val batch = parsePageSummaryArray(results, defaultSpaceKey = defaultSpaceKey)
+            for (p in batch) {
+                if (!collected.containsKey(p.id)) {
+                    collected[p.id] = p
+                }
+            }
+            val rawCount = results.size()
+            val hasNextLink = json.optObj("_links")?.optStr("next")?.isNotBlank() == true
+            if (rawCount < pageSize && !hasNextLink) break
+            if (rawCount == 0) break
+            start += rawCount
+        }
+        return collected.values.toList()
+    }
+
+    suspend fun fetchSpaces(settings: AppSettings): Result<List<ConfluenceSpace>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val allSpaces = LinkedHashMap<String, ConfluenceSpace>()
+            var start = 0
+            val limit = 100
+            while (start < 1000) {
+                val (_, json) = executeRestGetJson(
+                    "space?limit=$limit&start=$start&expand=homepage,description.plain",
+                    settings
                 )
-            }.sortedWith(
-                compareBy<ConfluenceSpace> { it.type != "global" }
-                    .thenBy { it.name.lowercase(Locale.ROOT) }
-            )
+                val results = json.optArray("results") ?: JsonArray()
+                for (el in results) {
+                    val obj = el.asObj() ?: continue
+                    val key = obj.optStr("key").orEmpty()
+                    val name = obj.optStr("name").orEmpty()
+                    if (key.isEmpty()) continue
+                    val type = obj.optStr("type") ?: "global"
+                    val homepageId = obj.optObj("homepage")?.optStr("id")
+                    val desc = obj.optObj("description")?.optObj("plain")?.optStr("value")
+                        ?.let { ConfluenceHtmlParser.cleanText(it) }
+                        .orEmpty()
+                    allSpaces[key] = ConfluenceSpace(
+                        key = key,
+                        name = name.ifBlank { key },
+                        type = type,
+                        homepageId = homepageId,
+                        description = desc
+                    )
+                }
+                val hasNext = json.optObj("_links")?.optStr("next")?.isNotBlank() == true
+                if (results.size() < limit && !hasNext) break
+                if (results.size() == 0) break
+                start += results.size()
+            }
+
+            val ruCollator = Collator.getInstance(Locale("ru", "RU")).apply {
+                strength = Collator.PRIMARY
+            }
+            allSpaces.values.sortedWith { a, b ->
+                val aPrimary = a.key.equals("CSL", ignoreCase = true)
+                val bPrimary = b.key.equals("CSL", ignoreCase = true)
+                if (aPrimary != bPrimary) {
+                    if (aPrimary) -1 else 1
+                } else {
+                    val aGlobal = a.type == "global"
+                    val bGlobal = b.type == "global"
+                    if (aGlobal != bGlobal) {
+                        if (aGlobal) -1 else 1
+                    } else {
+                        ruCollator.compare(
+                            normalizeAlphabetSortKey(a.name.ifBlank { a.key }),
+                            normalizeAlphabetSortKey(b.name.ifBlank { b.key })
+                        )
+                    }
+                }
+            }
         }
     }
 
     suspend fun fetchSpaceRootOrRecentPages(
         spaceKey: String?,
-        settings: AppSettings
+        settings: AppSettings,
+        homepageIdHint: String? = null
     ): Result<List<ConfluencePageSummary>> = withContext(Dispatchers.IO) {
         runCatching {
-            if (!spaceKey.isNullOrBlank()) {
-                val encodedKey = URLEncoder.encode(spaceKey.trim(), "UTF-8")
-                val rootAttempt = runCatching {
-                    val (_, json) = executeRestGetJson(
-                        "space/$encodedKey/content/page?depth=root&limit=100&expand=version,space",
-                        settings
-                    )
-                    parsePageSummaryArray(json.optArray("results"), defaultSpaceKey = spaceKey)
+            if (!spaceKey.isNullOrBlank() && spaceKey != RECENT_PSEUDO_SPACE_KEY) {
+                val cleanKey = spaceKey.trim()
+                val encodedKey = URLEncoder.encode(cleanKey, "UTF-8")
+
+                // 1. Resolve space homepage ID (in Confluence Data Center, top-level sidebar items are children of homepage!)
+                val homepageId = homepageIdHint?.takeIf { it.isNotBlank() } ?: runCatching {
+                    val (_, spJson) = executeRestGetJson("space/$encodedKey?expand=homepage", settings)
+                    spJson.optObj("homepage")?.optStr("id")
                 }.getOrNull()
 
-                if (!rootAttempt.isNullOrEmpty()) {
-                    return@runCatching rootAttempt
+                val combined = LinkedHashMap<String, ConfluencePageSummary>()
+
+                if (!homepageId.isNullOrBlank()) {
+                    val encodedHome = URLEncoder.encode(homepageId, "UTF-8")
+                    val homeChildren = runCatching {
+                        fetchPaginatedPages(
+                            pathWithoutStartAndLimit = "content/$encodedHome/child/page?expand=version,space",
+                            defaultSpaceKey = cleanKey,
+                            settings = settings
+                        )
+                    }.getOrDefault(emptyList())
+                    for (p in homeChildren) {
+                        combined[p.id] = p
+                    }
                 }
 
-                val (_, fallbackJson) = executeRestGetJson(
-                    "content?spaceKey=$encodedKey&type=page&limit=80&expand=version,space",
-                    settings
+                val rootPages = runCatching {
+                    fetchPaginatedPages(
+                        pathWithoutStartAndLimit = "space/$encodedKey/content/page?depth=root&expand=version,space",
+                        defaultSpaceKey = cleanKey,
+                        settings = settings
+                    )
+                }.getOrDefault(emptyList())
+
+                for (rp in rootPages) {
+                    if (rp.id != homepageId && !combined.containsKey(rp.id)) {
+                        combined[rp.id] = rp
+                    }
+                }
+
+                // If the space only has 1 single container page (e.g. a single root homepage or "Клиенты" wrapper),
+                // automatically unpack its children so all client records appear immediately like on the site!
+                if (combined.size == 1) {
+                    val single = combined.values.first()
+                    val unpacked = runCatching {
+                        val encId = URLEncoder.encode(single.id, "UTF-8")
+                        fetchPaginatedPages(
+                            pathWithoutStartAndLimit = "content/$encId/child/page?expand=version,space",
+                            defaultSpaceKey = cleanKey,
+                            settings = settings
+                        )
+                    }.getOrDefault(emptyList())
+                    if (unpacked.isNotEmpty()) {
+                        return@runCatching sortPagesAlphabetically(unpacked)
+                    }
+                }
+
+                if (combined.isNotEmpty()) {
+                    return@runCatching sortPagesAlphabetically(combined.values.toList())
+                }
+
+                if (rootPages.isNotEmpty()) {
+                    // Space has only homepage with 0 child pages — still unpack if homepage has children
+                    if (rootPages.size == 1) {
+                        val encId = URLEncoder.encode(rootPages.first().id, "UTF-8")
+                        val sub = runCatching {
+                            fetchPaginatedPages(
+                                pathWithoutStartAndLimit = "content/$encId/child/page?expand=version,space",
+                                defaultSpaceKey = cleanKey,
+                                settings = settings
+                            )
+                        }.getOrDefault(emptyList())
+                        if (sub.isNotEmpty()) return@runCatching sortPagesAlphabetically(sub)
+                    }
+                    return@runCatching sortPagesAlphabetically(rootPages)
+                }
+
+                val fallback = fetchPaginatedPages(
+                    pathWithoutStartAndLimit = "content?spaceKey=$encodedKey&type=page&expand=version,space",
+                    defaultSpaceKey = cleanKey,
+                    settings = settings
                 )
-                parsePageSummaryArray(fallbackJson.optArray("results"), defaultSpaceKey = spaceKey)
+                sortPagesAlphabetically(fallback)
             } else {
-                // Recent updated pages across all Confluence spaces
+                // Recent updated pages across all Confluence spaces (only when explicitly requested)
                 val cqlAttempt = runCatching {
                     val cql = URLEncoder.encode("type=page order by lastmodified desc", "UTF-8")
                     val (_, json) = executeRestGetJson(
-                        "content/search?cql=$cql&limit=40&expand=space,version",
+                        "content/search?cql=$cql&limit=50&expand=space,version",
                         settings
                     )
                     parseSearchOrContentResults(json.optArray("results"))
@@ -603,7 +736,7 @@ class ConfluenceWikiClient {
                 }
 
                 val (_, fallbackJson) = executeRestGetJson(
-                    "content?type=page&limit=40&expand=space,version",
+                    "content?type=page&limit=50&expand=space,version",
                     settings
                 )
                 parsePageSummaryArray(fallbackJson.optArray("results"), defaultSpaceKey = "")
@@ -617,11 +750,12 @@ class ConfluenceWikiClient {
     ): Result<List<ConfluencePageSummary>> = withContext(Dispatchers.IO) {
         runCatching {
             val encodedId = URLEncoder.encode(parentPageId.trim(), "UTF-8")
-            val (_, json) = executeRestGetJson(
-                "content/$encodedId/child/page?limit=100&expand=version,space",
-                settings
+            val children = fetchPaginatedPages(
+                pathWithoutStartAndLimit = "content/$encodedId/child/page?expand=version,space",
+                defaultSpaceKey = "",
+                settings = settings
             )
-            parsePageSummaryArray(json.optArray("results"), defaultSpaceKey = "")
+            sortPagesAlphabetically(children)
         }
     }
 
@@ -638,33 +772,34 @@ class ConfluenceWikiClient {
                 .trim()
             if (cleanQ.isEmpty()) return@runCatching emptyList()
 
-            val spaceClause = if (!spaceKeyFilter.isNullOrBlank()) {
-                " AND space = \"${spaceKeyFilter.trim().replace("\"", "")}\""
+            val effectiveSpace = spaceKeyFilter?.takeIf { it.isNotBlank() && it != RECENT_PSEUDO_SPACE_KEY }
+            val spaceClause = if (effectiveSpace != null) {
+                " AND space = \"${effectiveSpace.trim().replace("\"", "")}\""
             } else {
                 ""
             }
 
-            val cqlPrimary = "type = page AND (title ~ \"$cleanQ\" OR text ~ \"$cleanQ\")$spaceClause order by lastmodified desc"
+            val cqlPrimary = "type = page AND (title ~ \"$cleanQ\" OR text ~ \"$cleanQ\")$spaceClause"
             val encodedPrimary = URLEncoder.encode(cqlPrimary, "UTF-8")
 
             val primaryResult = runCatching {
                 val (_, json) = executeRestGetJson(
-                    "content/search?cql=$encodedPrimary&limit=40&excerpt=none&expand=space,version",
+                    "content/search?cql=$encodedPrimary&limit=80&excerpt=none&expand=space,version",
                     settings
                 )
                 parseSearchOrContentResults(json.optArray("results"))
             }.getOrNull()
 
             if (primaryResult != null) {
-                return@runCatching primaryResult
+                return@runCatching sortPagesAlphabetically(primaryResult)
             }
 
             val cqlFallback = "siteSearch ~ \"$cleanQ\" AND type = page"
             val (_, fallbackJson) = executeRestGetJson(
-                "content/search?cql=${URLEncoder.encode(cqlFallback, "UTF-8")}&limit=40",
+                "content/search?cql=${URLEncoder.encode(cqlFallback, "UTF-8")}&limit=80",
                 settings
             )
-            parseSearchOrContentResults(fallbackJson.optArray("results"))
+            sortPagesAlphabetically(parseSearchOrContentResults(fallbackJson.optArray("results")))
         }
     }
 
@@ -712,18 +847,33 @@ class ConfluenceWikiClient {
             val childResults = json.optObj("children")
                 ?.optObj("page")
                 ?.optArray("results")
-            val childPages = parsePageSummaryArray(childResults, defaultSpaceKey = spaceKey)
+            val inlineExpandedChildren = parsePageSummaryArray(childResults, defaultSpaceKey = spaceKey)
+            val fullChildren = runCatching {
+                fetchPaginatedPages(
+                    pathWithoutStartAndLimit = "content/$encodedId/child/page?expand=version,space",
+                    defaultSpaceKey = spaceKey,
+                    settings = settings
+                )
+            }.getOrNull()
+            val childPages = sortPagesAlphabetically(
+                if (!fullChildren.isNullOrEmpty()) fullChildren else inlineExpandedChildren
+            )
 
             val bodyObj = json.optObj("body")
             val htmlBody = bodyObj?.optObj("view")?.optStr("value")?.takeIf { it.isNotBlank() }
                 ?: bodyObj?.optObj("export_view")?.optStr("value")?.takeIf { it.isNotBlank() }
                 ?: bodyObj?.optObj("storage")?.optStr("value").orEmpty()
 
-            val blocks = ConfluenceHtmlParser.parseHtmlToBlocks(htmlBody, baseRoot)
+            val inlineTabs = ConfluenceHtmlParser.parseInlineTabs(htmlBody, baseRoot)
+            val parsedBlocks = ConfluenceHtmlParser.parseHtmlToBlocks(
+                rawHtml = htmlBody,
+                baseRoot = baseRoot,
+                hasNativeChildPages = childPages.isNotEmpty()
+            )
 
             val attachments = runCatching {
                 val (_, attJson) = executeRestGetJson(
-                    "content/$encodedId/child/attachment?limit=50",
+                    "content/$encodedId/child/attachment?limit=100",
                     settings
                 )
                 attJson.optArray("results")?.mapNotNull { el ->
@@ -753,6 +903,15 @@ class ConfluenceWikiClient {
                 }.orEmpty()
             }.getOrDefault(emptyList())
 
+            val hasRealBody = attachments.isNotEmpty() || inlineTabs.isNotEmpty() || parsedBlocks.any { b ->
+                when (b) {
+                    is ConfluenceBlock.Paragraph ->
+                        b.text != ConfluenceHtmlParser.EMPTY_PAGE_PLACEHOLDER &&
+                            b.text != ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER
+                    else -> true
+                }
+            }
+
             ConfluencePageDetail(
                 id = pageId,
                 title = title,
@@ -764,8 +923,10 @@ class ConfluenceWikiClient {
                 webUrl = fullWebUrl,
                 breadcrumbs = breadcrumbs,
                 childPages = childPages,
+                inlineTabs = inlineTabs,
                 attachments = attachments,
-                blocks = blocks
+                blocks = parsedBlocks,
+                hasSubstantialBody = hasRealBody
             )
         }
     }
@@ -889,8 +1050,36 @@ class ConfluenceWikiClient {
     }
 
     companion object {
+        const val RECENT_PSEUDO_SPACE_KEY = "__RECENT__"
         const val BROWSER_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+
+        fun normalizeAlphabetSortKey(raw: String): String {
+            return raw.trim()
+                .trimStart('«', '»', '"', '\'', '„', '“', '”', '(', '[', '—', '-', '•', ' ')
+                .trim()
+                .lowercase(Locale("ru", "RU"))
+                .replace('ё', 'е')
+        }
+
+        fun firstAlphabetLetter(title: String): String {
+            val cleaned = normalizeAlphabetSortKey(title)
+            val ch = cleaned.firstOrNull { it.isLetterOrDigit() } ?: return "#"
+            return if (ch.isDigit()) "0-9" else ch.uppercaseChar().toString()
+        }
+
+        fun sortPagesAlphabetically(pages: List<ConfluencePageSummary>): List<ConfluencePageSummary> {
+            if (pages.size <= 1) return pages
+            val collator = Collator.getInstance(Locale("ru", "RU")).apply {
+                strength = Collator.PRIMARY
+            }
+            return pages.sortedWith { a, b ->
+                val ka = normalizeAlphabetSortKey(a.title)
+                val kb = normalizeAlphabetSortKey(b.title)
+                val c = collator.compare(ka, kb)
+                if (c != 0) c else a.title.compareTo(b.title, ignoreCase = true)
+            }
+        }
 
         private fun JsonElement?.asObj(): JsonObject? =
             if (this != null && isJsonObject) asJsonObject else null
@@ -959,12 +1148,42 @@ class ConfluenceWikiClient {
 
 object ConfluenceHtmlParser {
 
+    const val EMPTY_PAGE_PLACEHOLDER = "Страница пуста."
+    const val NO_TEXT_PLACEHOLDER = "На этой странице пока нет текстового содержимого."
+
     private val SCRIPT_STYLE_REGEX = Regex(
         "<(script|style|svg)\\b[^>]*>[\\s\\S]*?</\\1>",
         RegexOption.IGNORE_CASE
     )
+    private val CHILDREN_MACRO_REGEX = Regex(
+        """<ul\b[^>]*class\s*=\s*["'][^"']*(?:childpages-macro|plugin_pagetree_children_list)[^"']*["'][^>]*>[\s\S]*?</ul>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TAB_MENU_LINK_REGEX = Regex(
+        """<li\b[^>]*class\s*=\s*["'][^"']*menu-item[^"']*["'][^>]*>[\s\S]*?<a\b[^>]*href\s*=\s*["']#([^"']+)["'][^>]*>([\s\S]*?)</a>[\s\S]*?</li>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TAB_PANE_OPEN_REGEX = Regex(
+        """<div\b([^>]*\bclass\s*=\s*["'][^"']*\btabs-pane\b[^"']*["'][^>]*)>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STORAGE_LOCALTAB_REGEX = Regex(
+        """<ac:structured-macro\b[^>]*ac:name\s*=\s*["'](?:localtab|ui-tab|tab-page|auitabspage)["'][^>]*>([\s\S]*?)</ac:structured-macro>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STORAGE_TITLE_PARAM_REGEX = Regex(
+        """<ac:parameter\b[^>]*ac:name\s*=\s*["']title["'][^>]*>([\s\S]*?)</ac:parameter>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val STORAGE_RICH_BODY_REGEX = Regex(
+        """<ac:rich-text-body\b[^>]*>([\s\S]*?)</ac:rich-text-body>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val ATTR_ID_REGEX = Regex("""\bid\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+    private val ATTR_TITLE_REGEX = Regex("""\b(?:data-pane-title|data-tab-title|title)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
     private val BLOCK_TOKEN_REGEX = Regex(
-        """(<table\b[^>]*>[\s\S]*?</table>|<pre\b[^>]*>[\s\S]*?</pre>|<ac:structured-macro\b[^>]*ac:name\s*=\s*["']code["'][^>]*>[\s\S]*?</ac:structured-macro>|<div\b[^>]*class\s*=\s*["'][^"']*confluence-information-macro[^"']*["'][^>]*>[\s\S]*?</div>|<h([1-6])\b[^>]*>[\s\S]*?</h\2>|<ul\b[^>]*>[\s\S]*?</ul>|<ol\b[^>]*>[\s\S]*?</ol>|<img\b[^>]*>|<p\b[^>]*>[\s\S]*?</p>)""",
+        """(<pre\b[^>]*>[\s\S]*?</pre>|<ac:structured-macro\b[^>]*ac:name\s*=\s*["']code["'][^>]*>[\s\S]*?</ac:structured-macro>|<div\b[^>]*class\s*=\s*["'][^"']*confluence-information-macro[^"']*["'][^>]*>[\s\S]*?</div>|<h([1-6])\b[^>]*>[\s\S]*?</h\2>|<ul\b[^>]*>[\s\S]*?</ul>|<ol\b[^>]*>[\s\S]*?</ol>|<img\b[^>]*>|<p\b[^>]*>[\s\S]*?</p>)""",
         RegexOption.IGNORE_CASE
     )
     private val TR_REGEX = Regex("<tr\\b[^>]*>([\\s\\S]*?)</tr>", RegexOption.IGNORE_CASE)
@@ -977,79 +1196,134 @@ object ConfluenceHtmlParser {
     private val DEC_ENT_REGEX = Regex("&#(\\d{1,7});")
     private val HEX_ENT_REGEX = Regex("&#x([0-9a-fA-F]{1,6});")
 
-    fun parseHtmlToBlocks(rawHtml: String, baseRoot: String): List<ConfluenceBlock> {
-        if (rawHtml.isBlank()) {
-            return listOf(ConfluenceBlock.Paragraph("Страница пуста."))
-        }
+    /**
+     * Extracts Confluence UI Tabs / Navitabs / Localtab panes when a single Confluence page
+     * contains multiple sub-tabs (`tabs-pane` in rendered `body.view`, or `localtab`/`ui-tab` in `body.storage`).
+     */
+    fun parseInlineTabs(rawHtml: String, baseRoot: String): List<ConfluenceInlineTab> {
+        if (rawHtml.isBlank()) return emptyList()
         val stripped = rawHtml.replace(SCRIPT_STYLE_REGEX, "")
-        val blocks = mutableListOf<ConfluenceBlock>()
 
-        for (m in BLOCK_TOKEN_REGEX.findAll(stripped)) {
-            val chunk = m.value
-            val low = chunk.take(40).lowercase(Locale.ROOT)
-            when {
-                low.startsWith("<table") -> {
-                    parseTable(chunk)?.let { blocks.add(it) }
-                }
-                low.startsWith("<pre") || low.startsWith("<ac:structured-macro") -> {
-                    val code = CDATA_BODY_REGEX.find(chunk)?.groupValues?.getOrNull(1)
-                        ?: decodeEntities(
-                            chunk
-                                .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-                                .replace(TAG_REGEX, "")
-                        )
-                    val trimmedCode = code.trim('\r', '\n')
-                    if (trimmedCode.isNotEmpty()) {
-                        blocks.add(ConfluenceBlock.Code(code = trimmedCode))
-                    }
-                }
-                low.startsWith("<div") -> {
-                    val kind = when {
-                        chunk.contains("warning", ignoreCase = true) -> ConfluenceCalloutKind.WARNING
-                        chunk.contains("note", ignoreCase = true) -> ConfluenceCalloutKind.NOTE
-                        chunk.contains("tip", ignoreCase = true) -> ConfluenceCalloutKind.TIP
-                        else -> ConfluenceCalloutKind.INFO
-                    }
-                    val txt = cleanTextPreservingNewlines(chunk)
-                    if (txt.isNotEmpty()) {
-                        blocks.add(ConfluenceBlock.Callout(kind = kind, body = txt))
-                    }
-                }
-                low.startsWith("<h") -> {
-                    val lvl = low.getOrNull(2)?.digitToIntOrNull() ?: 2
-                    val txt = cleanText(chunk)
-                    if (txt.isNotEmpty()) {
-                        blocks.add(ConfluenceBlock.Heading(level = lvl, text = txt))
-                    }
-                }
-                low.startsWith("<ul") || low.startsWith("<ol") -> {
-                    val ordered = low.startsWith("<ol")
-                    val items = LI_REGEX.findAll(chunk)
-                        .map { cleanTextPreservingNewlines(it.groupValues[1]) }
-                        .filter { it.isNotEmpty() }
-                        .toList()
-                    if (items.isNotEmpty()) {
-                        blocks.add(ConfluenceBlock.ListItems(ordered = ordered, items = items))
-                    }
-                }
-                low.startsWith("<img") -> {
-                    parseImageTag(chunk, baseRoot)?.let { blocks.add(it) }
-                }
-                low.startsWith("<p") -> {
-                    // Check if paragraph contains an inline image
-                    IMG_SRC_REGEX.find(chunk)?.let {
-                        parseImageTag(chunk, baseRoot)?.let { img -> blocks.add(img) }
-                    }
-                    val txt = cleanTextPreservingNewlines(chunk)
-                    if (txt.isNotEmpty()) {
-                        blocks.add(ConfluenceBlock.Paragraph(txt))
-                    }
-                }
+        // 1. Rendered HTML AUI Tabs (<ul class="tabs-menu"> + <div class="tabs-pane" id="...">)
+        val menuTitlesById = LinkedHashMap<String, String>()
+        for (m in TAB_MENU_LINK_REGEX.findAll(stripped)) {
+            val id = m.groupValues[1].trim()
+            val title = cleanText(m.groupValues[2])
+            if (id.isNotEmpty() && title.isNotEmpty()) {
+                menuTitlesById[id] = title
             }
         }
 
-        if (blocks.isEmpty()) {
-            val plain = cleanTextPreservingNewlines(stripped)
+        val auiTabs = mutableListOf<ConfluenceInlineTab>()
+        for (m in TAB_PANE_OPEN_REGEX.findAll(stripped)) {
+            val attrs = m.groupValues[1]
+            val paneId = ATTR_ID_REGEX.find(attrs)?.groupValues?.getOrNull(1).orEmpty()
+            val attrTitle = ATTR_TITLE_REGEX.find(attrs)?.groupValues?.getOrNull(1)?.let { cleanText(it) }.orEmpty()
+            val resolvedTitle = menuTitlesById[paneId]
+                ?: attrTitle.takeIf { it.isNotBlank() }
+                ?: "Вкладка ${auiTabs.size + 1}"
+            val innerHtml = extractBalancedDivInner(stripped, m.range.first, m.range.last + 1) ?: continue
+            val paneBlocks = parseHtmlToBlocks(innerHtml, baseRoot, hasNativeChildPages = false)
+            auiTabs.add(
+                ConfluenceInlineTab(
+                    id = paneId.ifBlank { "tab_${auiTabs.size}" },
+                    title = resolvedTitle,
+                    blocks = paneBlocks
+                )
+            )
+        }
+        if (auiTabs.isNotEmpty()) return auiTabs
+
+        // 2. Storage XML Tabs (<ac:structured-macro ac:name="localtab" / "ui-tab">)
+        val storageTabs = mutableListOf<ConfluenceInlineTab>()
+        for (m in STORAGE_LOCALTAB_REGEX.findAll(stripped)) {
+            val macroInner = m.groupValues[1]
+            val title = STORAGE_TITLE_PARAM_REGEX.find(macroInner)?.groupValues?.getOrNull(1)
+                ?.let { cleanText(it) }
+                ?.takeIf { it.isNotEmpty() }
+                ?: "Вкладка ${storageTabs.size + 1}"
+            val body = STORAGE_RICH_BODY_REGEX.find(macroInner)?.groupValues?.getOrNull(1) ?: macroInner
+            storageTabs.add(
+                ConfluenceInlineTab(
+                    id = "st_${storageTabs.size}",
+                    title = title,
+                    blocks = parseHtmlToBlocks(body, baseRoot, hasNativeChildPages = false)
+                )
+            )
+        }
+        return storageTabs
+    }
+
+    private fun extractBalancedDivInner(html: String, divStart: Int, contentStart: Int): String? {
+        val tagRegex = Regex("</?div\\b[^>]*>", RegexOption.IGNORE_CASE)
+        var depth = 1
+        var pos = contentStart
+        while (pos < html.length) {
+            val next = tagRegex.find(html, pos) ?: return html.substring(contentStart)
+            val token = next.value.lowercase(Locale.ROOT)
+            if (token.startsWith("</div")) {
+                depth--
+                if (depth == 0) {
+                    return html.substring(contentStart, next.range.first)
+                }
+            } else if (!token.endsWith("/>")) {
+                depth++
+            }
+            pos = next.range.last + 1
+        }
+        return html.substring(contentStart)
+    }
+
+    private fun splitTopLevelTables(html: String): List<Pair<Boolean, String>> {
+        val tagRegex = Regex("</?table\\b[^>]*>", RegexOption.IGNORE_CASE)
+        val segments = mutableListOf<Pair<Boolean, String>>()
+        var cursor = 0
+        var tableStart = -1
+        var depth = 0
+        for (m in tagRegex.findAll(html)) {
+            val isClose = m.value.startsWith("</", ignoreCase = true)
+            if (!isClose) {
+                if (depth == 0) {
+                    if (m.range.first > cursor) {
+                        segments.add(false to html.substring(cursor, m.range.first))
+                    }
+                    tableStart = m.range.first
+                }
+                depth++
+            } else if (depth > 0) {
+                depth--
+                if (depth == 0 && tableStart >= 0) {
+                    segments.add(true to html.substring(tableStart, m.range.last + 1))
+                    cursor = m.range.last + 1
+                    tableStart = -1
+                }
+            }
+        }
+        if (depth > 0 && tableStart >= 0) {
+            segments.add(true to html.substring(tableStart))
+        } else if (cursor < html.length) {
+            segments.add(false to html.substring(cursor))
+        }
+        return segments
+    }
+
+    fun parseHtmlToBlocks(
+        rawHtml: String,
+        baseRoot: String,
+        hasNativeChildPages: Boolean = false
+    ): List<ConfluenceBlock> {
+        if (rawHtml.isBlank()) {
+            return listOf(ConfluenceBlock.Paragraph(EMPTY_PAGE_PLACEHOLDER))
+        }
+        var stripped = rawHtml.replace(SCRIPT_STYLE_REGEX, "")
+        if (hasNativeChildPages) {
+            stripped = stripped.replace(CHILDREN_MACRO_REGEX, "")
+        }
+
+        val blocks = mutableListOf<ConfluenceBlock>()
+
+        fun appendResidualPlainText(fragment: String) {
+            val plain = cleanTextPreservingNewlines(fragment)
             if (plain.isNotEmpty()) {
                 plain.split(Regex("\\n{2,}"))
                     .map { it.trim() }
@@ -1058,8 +1332,84 @@ object ConfluenceHtmlParser {
             }
         }
 
+        for ((isTable, segment) in splitTopLevelTables(stripped)) {
+            if (isTable) {
+                parseTable(segment)?.let { blocks.add(it) }
+                continue
+            }
+
+            var lastEnd = 0
+            for (m in BLOCK_TOKEN_REGEX.findAll(segment)) {
+                if (m.range.first > lastEnd) {
+                    appendResidualPlainText(segment.substring(lastEnd, m.range.first))
+                }
+                lastEnd = m.range.last + 1
+
+                val chunk = m.value
+                val low = chunk.take(40).lowercase(Locale.ROOT)
+                when {
+                    low.startsWith("<pre") || low.startsWith("<ac:structured-macro") -> {
+                        val code = CDATA_BODY_REGEX.find(chunk)?.groupValues?.getOrNull(1)
+                            ?: decodeEntities(
+                                chunk
+                                    .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+                                    .replace(TAG_REGEX, "")
+                            )
+                        val trimmedCode = code.trim('\r', '\n')
+                        if (trimmedCode.isNotEmpty()) {
+                            blocks.add(ConfluenceBlock.Code(code = trimmedCode))
+                        }
+                    }
+                    low.startsWith("<div") -> {
+                        val kind = when {
+                            chunk.contains("warning", ignoreCase = true) -> ConfluenceCalloutKind.WARNING
+                            chunk.contains("note", ignoreCase = true) -> ConfluenceCalloutKind.NOTE
+                            chunk.contains("tip", ignoreCase = true) -> ConfluenceCalloutKind.TIP
+                            else -> ConfluenceCalloutKind.INFO
+                        }
+                        val txt = cleanTextPreservingNewlines(chunk)
+                        if (txt.isNotEmpty()) {
+                            blocks.add(ConfluenceBlock.Callout(kind = kind, body = txt))
+                        }
+                    }
+                    low.startsWith("<h") -> {
+                        val lvl = low.getOrNull(2)?.digitToIntOrNull() ?: 2
+                        val txt = cleanText(chunk)
+                        if (txt.isNotEmpty()) {
+                            blocks.add(ConfluenceBlock.Heading(level = lvl, text = txt))
+                        }
+                    }
+                    low.startsWith("<ul") || low.startsWith("<ol") -> {
+                        val ordered = low.startsWith("<ol")
+                        val items = LI_REGEX.findAll(chunk)
+                            .map { cleanTextPreservingNewlines(it.groupValues[1]) }
+                            .filter { it.isNotEmpty() }
+                            .toList()
+                        if (items.isNotEmpty()) {
+                            blocks.add(ConfluenceBlock.ListItems(ordered = ordered, items = items))
+                        }
+                    }
+                    low.startsWith("<img") -> {
+                        parseImageTag(chunk, baseRoot)?.let { blocks.add(it) }
+                    }
+                    low.startsWith("<p") -> {
+                        IMG_SRC_REGEX.find(chunk)?.let {
+                            parseImageTag(chunk, baseRoot)?.let { img -> blocks.add(img) }
+                        }
+                        val txt = cleanTextPreservingNewlines(chunk)
+                        if (txt.isNotEmpty()) {
+                            blocks.add(ConfluenceBlock.Paragraph(txt))
+                        }
+                    }
+                }
+            }
+            if (lastEnd < segment.length) {
+                appendResidualPlainText(segment.substring(lastEnd))
+            }
+        }
+
         return blocks.ifEmpty {
-            listOf(ConfluenceBlock.Paragraph("На этой странице пока нет текстового содержимого."))
+            listOf(ConfluenceBlock.Paragraph(NO_TEXT_PLACEHOLDER))
         }
     }
 

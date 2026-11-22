@@ -124,6 +124,7 @@ data class DesktopUiState(
     val wikiSearchQuery: String = "",
     val wikiSearchResults: List<ConfluencePageSummary>? = null,
     val selectedWikiPage: ConfluencePageDetail? = null,
+    val wikiPageHistoryStack: List<ConfluencePageDetail> = emptyList(),
     val isLoadingWikiList: Boolean = false,
     val isLoadingWikiPage: Boolean = false,
     val wikiError: String? = null,
@@ -2247,6 +2248,8 @@ class DesktopController(
 
     // --- Confluence Wiki (w.csl.by with Jira credentials) ---
 
+    private val wikiPageDetailCache = java.util.concurrent.ConcurrentHashMap<String, ConfluencePageDetail>()
+
     fun loadWikiInitialIfNeeded() {
         val cur = _state.value
         if (cur.wikiSpaces.isEmpty() && cur.wikiPages.isEmpty() && !cur.isLoadingWikiList) {
@@ -2264,16 +2267,27 @@ class DesktopController(
             }
             return
         }
-        _state.update { it.copy(isLoadingWikiList = true, wikiError = null, selectedWikiSpaceKey = spaceKeyOverride) }
+        _state.update { it.copy(isLoadingWikiList = true, wikiError = null) }
         scope.launch {
             val spacesRes = wikiClient.fetchSpaces(cur.settings)
-            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(spaceKeyOverride, cur.settings)
             val spaces = spacesRes.getOrDefault(_state.value.wikiSpaces)
+            val effectiveSpaceKey = spaceKeyOverride
+                ?: spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
+                ?: spaces.firstOrNull { it.type == "global" }?.key
+                ?: spaces.firstOrNull()?.key
+            val homepageHint = spaces.firstOrNull { it.key.equals(effectiveSpaceKey, ignoreCase = true) }?.homepageId
+
+            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(
+                spaceKey = effectiveSpaceKey,
+                settings = cur.settings,
+                homepageIdHint = homepageHint
+            )
             pagesRes.onSuccess { pages ->
                 _state.update { st ->
                     st.copy(
                         isLoadingWikiList = false,
                         wikiSpaces = spaces,
+                        selectedWikiSpaceKey = effectiveSpaceKey,
                         wikiPages = pages,
                         wikiError = null
                     )
@@ -2286,6 +2300,7 @@ class DesktopController(
                     _state.update {
                         it.copy(
                             isLoadingWikiList = false,
+                            selectedWikiSpaceKey = effectiveSpaceKey,
                             wikiError = spErr.message ?: err.message ?: "Не удалось подключиться к w.csl.by"
                         )
                     }
@@ -2295,6 +2310,7 @@ class DesktopController(
                     it.copy(
                         isLoadingWikiList = false,
                         wikiSpaces = spaces,
+                        selectedWikiSpaceKey = effectiveSpaceKey,
                         wikiError = err.message ?: "Ошибка чтения страниц Confluence"
                     )
                 }
@@ -2306,6 +2322,8 @@ class DesktopController(
         _state.update {
             it.copy(
                 selectedWikiSpaceKey = spaceKey,
+                selectedWikiPage = null,
+                wikiPageHistoryStack = emptyList(),
                 wikiSearchResults = null,
                 wikiSearchQuery = ""
             )
@@ -2331,7 +2349,7 @@ class DesktopController(
             ).onSuccess { found ->
                 _state.update { it.copy(isLoadingWikiList = false, wikiSearchResults = found, wikiError = null) }
                 if (found.isNotEmpty()) {
-                    openWikiPage(found.first().id)
+                    openWikiPage(found.first().id, resetHistory = true)
                 }
             }.onFailure { err ->
                 _state.update {
@@ -2359,13 +2377,47 @@ class DesktopController(
         }
     }
 
-    fun openWikiPage(pageId: String) {
+    fun openWikiPage(
+        pageId: String,
+        replaceSiblingInStack: Boolean = false,
+        resetHistory: Boolean = false
+    ) {
         val cur = _state.value
         if (pageId.isBlank() || !cur.settings.isConfluenceReady) return
-        _state.update { it.copy(isLoadingWikiPage = true, wikiError = null) }
+        if (cur.selectedWikiPage?.id == pageId) return
+
+        val existingIdx = if (resetHistory) -1 else cur.wikiPageHistoryStack.indexOfFirst { it.id == pageId }
+        if (existingIdx >= 0) {
+            val target = cur.wikiPageHistoryStack[existingIdx]
+            val trimmed = cur.wikiPageHistoryStack.subList(0, existingIdx)
+            _state.update { it.copy(selectedWikiPage = target, wikiPageHistoryStack = trimmed, wikiError = null) }
+            return
+        }
+
+        val nextHistory = when {
+            resetHistory || cur.selectedWikiPage == null -> emptyList()
+            replaceSiblingInStack -> cur.wikiPageHistoryStack
+            else -> cur.wikiPageHistoryStack + cur.selectedWikiPage
+        }
+
+        val cached = wikiPageDetailCache[pageId]
+        if (cached != null) {
+            _state.update {
+                it.copy(
+                    selectedWikiPage = cached,
+                    wikiPageHistoryStack = nextHistory,
+                    isLoadingWikiPage = false,
+                    wikiError = null
+                )
+            }
+        } else {
+            _state.update { it.copy(isLoadingWikiPage = true, wikiError = null) }
+        }
+
         scope.launch {
             wikiClient.fetchPageDetail(pageId, cur.settings)
                 .onSuccess { detail ->
+                    wikiPageDetailCache[pageId] = detail
                     _state.update { st ->
                         val nextChildren = if (detail.childPages.isNotEmpty()) {
                             st.wikiChildPagesByParent + (detail.id to detail.childPages)
@@ -2375,9 +2427,18 @@ class DesktopController(
                         st.copy(
                             isLoadingWikiPage = false,
                             selectedWikiPage = detail,
+                            wikiPageHistoryStack = nextHistory,
                             wikiChildPagesByParent = nextChildren,
                             wikiError = null
                         )
+                    }
+                    val parentId = detail.breadcrumbs.lastOrNull()?.id
+                    if (!parentId.isNullOrBlank() && !_state.value.wikiChildPagesByParent.containsKey(parentId)) {
+                        wikiClient.fetchChildPages(parentId, cur.settings).onSuccess { siblings ->
+                            _state.update { st ->
+                                st.copy(wikiChildPagesByParent = st.wikiChildPagesByParent + (parentId to siblings))
+                            }
+                        }
                     }
                 }
                 .onFailure { err ->
@@ -2388,6 +2449,20 @@ class DesktopController(
                         )
                     }
                 }
+        }
+    }
+
+    fun navigateBackWikiPage() {
+        val cur = _state.value
+        if (cur.wikiPageHistoryStack.isNotEmpty()) {
+            val prev = cur.wikiPageHistoryStack.last()
+            _state.update {
+                it.copy(
+                    selectedWikiPage = prev,
+                    wikiPageHistoryStack = cur.wikiPageHistoryStack.dropLast(1),
+                    wikiError = null
+                )
+            }
         }
     }
 

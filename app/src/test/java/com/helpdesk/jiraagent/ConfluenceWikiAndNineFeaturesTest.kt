@@ -3,6 +3,8 @@ package com.helpdesk.jiraagent
 import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluenceHtmlParser
+import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
@@ -285,5 +287,53 @@ class ConfluenceWikiAndNineFeaturesTest {
         val portNumbers = NetworkDiagnosticsTool.WATCHLIST_PORTS.map { it.first }
         assertTrue(portNumbers.containsAll(listOf(22, 80, 443, 445, 1194, 1433, 3389, 5060, 5432, 8006, 8291, 8443)))
         assertTrue(portNumbers.size >= 18)
+    }
+
+    @Test
+    fun `ConfluenceWikiClient sorts client pages strictly alphabetically and extracts inline HTML tabs`() {
+        val raw = listOf(
+            ConfluencePageSummary(id = "1", title = "Сейлзмодерн", spaceKey = "CSL"),
+            ConfluencePageSummary(id = "2", title = "«Альфа-Банк»", spaceKey = "CSL"),
+            ConfluencePageSummary(id = "3", title = "МБ", spaceKey = "CSL"),
+            ConfluencePageSummary(id = "4", title = "\"Белвест\"", spaceKey = "CSL"),
+            ConfluencePageSummary(id = "5", title = "1С Серверы", spaceKey = "CSL")
+        )
+        val sorted = ConfluenceWikiClient.sortPagesAlphabetically(raw)
+        assertEquals(listOf("1С Серверы", "«Альфа-Банк»", "\"Белвест\"", "МБ", "Сейлзмодерн"), sorted.map { it.title })
+        assertEquals("А", ConfluenceWikiClient.firstAlphabetLetter("«Альфа-Банк»"))
+        assertEquals("0-9", ConfluenceWikiClient.firstAlphabetLetter("1С Серверы"))
+        assertEquals("М", ConfluenceWikiClient.firstAlphabetLetter("МБ"))
+
+        val tabsHtml = """
+            <div class="aui-tabs horizontal-tabs">
+              <ul class="tabs-menu">
+                <li class="menu-item active-tab"><a href="#pane-net">Локальная сеть</a></li>
+                <li class="menu-item"><a href="#pane-srv">Серверы 1С</a></li>
+              </ul>
+              <div class="tabs-pane active-pane" id="pane-net">
+                <div>Шлюз: 192.168.1.1</div>
+              </div>
+              <div class="tabs-pane" id="pane-srv">
+                <p>RDP: 192.168.1.10</p>
+              </div>
+            </div>
+        """.trimIndent()
+        val tabs = ConfluenceHtmlParser.parseInlineTabs(tabsHtml, "https://w.csl.by")
+        assertEquals(2, tabs.size)
+        assertEquals("Локальная сеть", tabs[0].title)
+        assertEquals("Серверы 1С", tabs[1].title)
+        assertTrue(tabs[0].blocks.any { it is ConfluenceBlock.Paragraph && it.text.contains("192.168.1.1") })
+
+        val folderOnlyHtml = """<ul class="childpages-macro"><li><a href="/x">Sub</a></li></ul>"""
+        val strippedFolderBlocks = ConfluenceHtmlParser.parseHtmlToBlocks(
+            rawHtml = folderOnlyHtml,
+            baseRoot = "https://w.csl.by",
+            hasNativeChildPages = true
+        )
+        assertEquals(1, strippedFolderBlocks.size)
+        assertEquals(
+            ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER,
+            (strippedFolderBlocks.first() as ConfluenceBlock.Paragraph).text
+        )
     }
 }

@@ -32,11 +32,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +61,7 @@ import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.ui.ConfluenceWikiUiState
@@ -107,7 +112,7 @@ fun ConfluenceWikiScreen(
     }
 
     BackHandler(enabled = mode == WikiDisplayMode.READER && wikiState.selectedPage != null) {
-        viewModel.closeSelectedWikiPage()
+        viewModel.navigateBackWikiPage()
     }
     BackHandler(enabled = mode == WikiDisplayMode.WEBVIEW && canWebGoBack) {
         webViewRef?.goBack()
@@ -217,10 +222,12 @@ fun ConfluenceWikiScreen(
             if (detail != null) {
                 ConfluenceAndroidPageReader(
                     detail = detail,
+                    wikiState = wikiState,
                     isLoading = wikiState.isLoadingPage,
                     context = context,
                     viewModel = viewModel,
-                    onBackToList = { viewModel.closeSelectedWikiPage() },
+                    onStepBack = { viewModel.navigateBackWikiPage() },
+                    onBackToRootList = { viewModel.closeSelectedWikiPage() },
                     onOpenInWebMode = { mode = WikiDisplayMode.WEBVIEW }
                 )
             } else {
@@ -249,20 +256,32 @@ private fun ConfluenceAndroidBrowserList(
     onSwitchToWebView: () -> Unit,
     viewModel: MainViewModel
 ) {
+    var selectedLetter by rememberSaveable(wikiState.selectedSpaceKey) { mutableStateOf<String?>(null) }
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         OutlinedTextField(
             value = searchInput,
-            onValueChange = onSearchChange,
-            placeholder = { Text("Поиск клиента, IP, инструкции в w.csl.by…", fontSize = 13.sp) },
+            onValueChange = {
+                selectedLetter = null
+                onSearchChange(it)
+            },
+            placeholder = { Text("Поиск клиента, IP, инструкции в w.csl.by…", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSubmitSearch() }),
             trailingIcon = {
-                IconButton(onClick = onSubmitSearch) {
-                    Icon(Icons.Default.Search, contentDescription = "Найти", tint = CslOrange)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (searchInput.isNotEmpty()) {
+                        IconButton(onClick = { onSearchChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Очистить")
+                        }
+                    }
+                    IconButton(onClick = onSubmitSearch) {
+                        Icon(Icons.Default.Search, contentDescription = "Найти", tint = CslOrange)
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth()
@@ -270,18 +289,31 @@ private fun ConfluenceAndroidBrowserList(
 
         if (wikiState.spaces.isNotEmpty()) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                item {
+                items(wikiState.spaces, key = { it.key }) { sp ->
+                    val labelText = if (sp.name.equals(sp.key, ignoreCase = true)) {
+                        sp.key
+                    } else {
+                        "${sp.key} · ${sp.name}"
+                    }
                     FilterChip(
-                        selected = wikiState.selectedSpaceKey == null,
-                        onClick = { viewModel.selectWikiSpace(null) },
-                        label = { Text("★ Недавние", fontSize = 12.sp) }
+                        selected = wikiState.selectedSpaceKey.equals(sp.key, ignoreCase = true),
+                        onClick = { viewModel.selectWikiSpace(sp.key) },
+                        label = {
+                            Text(
+                                text = labelText,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     )
                 }
-                items(wikiState.spaces, key = { it.key }) { sp ->
+                item {
                     FilterChip(
-                        selected = wikiState.selectedSpaceKey == sp.key,
-                        onClick = { viewModel.selectWikiSpace(sp.key) },
-                        label = { Text("${sp.key} · ${sp.name.take(16)}", fontSize = 12.sp) }
+                        selected = wikiState.selectedSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY,
+                        onClick = { viewModel.selectWikiSpace(ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY) },
+                        label = { Text("🕒 Недавние", fontSize = 12.sp, maxLines = 1, softWrap = false) }
                     )
                 }
             }
@@ -315,7 +347,7 @@ private fun ConfluenceAndroidBrowserList(
                     OutlinedTextField(
                         value = patDraft,
                         onValueChange = { patDraft = it },
-                        label = { Text("Или вставьте PAT-токен Confluence (для 2FA)", fontSize = 11.5.sp) },
+                        placeholder = { Text("Или вставьте PAT-токен Confluence (для 2FA)", fontSize = 11.5.sp) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -331,20 +363,85 @@ private fun ConfluenceAndroidBrowserList(
             }
         }
 
-        val list = wikiState.searchResults ?: wikiState.pages
-        val isSearch = wikiState.searchResults != null
+        val isServerSearch = wikiState.searchResults != null
+        val baseList = remember(wikiState.searchResults, wikiState.pages, searchInput) {
+            val raw = wikiState.searchResults ?: wikiState.pages
+            if (!isServerSearch && searchInput.isNotBlank()) {
+                val q = searchInput.trim()
+                raw.filter { it.title.contains(q, ignoreCase = true) }
+            } else {
+                raw
+            }
+        }
+
+        val availableLetters = remember(baseList, wikiState.selectedSpaceKey, isServerSearch) {
+            if (isServerSearch || wikiState.selectedSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY || baseList.size < 6) {
+                emptyList()
+            } else {
+                baseList.map { ConfluenceWikiClient.firstAlphabetLetter(it.title) }.distinct()
+            }
+        }
+
+        if (availableLetters.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selectedLetter == null) CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.clickable { selectedLetter = null }
+                    ) {
+                        Text(
+                            text = "Все (${baseList.size})",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selectedLetter == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+                items(availableLetters, key = { it }) { letter ->
+                    val isSel = selectedLetter == letter
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isSel) CslOrange else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.clickable {
+                            selectedLetter = if (isSel) null else letter
+                        }
+                    ) {
+                        Text(
+                            text = letter,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+            }
+        } else if (baseList.isNotEmpty()) {
+            Text(
+                text = if (isServerSearch) "Найдено в Wiki: ${baseList.size} (по алфавиту)"
+                else "Записей: ${baseList.size}",
+                fontSize = 11.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        val displayedList = remember(baseList, selectedLetter) {
+            if (selectedLetter == null) baseList
+            else baseList.filter { ConfluenceWikiClient.firstAlphabetLetter(it.title) == selectedLetter }
+        }
 
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            items(list, key = { it.id }) { page ->
-                AndroidWikiTreeNode(
+            items(displayedList, key = { it.id }) { page ->
+                AndroidWikiClientEntryCard(
                     page = page,
-                    depth = 0,
-                    isSearch = isSearch,
-                    wikiState = wikiState,
-                    viewModel = viewModel
+                    isSearch = isServerSearch,
+                    onClick = { viewModel.openWikiPage(page.id) }
                 )
             }
         }
@@ -352,75 +449,73 @@ private fun ConfluenceAndroidBrowserList(
 }
 
 @Composable
-private fun AndroidWikiTreeNode(
+private fun AndroidWikiClientEntryCard(
     page: ConfluencePageSummary,
-    depth: Int,
     isSearch: Boolean,
-    wikiState: ConfluenceWikiUiState,
-    viewModel: MainViewModel
+    onClick: () -> Unit
 ) {
-    val isExpanded = page.id in wikiState.expandedPageIds
-    val children = wikiState.childPagesByParent[page.id].orEmpty()
-
-    Column(modifier = Modifier.fillMaxWidth().padding(start = (depth * 14).dp)) {
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            tonalElevation = 1.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier.fillMaxWidth().clickable { viewModel.openWikiPage(page.id) }
+    val letterBadge = remember(page.title) { ConfluenceWikiClient.firstAlphabetLetter(page.title) }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = CslOrange.copy(alpha = 0.14f),
+                modifier = Modifier.size(34.dp)
             ) {
-                if (!isSearch) {
+                Box(contentAlignment = Alignment.Center) {
                     Text(
-                        text = if (isExpanded) "▾" else "▸",
-                        fontSize = 15.sp,
+                        text = letterBadge,
                         fontWeight = FontWeight.Bold,
-                        color = CslOrange,
-                        modifier = Modifier
-                            .clickable { viewModel.toggleWikiTreeExpand(page.id) }
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                        fontSize = 13.sp,
+                        color = CslOrange
                     )
-                } else {
-                    Text("📄", fontSize = 14.sp)
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(page.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    val subtitle = if (isSearch && page.excerpt.isNotBlank()) {
-                        page.excerpt
-                    } else {
-                        listOfNotNull(
-                            page.spaceName.ifBlank { page.spaceKey }.takeIf { it.isNotBlank() },
-                            page.updatedDisplay.takeIf { it.isNotBlank() }
-                        ).joinToString(" · ")
-                    }
-                    if (subtitle.isNotBlank()) {
-                        Text(
-                            subtitle,
-                            fontSize = 11.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
                 }
             }
-        }
-        if (!isSearch && isExpanded && depth < 3) {
-            Spacer(Modifier.height(4.dp))
-            children.forEach { child ->
-                AndroidWikiTreeNode(
-                    page = child,
-                    depth = depth + 1,
-                    isSearch = false,
-                    wikiState = wikiState,
-                    viewModel = viewModel
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = page.title,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.5.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(4.dp))
+                val subtitle = if (isSearch && page.excerpt.isNotBlank()) {
+                    page.excerpt
+                } else {
+                    listOfNotNull(
+                        page.spaceName.ifBlank { page.spaceKey }.takeIf { it.isNotBlank() },
+                        page.updatedDisplay.takeIf { it.isNotBlank() }
+                    ).joinToString(" · ")
+                }
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        text = subtitle,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Открыть вкладку",
+                tint = CslOrange,
+                modifier = Modifier.size(22.dp)
+            )
         }
     }
 }
@@ -428,76 +523,347 @@ private fun AndroidWikiTreeNode(
 @Composable
 private fun ConfluenceAndroidPageReader(
     detail: ConfluencePageDetail,
+    wikiState: ConfluenceWikiUiState,
     isLoading: Boolean,
     context: Context,
     viewModel: MainViewModel,
-    onBackToList: () -> Unit,
+    onStepBack: () -> Unit,
+    onBackToRootList: () -> Unit,
     onOpenInWebMode: () -> Unit
 ) {
+    // 0 = Sub-pages ("Подкладки"), 1 = Own page content ("Инфо вкладки")
+    var folderViewTab by remember(detail.id) { mutableIntStateOf(0) }
+    var activeInlineTabIdx by remember(detail.id) { mutableIntStateOf(0) }
+    var subPageFilter by remember(detail.id) { mutableStateOf("") }
+
+    val hasSubPages = detail.childPages.isNotEmpty()
+    val parentCrumb = detail.breadcrumbs.lastOrNull()
+    val siblingPages = remember(detail.id, wikiState.childPagesByParent, parentCrumb) {
+        val pid = wikiState.pageHistoryStack.lastOrNull()?.id ?: parentCrumb?.id
+        if (pid != null) wikiState.childPagesByParent[pid].orEmpty() else emptyList()
+    }
+
+    val backLabel = when {
+        wikiState.pageHistoryStack.isNotEmpty() ->
+            wikiState.pageHistoryStack.last().title.take(22)
+        detail.breadcrumbs.size > 1 ->
+            detail.breadcrumbs.last().title.take(22)
+        else -> "К списку"
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (isLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
         }
         Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onBackToList, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (wikiState.pageHistoryStack.isEmpty() && detail.breadcrumbs.size > 1) {
+                                viewModel.openWikiPage(detail.breadcrumbs.last().id)
+                            } else {
+                                onStepBack()
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp),
+                        modifier = Modifier.weight(1f, fill = false)
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("К списку", fontSize = 13.sp)
+                        Text(backLabel, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    OutlinedButton(
-                        onClick = onOpenInWebMode,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Открыть в Web", fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (wikiState.pageHistoryStack.isNotEmpty()) {
+                            TextButton(
+                                onClick = onBackToRootList,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("Все клиенты", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onOpenInWebMode,
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Web", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
+                        }
                     }
                 }
-                Text(detail.title, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    listOfNotNull(
-                        detail.spaceName.ifBlank { detail.spaceKey }.takeIf { it.isNotBlank() },
-                        detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обн.: $it" },
-                        "Нажмите на ячейку таблицы для копирования"
-                    ).joinToString(" · "),
-                    fontSize = 11.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (detail.childPages.isNotEmpty()) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(detail.childPages, key = { it.id }) { ch ->
-                            AssistChip(
-                                onClick = { viewModel.openWikiPage(ch.id) },
-                                label = { Text("📂 ${ch.title}", fontSize = 11.5.sp) }
+
+                // Breadcrumb trail (Space › Client › Sub-tab)
+                if (detail.breadcrumbs.isNotEmpty() || detail.spaceKey.isNotBlank()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (detail.spaceKey.isNotBlank()) {
+                            Text(
+                                text = detail.spaceKey,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = CslOrange,
+                                modifier = Modifier.clickable { onBackToRootList() }
                             )
                         }
+                        detail.breadcrumbs.forEach { crumb ->
+                            Text("›", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                text = crumb.title,
+                                fontSize = 11.5.sp,
+                                color = CslOrange,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                modifier = Modifier.clickable { viewModel.openWikiPage(crumb.id) }
+                            )
+                        }
+                    }
+                }
+
+                Text(detail.title, fontSize = 17.5.sp, fontWeight = FontWeight.Bold)
+
+                // If viewing a sub-page of a client, show sibling sub-tabs bar so user can switch between sub-tabs in 1 tap!
+                if (!hasSubPages && siblingPages.size > 1) {
+                    val currentSiblingIdx = siblingPages.indexOfFirst { it.id == detail.id }.coerceAtLeast(0)
+                    ScrollableTabRow(
+                        selectedTabIndex = currentSiblingIdx,
+                        edgePadding = 0.dp,
+                        containerColor = Color.Transparent,
+                        indicator = { positions ->
+                            if (currentSiblingIdx in positions.indices) {
+                                TabRowDefaults.SecondaryIndicator(
+                                    modifier = Modifier.tabIndicatorOffset(positions[currentSiblingIdx]),
+                                    color = CslOrange
+                                )
+                            }
+                        }
+                    ) {
+                        siblingPages.forEachIndexed { idx, sib ->
+                            val selected = sib.id == detail.id
+                            Tab(
+                                selected = selected,
+                                onClick = {
+                                    if (!selected) {
+                                        viewModel.openWikiPage(sib.id, replaceSiblingInStack = true)
+                                    }
+                                },
+                                text = {
+                                    Text(
+                                        text = sib.title,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (selected) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // If this page HAS child sub-pages ("подкладки с информацией") AND also its own content, allow switching
+                if (hasSubPages && detail.hasSubstantialBody) {
+                    TabRow(
+                        selectedTabIndex = folderViewTab,
+                        containerColor = Color.Transparent,
+                        indicator = { positions ->
+                            if (folderViewTab in positions.indices) {
+                                TabRowDefaults.SecondaryIndicator(
+                                    modifier = Modifier.tabIndicatorOffset(positions[folderViewTab]),
+                                    color = CslOrange
+                                )
+                            }
+                        }
+                    ) {
+                        Tab(
+                            selected = folderViewTab == 0,
+                            onClick = { folderViewTab = 0 },
+                            text = {
+                                Text(
+                                    "📂 Подкладки (${detail.childPages.size})",
+                                    fontSize = 12.5.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    fontWeight = if (folderViewTab == 0) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (folderViewTab == 0) CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
+                        Tab(
+                            selected = folderViewTab == 1,
+                            onClick = { folderViewTab = 1 },
+                            text = {
+                                Text(
+                                    "📋 Общая инфо",
+                                    fontSize = 12.5.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    fontWeight = if (folderViewTab == 1) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (folderViewTab == 1) CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
                     }
                 }
             }
         }
 
-        SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+        if (hasSubPages && (!detail.hasSubstantialBody || folderViewTab == 0)) {
+            // Client's Tab: All Sub-pages ("все подкладки с информацией") sorted alphabetically!
+            val filteredSubPages = remember(detail.childPages, subPageFilter) {
+                if (subPageFilter.isBlank()) detail.childPages
+                else detail.childPages.filter { it.title.contains(subPageFilter.trim(), ignoreCase = true) }
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(detail.blocks) { block ->
-                    AndroidConfluenceBlockView(block = block, context = context, viewModel = viewModel)
+                if (detail.childPages.size > 8) {
+                    OutlinedTextField(
+                        value = subPageFilter,
+                        onValueChange = { subPageFilter = it },
+                        placeholder = { Text("Фильтр по подкладкам «${detail.title}»…", fontSize = 12.5.sp, maxLines = 1) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Text(
+                        text = "📂 Подкладки с информацией (${detail.childPages.size}) · по алфавиту:",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
-                if (detail.attachments.isNotEmpty()) {
-                    item {
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                        Text("📎 Вложения (${detail.attachments.size})", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(filteredSubPages, key = { it.id }) { subPage ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            tonalElevation = 1.dp,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.openWikiPage(subPage.id) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text("📑", fontSize = 16.sp)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = subPage.title,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 14.5.sp
+                                    )
+                                    if (subPage.updatedDisplay.isNotBlank()) {
+                                        Text(
+                                            text = "Обновлено: ${subPage.updatedDisplay}",
+                                            fontSize = 11.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = "Открыть состав",
+                                    tint = CslOrange,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
                     }
-                    items(detail.attachments, key = { it.id }) { att ->
-                        AndroidWikiAttachmentCard(att = att, onOpen = { viewModel.downloadAndShareWikiAttachment(att) })
+                }
+            }
+        } else {
+            // Sub-tab Content ("её состав"): tables, code, text, inline Confluence UI tabs, images, attachments
+            val blocksToRender = if (detail.inlineTabs.isNotEmpty()) {
+                val safeIdx = activeInlineTabIdx.coerceIn(0, detail.inlineTabs.lastIndex)
+                detail.inlineTabs[safeIdx].blocks
+            } else {
+                detail.blocks
+            }
+
+            if (detail.inlineTabs.size > 1) {
+                val safeIdx = activeInlineTabIdx.coerceIn(0, detail.inlineTabs.lastIndex)
+                ScrollableTabRow(
+                    selectedTabIndex = safeIdx,
+                    edgePadding = 8.dp,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                ) {
+                    detail.inlineTabs.forEachIndexed { idx, tab ->
+                        Tab(
+                            selected = safeIdx == idx,
+                            onClick = { activeInlineTabIdx = idx },
+                            text = {
+                                Text(
+                                    text = tab.title,
+                                    fontSize = 12.5.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    fontWeight = if (safeIdx == idx) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (safeIdx == idx) CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        Text(
+                            text = listOfNotNull(
+                                detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обн.: $it" },
+                                detail.updatedBy.takeIf { it.isNotBlank() },
+                                "Нажмите на ячейку таблицы для копирования"
+                            ).joinToString(" · "),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    items(blocksToRender) { block ->
+                        AndroidConfluenceBlockView(block = block, context = context, viewModel = viewModel)
+                    }
+
+                    if (detail.attachments.isNotEmpty()) {
+                        item {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                            Text("📎 Вложения (${detail.attachments.size})", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                        items(detail.attachments, key = { it.id }) { att ->
+                            AndroidWikiAttachmentCard(att = att, onOpen = { viewModel.downloadAndShareWikiAttachment(att) })
+                        }
                     }
                 }
             }

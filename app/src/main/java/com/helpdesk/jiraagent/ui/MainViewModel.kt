@@ -147,6 +147,7 @@ data class ConfluenceWikiUiState(
     val searchQuery: String = "",
     val searchResults: List<ConfluencePageSummary>? = null,
     val selectedPage: ConfluencePageDetail? = null,
+    val pageHistoryStack: List<ConfluencePageDetail> = emptyList(),
     val isLoadingList: Boolean = false,
     val isLoadingPage: Boolean = false,
     val requiresWeb2faLogin: Boolean = false,
@@ -2617,6 +2618,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Confluence Wiki (`w.csl.by` with Jira credentials) ---
 
+    private val wikiPageDetailCache = java.util.concurrent.ConcurrentHashMap<String, ConfluencePageDetail>()
+
     fun loadWikiInitialIfNeeded() {
         val st = _wikiUiState.value
         if (st.spaces.isEmpty() && st.pages.isEmpty() && !st.isLoadingList) {
@@ -2633,15 +2636,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            _wikiUiState.update { it.copy(isLoadingList = true, errorMessage = null, selectedSpaceKey = spaceKeyOverride) }
+            _wikiUiState.update { it.copy(isLoadingList = true, errorMessage = null) }
             val spacesRes = wikiClient.fetchSpaces(settings)
-            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(spaceKeyOverride, settings)
             val spaces = spacesRes.getOrDefault(_wikiUiState.value.spaces)
+            val effectiveSpaceKey = spaceKeyOverride
+                ?: spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
+                ?: spaces.firstOrNull { it.type == "global" }?.key
+                ?: spaces.firstOrNull()?.key
+            val homepageHint = spaces.firstOrNull { it.key.equals(effectiveSpaceKey, ignoreCase = true) }?.homepageId
+
+            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(
+                spaceKey = effectiveSpaceKey,
+                settings = settings,
+                homepageIdHint = homepageHint
+            )
             pagesRes.onSuccess { pages ->
                 _wikiUiState.update {
                     it.copy(
                         isLoadingList = false,
                         spaces = spaces,
+                        selectedSpaceKey = effectiveSpaceKey,
                         pages = pages,
                         requiresWeb2faLogin = false,
                         errorMessage = null
@@ -2654,6 +2668,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         isLoadingList = false,
                         spaces = spaces,
+                        selectedSpaceKey = effectiveSpaceKey,
                         requiresWeb2faLogin = is2fa,
                         errorMessage = cause.message ?: err.message ?: "Ошибка подключения к w.csl.by"
                     )
@@ -2674,11 +2689,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val updated = appSettings.value.copy(confluenceToken = token.trim())
         repository.saveAppSettings(updated)
         wikiClient.clearSessionCache()
+        wikiPageDetailCache.clear()
         refreshWikiSpacesAndPages()
     }
 
     fun selectWikiSpace(spaceKey: String?) {
-        _wikiUiState.update { it.copy(selectedSpaceKey = spaceKey, searchResults = null, searchQuery = "") }
+        _wikiUiState.update {
+            it.copy(
+                selectedSpaceKey = spaceKey,
+                selectedPage = null,
+                pageHistoryStack = emptyList(),
+                searchResults = null,
+                searchQuery = ""
+            )
+        }
         refreshWikiSpacesAndPages(spaceKeyOverride = spaceKey)
     }
 
@@ -2721,18 +2745,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun openWikiPage(pageId: String) {
+    fun openWikiPage(pageId: String, replaceSiblingInStack: Boolean = false) {
         val settings = appSettings.value
         if (pageId.isBlank() || !settings.isConfluenceReady) return
+        val beforeState = _wikiUiState.value
+        if (beforeState.selectedPage?.id == pageId) return
+
+        // If navigating back to an ancestor already in pageHistoryStack, pop back to it cleanly
+        val existingIdx = beforeState.pageHistoryStack.indexOfFirst { it.id == pageId }
+        if (existingIdx >= 0) {
+            val target = beforeState.pageHistoryStack[existingIdx]
+            val trimmedStack = beforeState.pageHistoryStack.subList(0, existingIdx)
+            _wikiUiState.update { it.copy(selectedPage = target, pageHistoryStack = trimmedStack, errorMessage = null) }
+            return
+        }
+
+        val nextHistory = when {
+            beforeState.selectedPage == null -> emptyList()
+            replaceSiblingInStack -> beforeState.pageHistoryStack
+            else -> beforeState.pageHistoryStack + beforeState.selectedPage
+        }
+
+        val cached = wikiPageDetailCache[pageId]
+        if (cached != null) {
+            _wikiUiState.update {
+                it.copy(
+                    selectedPage = cached,
+                    pageHistoryStack = nextHistory,
+                    isLoadingPage = false,
+                    errorMessage = null
+                )
+            }
+        }
+
         viewModelScope.launch {
-            _wikiUiState.update { it.copy(isLoadingPage = true, errorMessage = null) }
+            if (cached == null) {
+                _wikiUiState.update { it.copy(isLoadingPage = true, errorMessage = null) }
+            }
             wikiClient.fetchPageDetail(pageId, settings)
                 .onSuccess { detail ->
+                    wikiPageDetailCache[pageId] = detail
                     _wikiUiState.update { cur ->
                         val nextChildren = if (detail.childPages.isNotEmpty()) {
                             cur.childPagesByParent + (detail.id to detail.childPages)
                         } else cur.childPagesByParent
-                        cur.copy(isLoadingPage = false, selectedPage = detail, childPagesByParent = nextChildren)
+                        cur.copy(
+                            isLoadingPage = false,
+                            selectedPage = detail,
+                            pageHistoryStack = nextHistory,
+                            childPagesByParent = nextChildren
+                        )
+                    }
+                    // Also preload parent's children if needed so sibling sub-tabs are always available
+                    val parentId = detail.breadcrumbs.lastOrNull()?.id
+                    if (!parentId.isNullOrBlank() && !_wikiUiState.value.childPagesByParent.containsKey(parentId)) {
+                        wikiClient.fetchChildPages(parentId, settings).onSuccess { siblings ->
+                            _wikiUiState.update { cur ->
+                                cur.copy(childPagesByParent = cur.childPagesByParent + (parentId to siblings))
+                            }
+                        }
                     }
                 }
                 .onFailure { err ->
@@ -2741,8 +2812,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun navigateBackWikiPage() {
+        val cur = _wikiUiState.value
+        if (cur.pageHistoryStack.isNotEmpty()) {
+            val prev = cur.pageHistoryStack.last()
+            _wikiUiState.update {
+                it.copy(
+                    selectedPage = prev,
+                    pageHistoryStack = cur.pageHistoryStack.dropLast(1),
+                    errorMessage = null
+                )
+            }
+        } else {
+            _wikiUiState.update { it.copy(selectedPage = null, pageHistoryStack = emptyList()) }
+        }
+    }
+
     fun closeSelectedWikiPage() {
-        _wikiUiState.update { it.copy(selectedPage = null) }
+        _wikiUiState.update { it.copy(selectedPage = null, pageHistoryStack = emptyList()) }
     }
 
     fun openClientInWiki(clientName: String) {

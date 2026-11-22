@@ -39,6 +39,7 @@ import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.model.HelpdeskTicket
@@ -158,27 +159,32 @@ fun DesktopWikiWorkspace(
                     }
                 }
 
-                // Spaces strip
+                // Spaces strip (CSL first, Recent at end)
                 if (state.wikiSpaces.isNotEmpty()) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        item {
-                            FilterChip(
-                                selected = state.selectedWikiSpaceKey == null,
-                                onClick = { controller.selectWikiSpace(null) },
-                                label = { Text("★ Недавние", fontSize = 11.5.sp) }
-                            )
-                        }
                         items(state.wikiSpaces, key = { it.key }) { space ->
+                            val labelText = if (space.name.equals(space.key, ignoreCase = true)) {
+                                space.key
+                            } else {
+                                "${space.key} · ${space.name.take(18)}"
+                            }
                             FilterChip(
-                                selected = state.selectedWikiSpaceKey == space.key,
+                                selected = state.selectedWikiSpaceKey.equals(space.key, ignoreCase = true),
                                 onClick = { controller.selectWikiSpace(space.key) },
                                 label = {
                                     Text(
-                                        "${space.key} · ${space.name.take(18)}",
+                                        labelText,
                                         fontSize = 11.5.sp,
                                         maxLines = 1
                                     )
                                 }
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = state.selectedWikiSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY,
+                                onClick = { controller.selectWikiSpace(ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY) },
+                                label = { Text("🕒 Недавние", fontSize = 11.5.sp) }
                             )
                         }
                     }
@@ -243,9 +249,67 @@ fun DesktopWikiWorkspace(
                     }
                 }
 
-                // Page list / expandable tree
-                val displayedPages = state.wikiSearchResults ?: state.wikiPages
+                // Page list / alphabetical client directory
+                var selectedLetter by remember(state.selectedWikiSpaceKey) { mutableStateOf<String?>(null) }
                 val isSearchMode = state.wikiSearchResults != null
+                val basePages = remember(state.wikiSearchResults, state.wikiPages, searchInput, isSearchMode) {
+                    val raw = state.wikiSearchResults ?: state.wikiPages
+                    if (!isSearchMode && searchInput.isNotBlank()) {
+                        val q = searchInput.trim()
+                        raw.filter { it.title.contains(q, ignoreCase = true) }
+                    } else {
+                        raw
+                    }
+                }
+
+                val availableLetters = remember(basePages, state.selectedWikiSpaceKey, isSearchMode) {
+                    if (isSearchMode || state.selectedWikiSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY || basePages.size < 6) {
+                        emptyList()
+                    } else {
+                        basePages.map { ConfluenceWikiClient.firstAlphabetLetter(it.title) }.distinct()
+                    }
+                }
+
+                if (availableLetters.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (selectedLetter == null) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.clickable { selectedLetter = null }
+                            ) {
+                                Text(
+                                    text = "Все (${basePages.size})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selectedLetter == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        items(availableLetters, key = { it }) { letter ->
+                            val isSel = selectedLetter == letter
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isSel) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                modifier = Modifier.clickable { selectedLetter = if (isSel) null else letter }
+                            ) {
+                                Text(
+                                    text = letter,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val displayedPages = remember(basePages, selectedLetter) {
+                    if (selectedLetter == null) basePages
+                    else basePages.filter { ConfluenceWikiClient.firstAlphabetLetter(it.title) == selectedLetter }
+                }
 
                 if (isSearchMode) {
                     Row(
@@ -254,7 +318,7 @@ fun DesktopWikiWorkspace(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Найдено страниц: ${displayedPages.size}",
+                            "Найдено страниц: ${displayedPages.size} (по алфавиту)",
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold
@@ -278,7 +342,7 @@ fun DesktopWikiWorkspace(
                     if (displayedPages.isEmpty() && !state.isLoadingWikiList && state.wikiError == null) {
                         item {
                             Text(
-                                if (isSearchMode) "Ничего не найдено по запросу «$searchInput»"
+                                if (isSearchMode || searchInput.isNotBlank()) "Ничего не найдено по запросу «$searchInput»"
                                 else "Нет страниц для отображения. Нажмите 🔄 для загрузки из w.csl.by.",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -338,6 +402,7 @@ fun DesktopWikiWorkspace(
                 else -> {
                     ConfluencePageReaderPane(
                         detail = detail,
+                        state = state,
                         isReloading = state.isLoadingWikiPage,
                         copiedNotice = copiedNotice,
                         onCopied = { copiedNotice = it },
@@ -450,12 +515,24 @@ private fun WikiTreeNodeItem(
 @Composable
 private fun ConfluencePageReaderPane(
     detail: ConfluencePageDetail,
+    state: DesktopUiState,
     isReloading: Boolean,
     copiedNotice: String?,
     onCopied: (String) -> Unit,
     controller: DesktopController,
     onOpenLightbox: (String, BufferedImage) -> Unit
 ) {
+    var folderViewTab by remember(detail.id) { mutableIntStateOf(0) }
+    var activeInlineTabIdx by remember(detail.id) { mutableIntStateOf(0) }
+    var subPageFilter by remember(detail.id) { mutableStateOf("") }
+
+    val hasSubPages = detail.childPages.isNotEmpty()
+    val parentCrumb = detail.ancestors.lastOrNull()
+    val siblingPages = remember(detail.id, state.wikiChildPagesByParent, parentCrumb) {
+        val pid = state.wikiPageHistoryStack.lastOrNull()?.id ?: parentCrumb?.id
+        if (pid != null) state.wikiChildPagesByParent[pid].orEmpty() else emptyList()
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (isReloading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
@@ -467,7 +544,7 @@ private fun ConfluencePageReaderPane(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Breadcrumbs
+                // Back button + Breadcrumbs + Actions
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -476,8 +553,31 @@ private fun ConfluencePageReaderPane(
                     Row(
                         modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        if (state.wikiPageHistoryStack.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { controller.navigateBackWikiPage() },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    "← ${state.wikiPageHistoryStack.last().title.take(24)}",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        } else if (detail.ancestors.size > 1) {
+                            OutlinedButton(
+                                onClick = { controller.openWikiPage(detail.ancestors.last().id) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    "← ${detail.ancestors.last().title.take(24)}",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                         if (detail.spaceKey.isNotBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(5.dp),
@@ -493,7 +593,7 @@ private fun ConfluencePageReaderPane(
                             }
                         }
                         detail.ancestors.forEach { anc ->
-                            Text("/", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("›", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
                                 anc.title,
                                 fontSize = 11.5.sp,
@@ -533,34 +633,74 @@ private fun ConfluencePageReaderPane(
                             colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                         ) {
-                            Text("🌐 Открыть / Редактировать в w.csl.by", fontSize = 11.5.sp)
+                            Text("🌐 Открыть в w.csl.by", fontSize = 11.5.sp)
                         }
                     }
                 }
 
                 Text(detail.title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
 
-                val metaParts = listOfNotNull(
-                    detail.updatedBy.takeIf { it.isNotBlank() }?.let { "Автор изм.: $it" },
-                    detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обновлено: $it" },
-                    "Версия v${detail.versionNumber}",
-                    "Нажмите на любую ячейку таблицы, чтобы скопировать IP/пароль"
-                )
-                Text(
-                    metaParts.joinToString("  ·  "),
-                    fontSize = 11.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                // Child pages pills
-                if (detail.childPages.isNotEmpty()) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(detail.childPages, key = { it.id }) { child ->
-                            AssistChip(
-                                onClick = { controller.openWikiPage(child.id) },
-                                label = { Text("📂 ${child.title}", fontSize = 11.5.sp) }
+                // Sibling sub-tabs switcher when viewing a sub-page of a client
+                if (!hasSubPages && siblingPages.size > 1) {
+                    val curSibIdx = siblingPages.indexOfFirst { it.id == detail.id }.coerceAtLeast(0)
+                    ScrollableTabRow(
+                        selectedTabIndex = curSibIdx,
+                        edgePadding = 0.dp,
+                        containerColor = Color.Transparent
+                    ) {
+                        siblingPages.forEach { sib ->
+                            val selected = sib.id == detail.id
+                            Tab(
+                                selected = selected,
+                                onClick = {
+                                    if (!selected) {
+                                        controller.openWikiPage(sib.id, replaceSiblingInStack = true)
+                                    }
+                                },
+                                text = {
+                                    Text(
+                                        sib.title,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (selected) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             )
                         }
+                    }
+                }
+
+                // Switcher when client page has both sub-tabs AND own root body
+                if (hasSubPages && detail.hasSubstantialBody) {
+                    TabRow(
+                        selectedTabIndex = folderViewTab,
+                        containerColor = Color.Transparent
+                    ) {
+                        Tab(
+                            selected = folderViewTab == 0,
+                            onClick = { folderViewTab = 0 },
+                            text = {
+                                Text(
+                                    "📂 Подкладки с информацией (${detail.childPages.size})",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (folderViewTab == 0) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (folderViewTab == 0) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
+                        Tab(
+                            selected = folderViewTab == 1,
+                            onClick = { folderViewTab = 1 },
+                            text = {
+                                Text(
+                                    "📋 Общая информация вкладки",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (folderViewTab == 1) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (folderViewTab == 1) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
                     }
                 }
             }
@@ -568,34 +708,161 @@ private fun ConfluencePageReaderPane(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-        // Content blocks + attachments
-        SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
+        if (hasSubPages && (!detail.hasSubstantialBody || folderViewTab == 0)) {
+            val filteredSubPages = remember(detail.childPages, subPageFilter) {
+                if (subPageFilter.isBlank()) detail.childPages
+                else detail.childPages.filter { it.title.contains(subPageFilter.trim(), ignoreCase = true) }
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(detail.blocks) { block ->
-                    ConfluenceBlockView(
-                        block = block,
-                        controller = controller,
-                        onCopied = onCopied,
-                        onOpenLightbox = onOpenLightbox
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "📂 Все подкладки «${detail.title}» (${detail.childPages.size}) · по алфавиту:",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
                     )
-                }
-
-                if (detail.attachments.isNotEmpty()) {
-                    item {
-                        Spacer(Modifier.height(8.dp))
-                        HorizontalDivider()
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "📎 Вложенные файлы страницы (${detail.attachments.size})",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
+                    if (detail.childPages.size > 6) {
+                        OutlinedTextField(
+                            value = subPageFilter,
+                            onValueChange = { subPageFilter = it },
+                            placeholder = { Text("Фильтр по подкладкам…", fontSize = 12.sp) },
+                            singleLine = true,
+                            modifier = Modifier.width(260.dp)
                         )
                     }
-                    items(detail.attachments, key = { it.id }) { att ->
-                        ConfluenceAttachmentRow(att = att, onOpen = { controller.downloadAndOpenWikiAttachment(att) })
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(filteredSubPages, key = { it.id }) { child ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            tonalElevation = 1.dp,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { controller.openWikiPage(child.id) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text("📑", fontSize = 16.sp)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = child.title,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    if (child.updatedDisplay.isNotBlank()) {
+                                        Text(
+                                            text = "Обновлено: ${child.updatedDisplay}",
+                                            fontSize = 11.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "Открыть состав →",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = DesktopColors.CslOrange
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            val blocksToRender = if (detail.inlineTabs.isNotEmpty()) {
+                val safeIdx = activeInlineTabIdx.coerceIn(0, detail.inlineTabs.lastIndex)
+                detail.inlineTabs[safeIdx].blocks
+            } else {
+                detail.blocks
+            }
+
+            if (detail.inlineTabs.size > 1) {
+                val safeIdx = activeInlineTabIdx.coerceIn(0, detail.inlineTabs.lastIndex)
+                ScrollableTabRow(
+                    selectedTabIndex = safeIdx,
+                    edgePadding = 16.dp,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                ) {
+                    detail.inlineTabs.forEachIndexed { idx, tab ->
+                        Tab(
+                            selected = safeIdx == idx,
+                            onClick = { activeInlineTabIdx = idx },
+                            text = {
+                                Text(
+                                    text = tab.title,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (safeIdx == idx) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (safeIdx == idx) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Content blocks + attachments
+            SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        val metaParts = listOfNotNull(
+                            detail.updatedBy.takeIf { it.isNotBlank() }?.let { "Автор изм.: $it" },
+                            detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обновлено: $it" },
+                            "Версия v${detail.versionNumber}",
+                            "Нажмите на любую ячейку таблицы, чтобы скопировать IP/пароль"
+                        )
+                        Text(
+                            metaParts.joinToString("  ·  "),
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    items(blocksToRender) { block ->
+                        ConfluenceBlockView(
+                            block = block,
+                            controller = controller,
+                            onCopied = onCopied,
+                            onOpenLightbox = onOpenLightbox
+                        )
+                    }
+
+                    if (detail.attachments.isNotEmpty()) {
+                        item {
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider()
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "📎 Вложенные файлы страницы (${detail.attachments.size})",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        items(detail.attachments, key = { it.id }) { att ->
+                            ConfluenceAttachmentRow(att = att, onOpen = { controller.downloadAndOpenWikiAttachment(att) })
+                        }
                     }
                 }
             }
