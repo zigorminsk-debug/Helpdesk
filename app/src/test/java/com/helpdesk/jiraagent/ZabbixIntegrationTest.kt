@@ -9,8 +9,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
@@ -86,80 +86,101 @@ class ZabbixIntegrationTest {
         assertTrue(ticket.isClientTicket)
     }
 
+    private fun readHttpPacket(ins: InputStream): Triple<String, Map<String, String>, String>? {
+        val headerBuf = ByteArrayOutputStream()
+        var state = 0 // 0, 1=\r, 2=\r\n, 3=\r\n\r, 4=\r\n\r\n
+        while (state < 4) {
+            val b = ins.read()
+            if (b < 0) return null
+            headerBuf.write(b)
+            state = when {
+                b == '\r'.code && (state == 0 || state == 2) -> state + 1
+                b == '\n'.code && (state == 1 || state == 3) -> state + 1
+                b == '\r'.code -> 1
+                else -> 0
+            }
+        }
+        val rawHeaders = String(headerBuf.toByteArray(), StandardCharsets.UTF_8)
+        val lines = rawHeaders.split("\r\n").filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return null
+        val path = lines.first().split(" ").getOrNull(1).orEmpty()
+        val headers = HashMap<String, String>()
+        for (i in 1 until lines.size) {
+            val idx = lines[i].indexOf(':')
+            if (idx > 0) {
+                headers[lines[i].substring(0, idx).trim().lowercase()] = lines[i].substring(idx + 1).trim()
+            }
+        }
+        val contentLen = headers["content-length"]?.toIntOrNull() ?: 0
+        val bodyBytes = ByteArray(contentLen)
+        var offset = 0
+        while (offset < contentLen) {
+            val r = ins.read(bodyBytes, offset, contentLen - offset)
+            if (r <= 0) break
+            offset += r
+        }
+        val bodyStr = String(bodyBytes, 0, offset, StandardCharsets.UTF_8)
+        return Triple(path, headers, bodyStr)
+    }
+
     @Test
     fun authenticatesFollowsPostRedirectsAndFetchesProblemsZabbix7() = runBlocking {
         val ackReceived = AtomicBoolean(false)
         val running = AtomicBoolean(true)
         val serverSocket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
 
-        val serverThread = thread(start = true, isDaemon = true) {
+        val acceptThread = thread(start = true, isDaemon = true) {
             while (running.get()) {
                 val sock = runCatching { serverSocket.accept() }.getOrNull() ?: break
-                sock.use { clientSock ->
-                    val reader = BufferedReader(InputStreamReader(clientSock.getInputStream(), StandardCharsets.UTF_8))
-                    val requestLine = reader.readLine() ?: return@use
-                    val path = requestLine.split(" ").getOrNull(1).orEmpty()
-                    var contentLength = 0
-                    var authHeader = ""
-                    while (true) {
-                        val headerLine = reader.readLine() ?: break
-                        if (headerLine.isEmpty()) break
-                        if (headerLine.startsWith("Content-Length:", ignoreCase = true)) {
-                            contentLength = headerLine.substringAfter(':').trim().toIntOrNull() ?: 0
-                        } else if (headerLine.startsWith("Authorization:", ignoreCase = true)) {
-                            authHeader = headerLine.substringAfter(':').trim()
-                        }
-                    }
-                    val bodyChars = CharArray(contentLength)
-                    var readTotal = 0
-                    while (readTotal < contentLength) {
-                        val r = reader.read(bodyChars, readTotal, contentLength - readTotal)
-                        if (r <= 0) break
-                        readTotal += r
-                    }
-                    val reqBody = String(bodyChars, 0, readTotal)
+                thread(start = true, isDaemon = true) {
+                    sock.use { clientSock ->
+                        clientSock.soTimeout = 5000
+                        val packet = readHttpPacket(clientSock.getInputStream()) ?: return@use
+                        val (path, headers, reqBody) = packet
+                        val authHeader = headers["authorization"].orEmpty()
+                        val out = clientSock.getOutputStream()
 
-                    val out = clientSock.getOutputStream()
-                    if (path == "/api_jsonrpc.php") {
-                        val redirectHttp = "HTTP/1.1 301 Moved Permanently\r\n" +
-                            "Location: /zbx7/api_jsonrpc.php\r\n" +
-                            "Content-Length: 0\r\n" +
-                            "Connection: close\r\n\r\n"
-                        out.write(redirectHttp.toByteArray(StandardCharsets.UTF_8))
-                        out.flush()
-                    } else {
-                        val responseJson = when {
-                            reqBody.contains("\"apiinfo.version\"") ->
-                                """{"jsonrpc":"2.0","result":"7.0.5","id":1}"""
-                            reqBody.contains("\"user.login\"") ->
-                                """{"jsonrpc":"2.0","result":"tok_zbx7_abc","id":2}"""
-                            reqBody.contains("\"trigger.get\"") -> {
-                                if (authHeader != "Bearer tok_zbx7_abc" || reqBody.contains("\"auth\":")) {
-                                    """{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params","data":"unexpected auth"},"id":3}"""
-                                } else {
-                                    """{"jsonrpc":"2.0","result":[{"triggerid":"55","description":"Unavailable by ICMP","priority":"4","value":"1","lastchange":"1763800000","comments":"Gateway check","url":"","hosts":[{"hostid":"10","host":"gw.csl.by","name":"Шлюз CSL"}],"lastEvent":{"eventid":"9001","name":"Шлюз недоступен","clock":"1763800000","acknowledged":"0","severity":"4"}}],"id":3}"""
+                        if (path == "/api_jsonrpc.php") {
+                            val redirectHttp = "HTTP/1.1 301 Moved Permanently\r\n" +
+                                "Location: /zbx7/api_jsonrpc.php\r\n" +
+                                "Content-Length: 0\r\n" +
+                                "Connection: close\r\n\r\n"
+                            out.write(redirectHttp.toByteArray(StandardCharsets.UTF_8))
+                            out.flush()
+                        } else {
+                            val responseJson = when {
+                                reqBody.contains("\"apiinfo.version\"") ->
+                                    """{"jsonrpc":"2.0","result":"7.0.5","id":1}"""
+                                reqBody.contains("\"user.login\"") ->
+                                    """{"jsonrpc":"2.0","result":"tok_zbx7_abc","id":2}"""
+                                reqBody.contains("\"trigger.get\"") -> {
+                                    if (authHeader != "Bearer tok_zbx7_abc" || reqBody.contains("\"auth\":")) {
+                                        """{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params","data":"unexpected auth"},"id":3}"""
+                                    } else {
+                                        """{"jsonrpc":"2.0","result":[{"triggerid":"55","description":"Unavailable by ICMP","priority":"4","value":"1","lastchange":"1763800000","comments":"Gateway check","url":"","hosts":[{"hostid":"10","host":"gw.csl.by","name":"Шлюз CSL"}],"lastEvent":{"eventid":"9001","name":"Шлюз недоступен","clock":"1763800000","acknowledged":"0","severity":"4"}}],"id":3}"""
+                                    }
                                 }
+                                reqBody.contains("\"problem.get\"") ->
+                                    """{"jsonrpc":"2.0","result":[{"eventid":"9001","objectid":"55","name":"Шлюз недоступен","opdata":"Loss: 100%","acknowledged":"0","suppressed":"0","clock":"1763800000","severity":"4","r_eventid":"0","acknowledges":[]}],"id":4}"""
+                                reqBody.contains("\"hostinterface.get\"") ->
+                                    """{"jsonrpc":"2.0","result":[{"hostid":"10","ip":"10.10.0.1","dns":"gw.csl.by","main":"1"}],"id":5}"""
+                                reqBody.contains("\"host.get\"") ->
+                                    """{"jsonrpc":"2.0","result":"42","id":6}"""
+                                reqBody.contains("\"event.acknowledge\"") -> {
+                                    ackReceived.set(true)
+                                    """{"jsonrpc":"2.0","result":{"eventids":[9001]},"id":7}"""
+                                }
+                                else -> """{"jsonrpc":"2.0","result":[],"id":99}"""
                             }
-                            reqBody.contains("\"problem.get\"") ->
-                                """{"jsonrpc":"2.0","result":[{"eventid":"9001","objectid":"55","name":"Шлюз недоступен","opdata":"Loss: 100%","acknowledged":"0","suppressed":"0","clock":"1763800000","severity":"4","r_eventid":"0","acknowledges":[]}],"id":4}"""
-                            reqBody.contains("\"hostinterface.get\"") ->
-                                """{"jsonrpc":"2.0","result":[{"hostid":"10","ip":"10.10.0.1","dns":"gw.csl.by","main":"1"}],"id":5}"""
-                            reqBody.contains("\"host.get\"") ->
-                                """{"jsonrpc":"2.0","result":"42","id":6}"""
-                            reqBody.contains("\"event.acknowledge\"") -> {
-                                ackReceived.set(true)
-                                """{"jsonrpc":"2.0","result":{"eventids":[9001]},"id":7}"""
-                            }
-                            else -> """{"jsonrpc":"2.0","result":[],"id":99}"""
+                            val payloadBytes = responseJson.toByteArray(StandardCharsets.UTF_8)
+                            val httpResp = "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${payloadBytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            out.write(httpResp.toByteArray(StandardCharsets.UTF_8))
+                            out.write(payloadBytes)
+                            out.flush()
                         }
-                        val payloadBytes = responseJson.toByteArray(StandardCharsets.UTF_8)
-                        val httpResp = "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: application/json\r\n" +
-                            "Content-Length: ${payloadBytes.size}\r\n" +
-                            "Connection: close\r\n\r\n"
-                        out.write(httpResp.toByteArray(StandardCharsets.UTF_8))
-                        out.write(payloadBytes)
-                        out.flush()
                     }
                 }
             }
@@ -188,7 +209,7 @@ class ZabbixIntegrationTest {
         } finally {
             running.set(false)
             runCatching { serverSocket.close() }
-            serverThread.join(1000L)
+            acceptThread.join(1000L)
         }
     }
 }
