@@ -11,9 +11,11 @@ import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.helpdesk.jiraagent.data.ConfluenceSyncOutcome
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
@@ -35,6 +37,8 @@ class JiraMonitorService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
+    private var watchlistPingJob: Job? = null
+    private var wikiDailySyncJob: Job? = null
 
     private lateinit var repository: SettingsRepository
     private val apiClient = JiraApiClient()
@@ -71,7 +75,7 @@ class JiraMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                if (repository.postponedTickets.value.isEmpty()) {
+                if (!shouldKeepServiceAlive(repository)) {
                     stopPollingAndService()
                     return START_NOT_STICKY
                 }
@@ -83,15 +87,11 @@ class JiraMonitorService : Service() {
                     if (repository.appSettings.value.isConfigured) {
                         pollOnce()
                     }
-                    if (!repository.appSettings.value.pollingEnabled &&
-                        repository.postponedTickets.value.isEmpty()
-                    ) {
+                    if (!shouldKeepServiceAlive(repository)) {
                         stopPollingAndService()
                     }
                 }
-                if (pollingJob?.isActive != true) {
-                    startPollingLoop()
-                }
+                ensureBackgroundLoopsRunning()
                 return START_STICKY
             }
             ACTION_POLL_NOW -> {
@@ -100,22 +100,30 @@ class JiraMonitorService : Service() {
                     PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
                     pollOnce()
                 }
-                if (pollingJob?.isActive != true) {
-                    startPollingLoop()
-                }
+                ensureBackgroundLoopsRunning()
                 return START_STICKY
             }
         }
 
-        val settings = repository.appSettings.value
-        val hasPostponed = repository.postponedTickets.value.isNotEmpty()
-        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) {
+        if (!shouldKeepServiceAlive(repository)) {
             stopPollingAndService()
             return START_NOT_STICKY
         }
-        ensureForegroundStarted("Ожидание новых заявок клиентов…")
-        startPollingLoop()
+        ensureForegroundStarted("Ожидание заявок · мониторинг SSL/узлов…")
+        ensureBackgroundLoopsRunning()
         return START_STICKY
+    }
+
+    private fun ensureBackgroundLoopsRunning() {
+        if (pollingJob?.isActive != true) {
+            startPollingLoop()
+        }
+        if (watchlistPingJob?.isActive != true) {
+            startWatchlistBackgroundLoop()
+        }
+        if (wikiDailySyncJob?.isActive != true) {
+            startWikiDailySyncLoop()
+        }
     }
 
     private fun ensureForegroundStarted(statusText: String) {
@@ -149,12 +157,11 @@ class JiraMonitorService : Service() {
         pollingJob?.cancel()
         pollingJob = serviceScope.launch {
             while (isActive) {
-                val settings = repository.appSettings.value
-                val hasPostponed = repository.postponedTickets.value.isNotEmpty()
-                if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) {
+                if (!shouldKeepServiceAlive(repository)) {
                     stopPollingAndService()
                     break
                 }
+                val settings = repository.appSettings.value
 
                 // Always process due postponed tickets first
                 PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
@@ -306,8 +313,84 @@ class JiraMonitorService : Service() {
         }
     }
 
+    /**
+     * Background loop that pings all entered `SSL / Узлы` hosts every 5 minutes
+     * and posts a notification with the host's name whenever a host is offline.
+     */
+    private fun startWatchlistBackgroundLoop() {
+        watchlistPingJob?.cancel()
+        watchlistPingJob = serviceScope.launch {
+            // Brief initial warmup so service startup completes first
+            delay(5_000L)
+            while (isActive) {
+                runCatching {
+                    val hosts = repository.watchlistHosts.value
+                    val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    val hasAnyNetwork = cm == null || cm.activeNetwork != null
+                    if (hosts.isNotEmpty() && hasAnyNetwork) {
+                        val labels = repository.watchlistLabels.value
+                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(hosts)
+                        repository.updateWatchlistStatuses(statuses)
+                        var playedOfflineSound = false
+                        for (st in statuses) {
+                            val hostKey = SysadminToolboxEngine.normalizeHostKey(st.host)
+                            if (!st.isAlive) {
+                                val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(st.host, labels)
+                                val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(st.host, labels)
+                                NotificationHelper.showHostOfflineNotification(
+                                    context = applicationContext,
+                                    hostKey = hostKey,
+                                    shortTitle = shortName,
+                                    fullDisplayName = fullName
+                                )
+                                if (!playedOfflineSound && BelarusWorkCalendar.isWorkingTimeNow(repository.appSettings.value)) {
+                                    playedOfflineSound = true
+                                    AlertSoundPlayer.playTicketAlert(applicationContext, repository.appSettings.value)
+                                }
+                            } else {
+                                NotificationHelper.cancelHostOfflineNotification(applicationContext, hostKey)
+                            }
+                        }
+                    }
+                }
+                delay(SysadminToolboxEngine.WATCHLIST_BACKGROUND_PING_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
+     * Background loop that synchronizes the offline Confluence `Читалка` database once per 24 hours.
+     * If `w.csl.by` is reachable and rejects account authentication, wipes the local database
+     * and all records created in the program.
+     */
+    private fun startWikiDailySyncLoop() {
+        wikiDailySyncJob?.cancel()
+        wikiDailySyncJob = serviceScope.launch {
+            delay(15_000L)
+            while (isActive) {
+                runCatching {
+                    val settings = repository.appSettings.value
+                    if (settings.isConfluenceReady && repository.wikiOfflineStore.isDailySyncDue()) {
+                        val outcome = repository.wikiOfflineStore.syncFromServer(
+                            wikiClient = repository.wikiClient,
+                            settings = settings
+                        )
+                        if (outcome is ConfluenceSyncOutcome.AccountRevokedWipeTriggered) {
+                            repository.wipeAllProgramDataOnAccountDisabled(outcome.reason)
+                            NotificationHelper.showAccountWipedNotification(applicationContext, outcome.reason)
+                        }
+                    }
+                }
+                // Re-check every 30 minutes whether the 24-hour sync window is due
+                delay(30L * 60_000L)
+            }
+        }
+    }
+
     private fun stopPollingAndService() {
         pollingJob?.cancel()
+        watchlistPingJob?.cancel()
+        wikiDailySyncJob?.cancel()
         repository.updateSyncStatus { it.copy(isServiceRunning = false, isSyncing = false) }
         runCatching {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -334,13 +417,21 @@ class JiraMonitorService : Service() {
         const val ACTION_PROCESS_POSTPONED = "com.helpdesk.jiraagent.action.PROCESS_POSTPONED"
         const val ACTION_STOP = "com.helpdesk.jiraagent.action.STOP"
 
-        fun syncServiceState(context: Context) {
-            val repo = SettingsRepository.getInstance(context)
+        private fun shouldKeepServiceAlive(repo: SettingsRepository): Boolean {
             val settings = repo.appSettings.value
             val hasPostponed = repo.postponedTickets.value.isNotEmpty()
+            val hasWatchlistHosts = repo.watchlistHosts.value.isNotEmpty()
+            return (settings.isConfigured && settings.pollingEnabled) ||
+                hasPostponed ||
+                hasWatchlistHosts ||
+                settings.isConfluenceReady
+        }
+
+        fun syncServiceState(context: Context) {
+            val repo = SettingsRepository.getInstance(context)
             PostponeScheduler.scheduleNextAlarm(context)
 
-            if ((settings.isConfigured && settings.pollingEnabled) || hasPostponed) {
+            if (shouldKeepServiceAlive(repo)) {
                 val intent = Intent(context, JiraMonitorService::class.java).apply {
                     action = ACTION_START_OR_RESTART
                 }

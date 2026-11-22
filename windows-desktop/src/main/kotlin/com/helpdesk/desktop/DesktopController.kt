@@ -1,9 +1,13 @@
 package com.helpdesk.desktop
 
+import com.helpdesk.jiraagent.data.ConfluenceAccessCheckResult
 import com.helpdesk.jiraagent.data.ConfluenceAttachment
+import com.helpdesk.jiraagent.data.ConfluenceOfflineSnapshot
+import com.helpdesk.jiraagent.data.ConfluenceOfflineStore
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceSpace
+import com.helpdesk.jiraagent.data.ConfluenceSyncOutcome
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
@@ -115,7 +119,7 @@ data class DesktopUiState(
     val watchlistStatuses: List<WatchlistHostStatus> = emptyList(),
     val isCheckingWatchlist: Boolean = false,
 
-    // Confluence Wiki (w.csl.by)
+    // Confluence Wiki (w.csl.by offline-first + daily sync)
     val wikiSpaces: List<ConfluenceSpace> = emptyList(),
     val selectedWikiSpaceKey: String? = null,
     val wikiPages: List<ConfluencePageSummary> = emptyList(),
@@ -127,7 +131,12 @@ data class DesktopUiState(
     val wikiPageHistoryStack: List<ConfluencePageDetail> = emptyList(),
     val isLoadingWikiList: Boolean = false,
     val isLoadingWikiPage: Boolean = false,
+    val isSyncingWikiOfflineDb: Boolean = false,
+    val wikiSyncProgressText: String? = null,
+    val wikiOfflineSyncedAtLabel: String = "",
+    val wikiOfflinePagesCount: Int = 0,
     val wikiError: String? = null,
+    val openWatchlistToolboxStamp: Long = 0L,
 
     // Empty state GIF (#1 Roy & #7 Moss) + Habr.com RSS & built-in article reader
     val emptyGifIndex: Int = 0,
@@ -170,6 +179,7 @@ class DesktopController(
     val apiClient = JiraApiClient()
     val wikiClient = ConfluenceWikiClient()
     private val storage = DesktopStorage()
+    private val wikiOfflineStore = ConfluenceOfflineStore(storage.offlineWikiDir())
     private val jiraAttachmentMemoryCache = ConcurrentHashMap<String, ByteArray>()
 
     private val persisted = storage.loadState()
@@ -205,12 +215,16 @@ class DesktopController(
     val state: StateFlow<DesktopUiState> = _state.asStateFlow()
 
     private var pollingJob: Job? = null
+    private var watchlistBackgroundJob: Job? = null
+    private var wikiDailySyncJob: Job? = null
     private var onBringWindowToFront: (() -> Unit)? = null
     private var onSystemTrayNotify: ((title: String, message: String) -> Unit)? = null
 
     init {
         loadHabrFeed(force = false)
         restartPollingLoop()
+        startWatchlistBackgroundLoop()
+        startWikiDailySyncLoop()
         if (persisted.appSettings.isConfigured) {
             scope.launch {
                 refreshTickets(silent = true, isInitialBoot = true)
@@ -225,6 +239,164 @@ class DesktopController(
                 checkUpdates(manual = false)
             }
         }
+    }
+
+    /**
+     * Background loop that pings all entered `SSL / Узлы` hosts every 5 minutes
+     * (even when Help-CSL is minimized to the Windows system tray) and displays
+     * a popup + tray notification with the host's name if a host is offline.
+     */
+    private fun startWatchlistBackgroundLoop() {
+        watchlistBackgroundJob?.cancel()
+        watchlistBackgroundJob = scope.launch {
+            delay(8_000L)
+            while (true) {
+                runCatching {
+                    val cur = _state.value
+                    val hosts = cur.watchlistHosts
+                    if (hosts.isNotEmpty()) {
+                        val labels = cur.watchlistLabels
+                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(hosts)
+                        _state.update { it.copy(watchlistStatuses = statuses) }
+                        val offlineStatuses = statuses.filter { !it.isAlive }
+                        if (offlineStatuses.isNotEmpty()) {
+                            for (off in offlineStatuses) {
+                                val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(off.host, labels)
+                                val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(off.host, labels)
+                                onSystemTrayNotify?.invoke(
+                                    "🔴 Узел недоступен: $shortName",
+                                    "Узел «$fullName» не доступен (офлайн)."
+                                )
+                            }
+                            val firstOff = offlineStatuses.first()
+                            val firstShort = SysadminToolboxEngine.resolveWatchlistShortTitle(firstOff.host, labels)
+                            val popupSubtitle = if (offlineStatuses.size == 1) {
+                                val full = SysadminToolboxEngine.resolveWatchlistDisplayName(firstOff.host, labels)
+                                "Узел «$full» не доступен (офлайн — нет ответа на фоновую проверку)."
+                            } else {
+                                val allNames = offlineStatuses.joinToString(", ") {
+                                    SysadminToolboxEngine.resolveWatchlistDisplayName(it.host, labels)
+                                }
+                                "Недоступны узлы (${offlineStatuses.size}): $allNames"
+                            }
+                            val popupTitle = if (offlineStatuses.size == 1) {
+                                "🔴 Узел недоступен: $firstShort"
+                            } else {
+                                "🔴 Узлы недоступны (${offlineStatuses.size})"
+                            }
+                            val toast = DesktopToastAlert(
+                                id = "host_offline_${System.currentTimeMillis()}",
+                                title = popupTitle,
+                                subtitle = popupSubtitle,
+                                ticketKey = null,
+                                isStormSummary = true
+                            )
+                            DesktopSoundPlayer.playAlert(
+                                cur.settings.alertSoundPreset,
+                                cur.settings.customAlertSoundUri
+                            )
+                            DesktopNativePopupManager.showAlert(
+                                alert = toast,
+                                onTakeInWork = null,
+                                onOpen = {
+                                    onBringWindowToFront?.invoke()
+                                    _state.update {
+                                        it.copy(openWatchlistToolboxStamp = System.currentTimeMillis())
+                                    }
+                                },
+                                onDismissed = {}
+                            )
+                        }
+                    }
+                }
+                delay(SysadminToolboxEngine.WATCHLIST_BACKGROUND_PING_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
+     * Hydrates the offline Confluence database on startup and synchronizes with `w.csl.by`
+     * once per 24 hours. If `w.csl.by` is reachable and rejects account authorization,
+     * deletes the local database and all records created in the program.
+     */
+    private fun startWikiDailySyncLoop() {
+        wikiDailySyncJob?.cancel()
+        wikiDailySyncJob = scope.launch(Dispatchers.IO) {
+            wikiOfflineStore.getSnapshot()?.let { snap ->
+                applyOfflineWikiSnapshotToUi(snap)
+            }
+            val initialSettings = _state.value.settings
+            if (initialSettings.isConfluenceReady) {
+                if (wikiOfflineStore.isDailySyncDue()) {
+                    syncWikiOfflineDatabase(force = false)
+                } else {
+                    val access = wikiClient.verifyConfluenceAccountAccess(
+                        settings = initialSettings,
+                        hasExistingOfflineDatabase = wikiOfflineStore.hasOfflineSnapshot()
+                    )
+                    if (access is ConfluenceAccessCheckResult.AccountDisabledOrUnauthorized) {
+                        wipeAllProgramDataOnAccountDisabled(access.reason)
+                    }
+                }
+            }
+            while (true) {
+                delay(30L * 60_000L)
+                val settings = _state.value.settings
+                if (settings.isConfluenceReady && wikiOfflineStore.isDailySyncDue()) {
+                    syncWikiOfflineDatabase(force = false)
+                }
+            }
+        }
+    }
+
+    private fun wipeAllProgramDataOnAccountDisabled(reason: String) {
+        val cur = _state.value
+        wikiOfflineStore.clearOfflineDatabase()
+        wikiClient.clearSessionCache()
+        jiraAttachmentMemoryCache.clear()
+        wikiPageDetailCache.clear()
+        notifiedTicketKeys.clear()
+        deferredTicketKeys.clear()
+        lastStaleReminderByKey.clear()
+        baselineInitialized = false
+        seenChatIds = emptySet()
+
+        storage.wipeAllPersistedData(
+            keptServerUrl = cur.settings.serverUrl,
+            keptConfluenceUrl = cur.settings.confluenceUrl
+        )
+
+        val cleanedSettings = AppSettings(
+            serverUrl = cur.settings.serverUrl,
+            confluenceUrl = cur.settings.confluenceUrl
+        )
+        val wipeMsg = "🔒 Учётная запись отключена или авторизация на w.csl.by отклонена ($reason). " +
+            "Локальная офлайн-база Читалки и все записи программы удалены."
+
+        _state.value = DesktopUiState(
+            activeTab = DesktopMainTab.SETTINGS,
+            settings = cleanedSettings,
+            minimizeToTray = cur.minimizeToTray,
+            watchlistHosts = emptyList(),
+            watchlistLabels = emptyMap(),
+            watchlistStatuses = emptyList(),
+            errorBanner = wipeMsg,
+            wikiError = wipeMsg
+        )
+
+        onSystemTrayNotify?.invoke("🔒 База и записи удалены", wipeMsg)
+        DesktopNativePopupManager.showAlert(
+            alert = DesktopToastAlert(
+                id = "wipe_${System.currentTimeMillis()}",
+                title = "🔒 Учётная запись отключена",
+                subtitle = wipeMsg,
+                ticketKey = null,
+                isStormSummary = true
+            ),
+            onTakeInWork = null,
+            onOpen = { onBringWindowToFront?.invoke() },
+            onDismissed = {}
+        )
     }
 
     fun bindWindowActivator(activator: () -> Unit) {
@@ -1828,7 +2000,12 @@ class DesktopController(
     }
 
     suspend fun loadWikiImageBytes(url: String): ByteArray? {
-        return wikiClient.downloadProtectedBytes(url, _state.value.settings).getOrNull()
+        wikiOfflineStore.getCachedMediaBytes(url)?.let { return it }
+        val bytes = wikiClient.downloadProtectedBytes(url, _state.value.settings).getOrNull()
+        if (bytes != null) {
+            wikiOfflineStore.saveCachedMediaBytes(url, bytes)
+        }
+        return bytes
     }
 
     fun uploadDroppedFiles(files: List<File>) {
@@ -2246,79 +2423,150 @@ class DesktopController(
         }
     }
 
-    // --- Confluence Wiki (w.csl.by with Jira credentials) ---
+    // --- Confluence Wiki Offline-First Engine (w.csl.by with daily sync + account revocation wipe) ---
 
     private val wikiPageDetailCache = java.util.concurrent.ConcurrentHashMap<String, ConfluencePageDetail>()
 
+    private fun applyOfflineWikiSnapshotToUi(
+        snapshot: ConfluenceOfflineSnapshot,
+        spaceKeyOverride: String? = _state.value.selectedWikiSpaceKey
+    ) {
+        val effectiveSpace = spaceKeyOverride
+            ?: snapshot.spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
+            ?: snapshot.spaces.firstOrNull { it.type == "global" }?.key
+            ?: snapshot.spaces.firstOrNull()?.key
+        val roots = wikiOfflineStore.getRootPagesForSpace(effectiveSpace)
+        val autoSelected = _state.value.selectedWikiPage
+            ?: roots.firstOrNull()?.let { wikiOfflineStore.getPageDetail(it.id) }
+        _state.update { st ->
+            st.copy(
+                wikiSpaces = snapshot.spaces,
+                selectedWikiSpaceKey = effectiveSpace,
+                wikiPages = roots,
+                wikiChildPagesByParent = snapshot.childPagesByParent,
+                selectedWikiPage = autoSelected,
+                wikiOfflineSyncedAtLabel = snapshot.syncedAtLabel,
+                wikiOfflinePagesCount = snapshot.totalPagesCount,
+                wikiError = null
+            )
+        }
+    }
+
     fun loadWikiInitialIfNeeded() {
+        scope.launch(Dispatchers.IO) {
+            val snap = wikiOfflineStore.getSnapshot()
+            if (snap != null && snap.pagesById.isNotEmpty()) {
+                applyOfflineWikiSnapshotToUi(snap)
+                if (_state.value.settings.isConfluenceReady && wikiOfflineStore.isDailySyncDue()) {
+                    syncWikiOfflineDatabase(force = false)
+                }
+            } else if (!_state.value.isSyncingWikiOfflineDb && !_state.value.isLoadingWikiList) {
+                syncWikiOfflineDatabase(force = true)
+            }
+        }
+    }
+
+    fun syncWikiOfflineDatabase(force: Boolean = true) {
         val cur = _state.value
-        if (cur.wikiSpaces.isEmpty() && cur.wikiPages.isEmpty() && !cur.isLoadingWikiList) {
-            refreshWikiSpacesAndPages()
+        if (!cur.settings.isConfluenceReady) {
+            if (!wikiOfflineStore.hasOfflineSnapshot()) {
+                _state.update {
+                    it.copy(
+                        wikiError = "Укажите логин и пароль Jira во вкладке «Настройки», чтобы загрузить офлайн-базу Читалки (w.csl.by)."
+                    )
+                }
+            }
+            return
+        }
+        if (cur.isSyncingWikiOfflineDb) return
+        if (!force && !wikiOfflineStore.isDailySyncDue()) return
+
+        _state.update {
+            it.copy(
+                isSyncingWikiOfflineDb = true,
+                isLoadingWikiList = !wikiOfflineStore.hasOfflineSnapshot(),
+                wikiSyncProgressText = "Подключение к w.csl.by…",
+                wikiError = null
+            )
+        }
+        scope.launch(Dispatchers.IO) {
+            val outcome = wikiOfflineStore.syncFromServer(
+                wikiClient = wikiClient,
+                settings = cur.settings,
+                onProgress = { msg ->
+                    _state.update { it.copy(wikiSyncProgressText = msg) }
+                }
+            )
+            when (outcome) {
+                is ConfluenceSyncOutcome.Synced -> {
+                    wikiPageDetailCache.clear()
+                    applyOfflineWikiSnapshotToUi(outcome.snapshot)
+                    _state.update {
+                        it.copy(
+                            isSyncingWikiOfflineDb = false,
+                            isLoadingWikiList = false,
+                            wikiSyncProgressText = null,
+                            wikiError = null
+                        )
+                    }
+                }
+                is ConfluenceSyncOutcome.OfflineUsingCache -> {
+                    outcome.snapshot?.let { applyOfflineWikiSnapshotToUi(it) }
+                    _state.update {
+                        it.copy(
+                            isSyncingWikiOfflineDb = false,
+                            isLoadingWikiList = false,
+                            wikiSyncProgressText = null,
+                            wikiError = if (outcome.snapshot != null) null else outcome.message
+                        )
+                    }
+                }
+                is ConfluenceSyncOutcome.RequiresInitialWeb2fa -> {
+                    _state.update {
+                        it.copy(
+                            isSyncingWikiOfflineDb = false,
+                            isLoadingWikiList = false,
+                            wikiSyncProgressText = null,
+                            wikiError = outcome.message
+                        )
+                    }
+                }
+                is ConfluenceSyncOutcome.AccountRevokedWipeTriggered -> {
+                    wipeAllProgramDataOnAccountDisabled(outcome.reason)
+                }
+            }
         }
     }
 
     fun refreshWikiSpacesAndPages(spaceKeyOverride: String? = _state.value.selectedWikiSpaceKey) {
-        val cur = _state.value
-        if (!cur.settings.isConfluenceReady) {
+        if (spaceKeyOverride != null && wikiOfflineStore.hasOfflineSnapshot()) {
+            val snap = wikiOfflineStore.getSnapshot()
+            if (snap != null) {
+                applyOfflineWikiSnapshotToUi(snap, spaceKeyOverride)
+                return
+            }
+        }
+        syncWikiOfflineDatabase(force = true)
+    }
+
+    fun selectWikiSpace(spaceKey: String?) {
+        val snap = wikiOfflineStore.getSnapshot()
+        if (snap != null && snap.pagesById.isNotEmpty()) {
+            val roots = wikiOfflineStore.getRootPagesForSpace(spaceKey)
+            val firstDetail = roots.firstOrNull()?.let { wikiOfflineStore.getPageDetail(it.id) }
             _state.update {
                 it.copy(
-                    wikiError = "Укажите логин и пароль Jira во вкладке «Настройки», чтобы войти в Confluence (w.csl.by)."
+                    selectedWikiSpaceKey = spaceKey,
+                    wikiPages = roots,
+                    selectedWikiPage = firstDetail,
+                    wikiPageHistoryStack = emptyList(),
+                    wikiSearchResults = null,
+                    wikiSearchQuery = "",
+                    wikiError = null
                 )
             }
             return
         }
-        _state.update { it.copy(isLoadingWikiList = true, wikiError = null) }
-        scope.launch {
-            val spacesRes = wikiClient.fetchSpaces(cur.settings)
-            val spaces = spacesRes.getOrDefault(_state.value.wikiSpaces)
-            val effectiveSpaceKey = spaceKeyOverride
-                ?: spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
-                ?: spaces.firstOrNull { it.type == "global" }?.key
-                ?: spaces.firstOrNull()?.key
-            val homepageHint = spaces.firstOrNull { it.key.equals(effectiveSpaceKey, ignoreCase = true) }?.homepageId
-
-            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(
-                spaceKey = effectiveSpaceKey,
-                settings = cur.settings,
-                homepageIdHint = homepageHint
-            )
-            pagesRes.onSuccess { pages ->
-                _state.update { st ->
-                    st.copy(
-                        isLoadingWikiList = false,
-                        wikiSpaces = spaces,
-                        selectedWikiSpaceKey = effectiveSpaceKey,
-                        wikiPages = pages,
-                        wikiError = null
-                    )
-                }
-                if (_state.value.selectedWikiPage == null && pages.isNotEmpty()) {
-                    openWikiPage(pages.first().id)
-                }
-            }.onFailure { err ->
-                spacesRes.onFailure { spErr ->
-                    _state.update {
-                        it.copy(
-                            isLoadingWikiList = false,
-                            selectedWikiSpaceKey = effectiveSpaceKey,
-                            wikiError = spErr.message ?: err.message ?: "Не удалось подключиться к w.csl.by"
-                        )
-                    }
-                    return@launch
-                }
-                _state.update {
-                    it.copy(
-                        isLoadingWikiList = false,
-                        wikiSpaces = spaces,
-                        selectedWikiSpaceKey = effectiveSpaceKey,
-                        wikiError = err.message ?: "Ошибка чтения страниц Confluence"
-                    )
-                }
-            }
-        }
-    }
-
-    fun selectWikiSpace(spaceKey: String?) {
         _state.update {
             it.copy(
                 selectedWikiSpaceKey = spaceKey,
@@ -2328,7 +2576,7 @@ class DesktopController(
                 wikiSearchQuery = ""
             )
         }
-        refreshWikiSpacesAndPages(spaceKeyOverride = spaceKey)
+        syncWikiOfflineDatabase(force = true)
     }
 
     fun searchWikiPages(query: String) {
@@ -2336,6 +2584,16 @@ class DesktopController(
         val clean = query.trim()
         if (clean.isEmpty()) {
             _state.update { it.copy(wikiSearchResults = null) }
+            return
+        }
+        if (wikiOfflineStore.hasOfflineSnapshot()) {
+            scope.launch(Dispatchers.Default) {
+                val found = wikiOfflineStore.searchOffline(clean, _state.value.selectedWikiSpaceKey)
+                _state.update { it.copy(isLoadingWikiList = false, wikiSearchResults = found, wikiError = null) }
+                if (found.isNotEmpty()) {
+                    openWikiPage(found.first().id, resetHistory = true)
+                }
+            }
             return
         }
         val cur = _state.value
@@ -2365,8 +2623,14 @@ class DesktopController(
             _state.update { it.copy(wikiExpandedPageIds = it.wikiExpandedPageIds - pageId) }
             return
         }
-        _state.update { it.copy(wikiExpandedPageIds = it.wikiExpandedPageIds + pageId) }
-        if (!cur.wikiChildPagesByParent.containsKey(pageId)) {
+        val offlineChildren = wikiOfflineStore.getChildPages(pageId)
+        _state.update {
+            val nextChildren = if (offlineChildren.isNotEmpty()) {
+                it.wikiChildPagesByParent + (pageId to offlineChildren)
+            } else it.wikiChildPagesByParent
+            it.copy(wikiExpandedPageIds = it.wikiExpandedPageIds + pageId, wikiChildPagesByParent = nextChildren)
+        }
+        if (offlineChildren.isEmpty() && !cur.wikiChildPagesByParent.containsKey(pageId) && cur.settings.isConfluenceReady) {
             scope.launch {
                 wikiClient.fetchChildPages(pageId, _state.value.settings).onSuccess { children ->
                     _state.update { st ->
@@ -2383,7 +2647,7 @@ class DesktopController(
         resetHistory: Boolean = false
     ) {
         val cur = _state.value
-        if (pageId.isBlank() || !cur.settings.isConfluenceReady) return
+        if (pageId.isBlank()) return
         if (cur.selectedWikiPage?.id == pageId) return
 
         val existingIdx = if (resetHistory) -1 else cur.wikiPageHistoryStack.indexOfFirst { it.id == pageId }
@@ -2400,24 +2664,36 @@ class DesktopController(
             else -> cur.wikiPageHistoryStack + cur.selectedWikiPage
         }
 
-        val cached = wikiPageDetailCache[pageId]
-        if (cached != null) {
-            _state.update {
-                it.copy(
-                    selectedWikiPage = cached,
+        val offlineDetail = wikiOfflineStore.getPageDetail(pageId) ?: wikiPageDetailCache[pageId]
+        if (offlineDetail != null) {
+            _state.update { st ->
+                val nextChildren = if (offlineDetail.childPages.isNotEmpty()) {
+                    st.wikiChildPagesByParent + (offlineDetail.id to offlineDetail.childPages)
+                } else st.wikiChildPagesByParent
+                val parentId = offlineDetail.breadcrumbs.lastOrNull()?.id
+                val parentSiblings = if (!parentId.isNullOrBlank()) wikiOfflineStore.getChildPages(parentId) else emptyList()
+                val withSiblings = if (!parentId.isNullOrBlank() && parentSiblings.isNotEmpty()) {
+                    nextChildren + (parentId to parentSiblings)
+                } else nextChildren
+                st.copy(
+                    selectedWikiPage = offlineDetail,
                     wikiPageHistoryStack = nextHistory,
+                    wikiChildPagesByParent = withSiblings,
                     isLoadingWikiPage = false,
                     wikiError = null
                 )
             }
-        } else {
-            _state.update { it.copy(isLoadingWikiPage = true, wikiError = null) }
+            return
         }
+
+        if (!cur.settings.isConfluenceReady) return
+        _state.update { it.copy(isLoadingWikiPage = true, wikiError = null) }
 
         scope.launch {
             wikiClient.fetchPageDetail(pageId, cur.settings)
                 .onSuccess { detail ->
                     wikiPageDetailCache[pageId] = detail
+                    wikiOfflineStore.upsertPageDetailInCache(detail)
                     _state.update { st ->
                         val nextChildren = if (detail.childPages.isNotEmpty()) {
                             st.wikiChildPagesByParent + (detail.id to detail.childPages)
@@ -2431,14 +2707,6 @@ class DesktopController(
                             wikiChildPagesByParent = nextChildren,
                             wikiError = null
                         )
-                    }
-                    val parentId = detail.breadcrumbs.lastOrNull()?.id
-                    if (!parentId.isNullOrBlank() && !_state.value.wikiChildPagesByParent.containsKey(parentId)) {
-                        wikiClient.fetchChildPages(parentId, cur.settings).onSuccess { siblings ->
-                            _state.update { st ->
-                                st.copy(wikiChildPagesByParent = st.wikiChildPagesByParent + (parentId to siblings))
-                            }
-                        }
                     }
                 }
                 .onFailure { err ->
@@ -2471,19 +2739,11 @@ class DesktopController(
         _state.update {
             it.copy(
                 activeTab = DesktopMainTab.WIKI,
-                selectedWikiSpaceKey = null,
                 wikiSearchQuery = clean
             )
         }
         if (clean.isNotEmpty()) {
             searchWikiPages(clean)
-            if (_state.value.wikiSpaces.isEmpty()) {
-                scope.launch {
-                    wikiClient.fetchSpaces(_state.value.settings).onSuccess { spaces ->
-                        _state.update { st -> st.copy(wikiSpaces = spaces) }
-                    }
-                }
-            }
         } else {
             loadWikiInitialIfNeeded()
         }
@@ -2530,6 +2790,6 @@ class DesktopController(
         val updated = _state.value.settings.copy(confluenceToken = token.trim())
         saveSettings(updated)
         wikiClient.clearSessionCache()
-        refreshWikiSpacesAndPages()
+        syncWikiOfflineDatabase(force = true)
     }
 }

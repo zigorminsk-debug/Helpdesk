@@ -15,12 +15,13 @@ class BootReceiver : BroadcastReceiver() {
         PostponeScheduler.scheduleNextAlarm(context)
 
         val hasPostponed = repo.postponedTickets.value.isNotEmpty()
-        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed) return
+        val hasWatchlist = repo.watchlistHosts.value.isNotEmpty()
+        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed && !hasWatchlist && !settings.isConfluenceReady) return
 
         when (action) {
             Intent.ACTION_BOOT_COMPLETED,
             "android.intent.action.QUICKBOOT_POWERON" -> {
-                if (settings.startOnBoot || hasPostponed) {
+                if (settings.startOnBoot || hasPostponed || hasWatchlist) {
                     JiraMonitorService.syncServiceState(context)
                 }
             }

@@ -27,13 +27,16 @@ object NotificationHelper {
 
     const val CHANNEL_CLIENT_BANNER = "help_csl_urgent_banner_v4"
     const val CHANNEL_ADMIN_CHAT = "help_csl_admin_chat_v1"
+    const val CHANNEL_HOST_MONITOR = "help_csl_host_monitor_v1"
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
     const val UPDATE_NOTIFICATION_ID = 1002
+    const val SECURITY_WIPE_NOTIFICATION_ID = 1009
     const val EXTRA_OPEN_TICKET_KEY = "extra_open_ticket_key"
     const val EXTRA_TRIGGER_APP_UPDATE = "extra_trigger_app_update"
     const val EXTRA_OPEN_ADMIN_CHAT = "extra_open_admin_chat"
+    const val EXTRA_OPEN_WATCHLIST_MONITOR = "extra_open_watchlist_monitor"
 
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -78,7 +81,22 @@ object NotificationHelper {
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
 
-        manager.createNotificationChannels(listOf(bannerChannel, chatChannel, statusChannel))
+        val hostMonitorChannel = NotificationChannel(
+            CHANNEL_HOST_MONITOR,
+            "Мониторинг узлов SSL / Офлайн-оповещения",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Уведомления о недоступности внесённых узлов и серверов (проверка раз в 5 минут)"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0L, 250L, 120L, 250L)
+            enableLights(true)
+            lightColor = 0xFFD93025.toInt()
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+
+        manager.createNotificationChannels(
+            listOf(bannerChannel, chatChannel, hostMonitorChannel, statusChannel)
+        )
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
@@ -458,5 +476,88 @@ object NotificationHelper {
             5000 + (message.id.hashCode() and 0x7FFFFFFF) % 10_000,
             notification
         )
+    }
+
+    private fun hostNotificationId(hostKey: String): Int =
+        40_000 + (hostKey.lowercase().hashCode() and 0x7FFF)
+
+    @SuppressLint("MissingPermission")
+    fun showHostOfflineNotification(
+        context: Context,
+        hostKey: String,
+        shortTitle: String,
+        fullDisplayName: String
+    ) {
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val openToolboxIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_WATCHLIST_MONITOR, true)
+        }
+        val notifId = hostNotificationId(hostKey)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notifId,
+            openToolboxIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = "🔴 Узел недоступен: $shortTitle"
+        val body = "Узел «$fullDisplayName» не доступен (офлайн — нет ответа на фоновую проверку)."
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_HOST_MONITOR)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFD93025.toInt())
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(false)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Открыть SSL / Узлы", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(notifId, notification)
+    }
+
+    fun cancelHostOfflineNotification(context: Context, hostKey: String) {
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(hostNotificationId(hostKey))
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showAccountWipedNotification(context: Context, reason: String) {
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            SECURITY_WIPE_NOTIFICATION_ID,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val body = "Авторизация на w.csl.by не прошла ($reason). Локальная база Читалки и все записи программы удалены."
+        val notification = NotificationCompat.Builder(context, CHANNEL_HOST_MONITOR)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFD93025.toInt())
+            .setContentTitle("🔒 Учётная запись отключена — база очищена")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        NotificationManagerCompat.from(context).notify(SECURITY_WIPE_NOTIFICATION_ID, notification)
     }
 }

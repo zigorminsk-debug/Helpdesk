@@ -10,6 +10,7 @@ import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
+import com.helpdesk.jiraagent.domain.WatchlistHostStatus
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AlertSoundPreset
@@ -121,6 +122,21 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _watchlistLabels = MutableStateFlow(loadWatchlistLabels())
     val watchlistLabels: StateFlow<Map<String, String>> = _watchlistLabels.asStateFlow()
+
+    private val _watchlistStatuses = MutableStateFlow<List<WatchlistHostStatus>>(emptyList())
+    val watchlistStatuses: StateFlow<List<WatchlistHostStatus>> = _watchlistStatuses.asStateFlow()
+
+    private val _securityWipeNotice = MutableStateFlow<String?>(null)
+    val securityWipeNotice: StateFlow<String?> = _securityWipeNotice.asStateFlow()
+
+    val wikiOfflineStore: ConfluenceOfflineStore =
+        ConfluenceOfflineStore(java.io.File(appContext.filesDir, "confluence_offline"))
+
+    val wikiClient: ConfluenceWikiClient = ConfluenceWikiClient().apply {
+        externalCookieProvider = { url ->
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+        }
+    }
 
     private val _ticketStopwatches = MutableStateFlow(loadTicketStopwatches())
     val ticketStopwatches: StateFlow<Map<String, TicketStopwatchEntry>> = _ticketStopwatches.asStateFlow()
@@ -922,9 +938,82 @@ class SettingsRepository private constructor(context: Context) {
         return runCatching {
             val type = object : TypeToken<List<String>>() {}.type
             gson.fromJson<List<String>>(json, type)?.filter { it.isNotBlank() }
-                ?.ifEmpty { SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS }
-                ?: SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS
+                ?: emptyList()
         }.getOrDefault(SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
+    }
+
+    fun updateWatchlistStatuses(statuses: List<WatchlistHostStatus>) {
+        _watchlistStatuses.value = statuses
+    }
+
+    fun clearSecurityWipeNotice() {
+        _securityWipeNotice.value = null
+    }
+
+    /**
+     * Triggered when `w.csl.by` is reachable and rejects user authentication (account disabled / revoked).
+     * Completely deletes the local offline Confluence database AND deletes all records created in the program.
+     */
+    @Synchronized
+    fun wipeAllProgramDataOnAccountDisabled(reason: String) {
+        // 1. Delete offline Confluence database + media + session caches
+        wikiOfflineStore.clearOfflineDatabase()
+        wikiClient.clearSessionCache()
+        runCatching {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching {
+                    android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                    android.webkit.CookieManager.getInstance().flush()
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                }
+            }
+        }
+
+        // 2. Delete exported / cached files
+        runCatching { java.io.File(appContext.cacheDir, "service_acts").deleteRecursively() }
+        runCatching { java.io.File(appContext.cacheDir, "wiki_attachments").deleteRecursively() }
+
+        // 3. Wipe SharedPreferences & EncryptedSharedPreferences
+        val keptServerUrl = _appSettings.value.serverUrl
+        val keptWikiUrl = _appSettings.value.confluenceUrl
+        prefs.edit().clear()
+            .putString(KEY_SERVER_URL, keptServerUrl)
+            .putString(KEY_CONFLUENCE_URL, keptWikiUrl)
+            .putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION)
+            .apply()
+        cachePrefs.edit().clear()
+            .putString(KEY_WATCHLIST_HOSTS_JSON, "[]")
+            .apply()
+
+        // 4. Reset all in-memory state flows of program records
+        _tickets.value = emptyList()
+        _postponedTickets.value = emptyList()
+        _resolvedChatRoomKey.value = ""
+        _chatMessages.value = emptyList()
+        _unreadChatCount.value = 0
+        _pinnedShiftNote.value = ""
+        _offlineQueuedActions.value = emptyList()
+        _clientDossierNotes.value = emptyMap()
+        _clientPassports.value = emptyMap()
+        _watchlistHosts.value = emptyList()
+        _watchlistLabels.value = emptyMap()
+        _watchlistStatuses.value = emptyList()
+        _ticketStopwatches.value = emptyMap()
+        _pendingCallSession.value = null
+        _repairItems.value = emptyList()
+        _resolvedRepairRoomKey.value = ""
+        _clientDirectory.value = emptyList()
+        _appSettings.value = loadAppSettings()
+        _filterSettings.value = loadFilterSettings()
+        _syncStatus.value = SyncStatus(
+            isServiceRunning = false,
+            isSyncing = false,
+            lastError = reason
+        )
+        _securityWipeNotice.value =
+            "🔒 Учётная запись отключена или не прошла авторизацию на w.csl.by. " +
+                "Локальная офлайн-база Читалки и все записи программы удалены."
+        runCatching { HelpCslAppWidgetProvider.requestUpdateAll(appContext) }
     }
 
     private fun loadWatchlistLabels(): Map<String, String> {

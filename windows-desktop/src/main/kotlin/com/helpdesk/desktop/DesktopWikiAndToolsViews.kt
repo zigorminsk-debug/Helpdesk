@@ -101,7 +101,7 @@ fun DesktopWikiWorkspace(
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 OutlinedButton(
-                                    onClick = { controller.refreshWikiSpacesAndPages() },
+                                    onClick = { controller.syncWikiOfflineDatabase(force = true) },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
                                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
                                 ) {
@@ -190,8 +190,41 @@ fun DesktopWikiWorkspace(
                     }
                 }
 
-                if (state.isLoadingWikiList) {
+                if (state.isLoadingWikiList || state.isSyncingWikiOfflineDb) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
+                }
+
+                if (state.isSyncingWikiOfflineDb && !state.wikiSyncProgressText.isNullOrBlank()) {
+                    Text(
+                        text = "⏬ ${state.wikiSyncProgressText}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = DesktopColors.CslOrange
+                    )
+                } else if (state.wikiOfflinePagesCount > 0) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "💾 Офлайн: ${state.wikiOfflinePagesCount} стр. · Синхр.: ${state.wikiOfflineSyncedAtLabel} (раз в день)",
+                            fontSize = 10.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "🔄 Синхр.",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = DesktopColors.CslOrange,
+                            modifier = Modifier
+                                .clickable { controller.syncWikiOfflineDatabase(force = true) }
+                                .padding(start = 6.dp)
+                        )
+                    }
                 }
 
                 state.wikiError?.let { err ->
@@ -1593,9 +1626,10 @@ fun DesktopKnowledgeArchiveDialog(
 fun DesktopSysadminToolboxDialog(
     state: DesktopUiState,
     controller: DesktopController,
+    initialTabIndex: Int = 0,
     onDismiss: () -> Unit
 ) {
-    var tabIndex by remember { mutableStateOf(0) }
+    var tabIndex by remember { mutableStateOf(initialTabIndex.coerceIn(0, 3)) }
     val tabs = listOf("⚡ Wake-on-LAN", "🌐 IP / Подсети", "🔐 Генератор паролей", "🛡 Монитор SSL и узлов")
     val scope = rememberCoroutineScope()
 

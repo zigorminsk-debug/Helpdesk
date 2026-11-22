@@ -88,15 +88,7 @@ fun ConfluenceWikiScreen(
     viewModel: MainViewModel
 ) {
     val context = LocalContext.current
-    var mode by remember {
-        mutableStateOf(
-            if (wikiState.pages.isNotEmpty() || settings.confluenceToken.isNotBlank()) {
-                WikiDisplayMode.READER
-            } else {
-                WikiDisplayMode.WEBVIEW
-            }
-        )
-    }
+    var mode by remember { mutableStateOf(WikiDisplayMode.READER) }
     var searchInput by remember(wikiState.searchQuery) { mutableStateOf(wikiState.searchQuery) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var canWebGoBack by remember { mutableStateOf(false) }
@@ -105,9 +97,11 @@ fun ConfluenceWikiScreen(
         viewModel.loadWikiInitialIfNeeded()
     }
 
-    LaunchedEffect(wikiState.requiresWeb2faLogin) {
-        if (wikiState.requiresWeb2faLogin && wikiState.pages.isEmpty()) {
+    LaunchedEffect(wikiState.requiresWeb2faLogin, wikiState.offlinePagesCount) {
+        if (wikiState.requiresWeb2faLogin && wikiState.offlinePagesCount == 0 && wikiState.pages.isEmpty()) {
             mode = WikiDisplayMode.WEBVIEW
+        } else if (!wikiState.requiresWeb2faLogin && wikiState.offlinePagesCount > 0 && mode == WikiDisplayMode.WEBVIEW) {
+            mode = WikiDisplayMode.READER
         }
     }
 
@@ -184,8 +178,8 @@ fun ConfluenceWikiScreen(
                         selected = mode == WikiDisplayMode.READER,
                         onClick = {
                             mode = WikiDisplayMode.READER
-                            if (wikiState.pages.isEmpty() && !wikiState.isLoadingList) {
-                                viewModel.refreshWikiSpacesAndPages()
+                            if (wikiState.pages.isEmpty() && !wikiState.isLoadingList && !wikiState.isSyncingOfflineDb) {
+                                viewModel.loadWikiInitialIfNeeded()
                             }
                         },
                         label = { Text("📖 Читалка", fontSize = 11.5.sp, maxLines = 1, softWrap = false) },
@@ -198,11 +192,11 @@ fun ConfluenceWikiScreen(
                     IconButton(
                         onClick = {
                             if (mode == WikiDisplayMode.WEBVIEW) webViewRef?.reload()
-                            else viewModel.refreshWikiSpacesAndPages()
+                            else viewModel.syncWikiOfflineDatabase(force = true)
                         },
                         modifier = Modifier.size(30.dp)
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = Color.White)
+                        Icon(Icons.Default.Refresh, contentDescription = "Синхронизировать с w.csl.by", tint = Color.White)
                     }
                 }
             }
@@ -319,8 +313,41 @@ private fun ConfluenceAndroidBrowserList(
             }
         }
 
-        if (wikiState.isLoadingList || wikiState.isLoadingPage) {
+        if (wikiState.isLoadingList || wikiState.isLoadingPage || wikiState.isSyncingOfflineDb) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
+        }
+
+        if (wikiState.isSyncingOfflineDb && !wikiState.syncProgressText.isNullOrBlank()) {
+            Text(
+                text = "⏬ ${wikiState.syncProgressText}",
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = CslOrange
+            )
+        } else if (wikiState.offlinePagesCount > 0) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "💾 Офлайн-база: ${wikiState.offlinePagesCount} стр. · Синхр.: ${wikiState.offlineSyncedAtLabel} (раз в день)",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "🔄 Синхр.",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = CslOrange,
+                    modifier = Modifier
+                        .clickable { viewModel.syncWikiOfflineDatabase(force = true) }
+                        .padding(start = 8.dp, top = 2.dp, bottom = 2.dp)
+                )
+            }
         }
 
         wikiState.errorMessage?.let { err ->

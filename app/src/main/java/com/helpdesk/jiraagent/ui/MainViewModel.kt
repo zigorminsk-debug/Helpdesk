@@ -11,10 +11,13 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.helpdesk.jiraagent.data.ConfluenceAccessCheckResult
 import com.helpdesk.jiraagent.data.ConfluenceAttachment
+import com.helpdesk.jiraagent.data.ConfluenceOfflineSnapshot
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceSpace
+import com.helpdesk.jiraagent.data.ConfluenceSyncOutcome
 import com.helpdesk.jiraagent.data.ConfluenceTwoFactorAuthException
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.data.InAppBannerAlert
@@ -142,7 +145,7 @@ data class ConfluenceWikiUiState(
     val spaces: List<ConfluenceSpace> = emptyList(),
     val selectedSpaceKey: String? = null,
     val pages: List<ConfluencePageSummary> = emptyList(),
-    val childPagesByParent: Map<String, List<ConfluencePageSummary>> = emptyMap(),
+    val childPagesByParent: Map<String, List<ConfluencePageSummary>> = emptyList<Pair<String, List<ConfluencePageSummary>>>().toMap(),
     val expandedPageIds: Set<String> = emptySet(),
     val searchQuery: String = "",
     val searchResults: List<ConfluencePageSummary>? = null,
@@ -150,6 +153,10 @@ data class ConfluenceWikiUiState(
     val pageHistoryStack: List<ConfluencePageDetail> = emptyList(),
     val isLoadingList: Boolean = false,
     val isLoadingPage: Boolean = false,
+    val isSyncingOfflineDb: Boolean = false,
+    val syncProgressText: String? = null,
+    val offlineSyncedAtLabel: String = "",
+    val offlinePagesCount: Int = 0,
     val requiresWeb2faLogin: Boolean = false,
     val errorMessage: String? = null
 )
@@ -159,11 +166,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private val repository = SettingsRepository.getInstance(appContext)
     private val apiClient = JiraApiClient()
-    val wikiClient = ConfluenceWikiClient().apply {
-        externalCookieProvider = { url ->
-            runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
-        }
-    }
+    val wikiClient: ConfluenceWikiClient = repository.wikiClient
+    private val wikiOfflineStore = repository.wikiOfflineStore
 
     val appSettings: StateFlow<AppSettings> = repository.appSettings
     val filterSettings: StateFlow<FilterSettings> = repository.filterSettings
@@ -193,8 +197,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearchingKnowledge = MutableStateFlow(false)
     val isSearchingKnowledge: StateFlow<Boolean> = _isSearchingKnowledge.asStateFlow()
 
-    private val _watchlistStatuses = MutableStateFlow<List<WatchlistHostStatus>>(emptyList())
-    val watchlistStatuses: StateFlow<List<WatchlistHostStatus>> = _watchlistStatuses.asStateFlow()
+    val watchlistStatuses: StateFlow<List<WatchlistHostStatus>> = repository.watchlistStatuses
+    val securityWipeNotice: StateFlow<String?> = repository.securityWipeNotice
 
     private val _isCheckingWatchlist = MutableStateFlow(false)
     val isCheckingWatchlist: StateFlow<Boolean> = _isCheckingWatchlist.asStateFlow()
@@ -247,6 +251,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _openChatTabStamp = MutableStateFlow(0L)
     val openChatTabStamp: StateFlow<Long> = _openChatTabStamp.asStateFlow()
 
+    private val _openWatchlistStamp = MutableStateFlow(0L)
+    val openWatchlistStamp: StateFlow<Long> = _openWatchlistStamp.asStateFlow()
+
+    fun requestOpenWatchlistMonitor() {
+        _openWatchlistStamp.value = System.currentTimeMillis()
+    }
+
     private val _isCreatingTicket = MutableStateFlow(false)
     val isCreatingTicket: StateFlow<Boolean> = _isCreatingTicket.asStateFlow()
 
@@ -282,6 +293,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         JiraMonitorService.syncServiceState(appContext)
+        viewModelScope.launch {
+            repository.securityWipeNotice.collect { notice ->
+                if (!notice.isNullOrBlank()) {
+                    wikiPageDetailCache.clear()
+                    _wikiUiState.value = ConfluenceWikiUiState(errorMessage = notice)
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            wikiOfflineStore.getSnapshot()?.let { snap ->
+                applyOfflineSnapshotToUi(snap)
+            }
+            if (repository.appSettings.value.isConfluenceReady) {
+                if (wikiOfflineStore.isDailySyncDue()) {
+                    syncWikiOfflineDatabase(force = false)
+                } else {
+                    verifyWikiAccountOnStartup()
+                }
+            }
+        }
         if (repository.appSettings.value.autoCheckUpdates) {
             checkForAppUpdate(manual = false)
         }
@@ -289,6 +320,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             syncRepairRegistry()
             refreshClientsDirectory(manual = false)
         }
+    }
+
+    fun dismissSecurityWipeNotice() {
+        repository.clearSecurityWipeNotice()
     }
 
     fun checkForAppUpdate(manual: Boolean, autoStartDownload: Boolean = false) {
@@ -2528,6 +2563,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updatedLabels[normKey] = cleanLabel
             repository.saveWatchlistLabels(updatedLabels)
         }
+        JiraMonitorService.syncServiceState(appContext)
         refreshWatchlistHosts()
     }
 
@@ -2554,19 +2590,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val updatedLabels = repository.watchlistLabels.value.toMutableMap()
         updatedLabels.remove(normKey)
         repository.saveWatchlistLabels(updatedLabels)
-        _watchlistStatuses.update { list ->
-            list.filterNot {
+        NotificationHelper.cancelHostOfflineNotification(appContext, normKey)
+        repository.updateWatchlistStatuses(
+            repository.watchlistStatuses.value.filterNot {
                 SysadminToolboxEngine.normalizeHostKey(it.host) == normKey || it.host.equals(host, ignoreCase = true)
             }
-        }
+        )
+        JiraMonitorService.syncServiceState(appContext)
     }
 
     fun refreshWatchlistHosts() {
         val hosts = repository.watchlistHosts.value
-        if (hosts.isEmpty() || _isCheckingWatchlist.value) return
+        if (hosts.isEmpty() || _isCheckingWatchlist.value) {
+            if (hosts.isEmpty()) repository.updateWatchlistStatuses(emptyList())
+            return
+        }
         viewModelScope.launch {
             _isCheckingWatchlist.value = true
-            _watchlistStatuses.value = SysadminToolboxEngine.checkWatchlistHosts(hosts)
+            val checked = SysadminToolboxEngine.checkWatchlistHosts(hosts)
+            repository.updateWatchlistStatuses(checked)
+            for (st in checked) {
+                if (st.isAlive) {
+                    NotificationHelper.cancelHostOfflineNotification(
+                        appContext,
+                        SysadminToolboxEngine.normalizeHostKey(st.host)
+                    )
+                }
+            }
             _isCheckingWatchlist.value = false
         }
     }
@@ -2616,72 +2666,155 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Confluence Wiki (`w.csl.by` with Jira credentials) ---
+    // --- Confluence Wiki Offline-First Engine (`w.csl.by` with daily sync + account revocation wipe) ---
 
     private val wikiPageDetailCache = java.util.concurrent.ConcurrentHashMap<String, ConfluencePageDetail>()
 
+    private fun applyOfflineSnapshotToUi(
+        snapshot: ConfluenceOfflineSnapshot,
+        spaceKeyOverride: String? = _wikiUiState.value.selectedSpaceKey
+    ) {
+        val effectiveSpace = spaceKeyOverride
+            ?: snapshot.spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
+            ?: snapshot.spaces.firstOrNull { it.type == "global" }?.key
+            ?: snapshot.spaces.firstOrNull()?.key
+        val roots = wikiOfflineStore.getRootPagesForSpace(effectiveSpace)
+        _wikiUiState.update { cur ->
+            cur.copy(
+                spaces = snapshot.spaces,
+                selectedSpaceKey = effectiveSpace,
+                pages = roots,
+                childPagesByParent = snapshot.childPagesByParent,
+                offlineSyncedAtLabel = snapshot.syncedAtLabel,
+                offlinePagesCount = snapshot.totalPagesCount,
+                requiresWeb2faLogin = false,
+                errorMessage = null
+            )
+        }
+    }
+
+    private suspend fun verifyWikiAccountOnStartup() {
+        val settings = appSettings.value
+        if (!settings.isConfluenceReady) return
+        val access = wikiClient.verifyConfluenceAccountAccess(
+            settings = settings,
+            hasExistingOfflineDatabase = wikiOfflineStore.hasOfflineSnapshot()
+        )
+        if (access is ConfluenceAccessCheckResult.AccountDisabledOrUnauthorized) {
+            handleAccountDisabledWipe(access.reason)
+        }
+    }
+
+    private fun handleAccountDisabledWipe(reason: String) {
+        wikiPageDetailCache.clear()
+        repository.wipeAllProgramDataOnAccountDisabled(reason)
+        NotificationHelper.showAccountWipedNotification(appContext, reason)
+        JiraMonitorService.syncServiceState(appContext)
+    }
+
     fun loadWikiInitialIfNeeded() {
-        val st = _wikiUiState.value
-        if (st.spaces.isEmpty() && st.pages.isEmpty() && !st.isLoadingList) {
-            refreshWikiSpacesAndPages()
+        viewModelScope.launch {
+            val snap = withContext(Dispatchers.IO) { wikiOfflineStore.getSnapshot() }
+            if (snap != null && snap.pagesById.isNotEmpty()) {
+                applyOfflineSnapshotToUi(snap)
+                if (appSettings.value.isConfluenceReady && wikiOfflineStore.isDailySyncDue()) {
+                    syncWikiOfflineDatabase(force = false)
+                }
+            } else if (!_wikiUiState.value.isSyncingOfflineDb && !_wikiUiState.value.isLoadingList) {
+                syncWikiOfflineDatabase(force = true)
+            }
+        }
+    }
+
+    fun syncWikiOfflineDatabase(force: Boolean = true) {
+        val settings = appSettings.value
+        if (!settings.isConfluenceReady) {
+            if (!wikiOfflineStore.hasOfflineSnapshot()) {
+                _wikiUiState.update {
+                    it.copy(errorMessage = "Укажите логин и пароль во вкладке «Сервер», чтобы загрузить офлайн-базу Читалки (w.csl.by).")
+                }
+            }
+            return
+        }
+        if (_wikiUiState.value.isSyncingOfflineDb) return
+        if (!force && !wikiOfflineStore.isDailySyncDue()) return
+
+        viewModelScope.launch {
+            _wikiUiState.update {
+                it.copy(
+                    isSyncingOfflineDb = true,
+                    isLoadingList = !wikiOfflineStore.hasOfflineSnapshot(),
+                    syncProgressText = "Подключение к w.csl.by…",
+                    errorMessage = null
+                )
+            }
+            val outcome = wikiOfflineStore.syncFromServer(
+                wikiClient = wikiClient,
+                settings = settings,
+                onProgress = { progressMsg ->
+                    _wikiUiState.update { it.copy(syncProgressText = progressMsg) }
+                }
+            )
+            when (outcome) {
+                is ConfluenceSyncOutcome.Synced -> {
+                    wikiPageDetailCache.clear()
+                    applyOfflineSnapshotToUi(outcome.snapshot)
+                    _wikiUiState.update {
+                        it.copy(
+                            isSyncingOfflineDb = false,
+                            isLoadingList = false,
+                            syncProgressText = null,
+                            requiresWeb2faLogin = false,
+                            errorMessage = null
+                        )
+                    }
+                    JiraMonitorService.syncServiceState(appContext)
+                }
+                is ConfluenceSyncOutcome.OfflineUsingCache -> {
+                    outcome.snapshot?.let { applyOfflineSnapshotToUi(it) }
+                    _wikiUiState.update {
+                        it.copy(
+                            isSyncingOfflineDb = false,
+                            isLoadingList = false,
+                            syncProgressText = null,
+                            errorMessage = if (outcome.snapshot != null) null else outcome.message
+                        )
+                    }
+                }
+                is ConfluenceSyncOutcome.RequiresInitialWeb2fa -> {
+                    _wikiUiState.update {
+                        it.copy(
+                            isSyncingOfflineDb = false,
+                            isLoadingList = false,
+                            syncProgressText = null,
+                            requiresWeb2faLogin = true,
+                            errorMessage = outcome.message
+                        )
+                    }
+                }
+                is ConfluenceSyncOutcome.AccountRevokedWipeTriggered -> {
+                    handleAccountDisabledWipe(outcome.reason)
+                }
+            }
         }
     }
 
     fun refreshWikiSpacesAndPages(spaceKeyOverride: String? = _wikiUiState.value.selectedSpaceKey) {
-        val settings = appSettings.value
-        if (!settings.isConfluenceReady) {
-            _wikiUiState.update {
-                it.copy(errorMessage = "Укажите логин и пароль во вкладке «Сервер», чтобы войти в Confluence (w.csl.by).")
-            }
-            return
-        }
-        viewModelScope.launch {
-            _wikiUiState.update { it.copy(isLoadingList = true, errorMessage = null) }
-            val spacesRes = wikiClient.fetchSpaces(settings)
-            val spaces = spacesRes.getOrDefault(_wikiUiState.value.spaces)
-            val effectiveSpaceKey = spaceKeyOverride
-                ?: spaces.firstOrNull { it.key.equals("CSL", ignoreCase = true) }?.key
-                ?: spaces.firstOrNull { it.type == "global" }?.key
-                ?: spaces.firstOrNull()?.key
-            val homepageHint = spaces.firstOrNull { it.key.equals(effectiveSpaceKey, ignoreCase = true) }?.homepageId
-
-            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(
-                spaceKey = effectiveSpaceKey,
-                settings = settings,
-                homepageIdHint = homepageHint
-            )
-            pagesRes.onSuccess { pages ->
-                _wikiUiState.update {
-                    it.copy(
-                        isLoadingList = false,
-                        spaces = spaces,
-                        selectedSpaceKey = effectiveSpaceKey,
-                        pages = pages,
-                        requiresWeb2faLogin = false,
-                        errorMessage = null
-                    )
-                }
-            }.onFailure { err ->
-                val cause = spacesRes.exceptionOrNull() ?: err
-                val is2fa = cause is ConfluenceTwoFactorAuthException || err is ConfluenceTwoFactorAuthException
-                _wikiUiState.update {
-                    it.copy(
-                        isLoadingList = false,
-                        spaces = spaces,
-                        selectedSpaceKey = effectiveSpaceKey,
-                        requiresWeb2faLogin = is2fa,
-                        errorMessage = cause.message ?: err.message ?: "Ошибка подключения к w.csl.by"
-                    )
-                }
+        if (spaceKeyOverride != null && wikiOfflineStore.hasOfflineSnapshot()) {
+            val snap = wikiOfflineStore.getSnapshot()
+            if (snap != null) {
+                applyOfflineSnapshotToUi(snap, spaceKeyOverride)
+                return
             }
         }
+        syncWikiOfflineDatabase(force = true)
     }
 
     fun onWikiWebAuthenticated() {
         runCatching { android.webkit.CookieManager.getInstance().flush() }
         val st = _wikiUiState.value
-        if ((st.pages.isEmpty() || st.requiresWeb2faLogin) && !st.isLoadingList) {
-            refreshWikiSpacesAndPages()
+        if ((!wikiOfflineStore.hasOfflineSnapshot() || st.requiresWeb2faLogin) && !st.isSyncingOfflineDb) {
+            syncWikiOfflineDatabase(force = true)
         }
     }
 
@@ -2690,10 +2823,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.saveAppSettings(updated)
         wikiClient.clearSessionCache()
         wikiPageDetailCache.clear()
-        refreshWikiSpacesAndPages()
+        syncWikiOfflineDatabase(force = true)
     }
 
     fun selectWikiSpace(spaceKey: String?) {
+        val snap = wikiOfflineStore.getSnapshot()
+        if (snap != null && snap.pagesById.isNotEmpty()) {
+            val roots = wikiOfflineStore.getRootPagesForSpace(spaceKey)
+            _wikiUiState.update {
+                it.copy(
+                    selectedSpaceKey = spaceKey,
+                    pages = roots,
+                    selectedPage = null,
+                    pageHistoryStack = emptyList(),
+                    searchResults = null,
+                    searchQuery = "",
+                    errorMessage = null
+                )
+            }
+            return
+        }
         _wikiUiState.update {
             it.copy(
                 selectedSpaceKey = spaceKey,
@@ -2703,7 +2852,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 searchQuery = ""
             )
         }
-        refreshWikiSpacesAndPages(spaceKeyOverride = spaceKey)
+        syncWikiOfflineDatabase(force = true)
     }
 
     fun searchWikiPages(query: String) {
@@ -2711,6 +2860,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val clean = query.trim()
         if (clean.isEmpty()) {
             _wikiUiState.update { it.copy(searchResults = null) }
+            return
+        }
+        if (wikiOfflineStore.hasOfflineSnapshot()) {
+            viewModelScope.launch {
+                val results = withContext(Dispatchers.Default) {
+                    wikiOfflineStore.searchOffline(clean, _wikiUiState.value.selectedSpaceKey)
+                }
+                _wikiUiState.update { it.copy(isLoadingList = false, searchResults = results, errorMessage = null) }
+            }
             return
         }
         val settings = appSettings.value
@@ -2733,8 +2891,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _wikiUiState.update { it.copy(expandedPageIds = it.expandedPageIds - pageId) }
             return
         }
-        _wikiUiState.update { it.copy(expandedPageIds = it.expandedPageIds + pageId) }
-        if (!st.childPagesByParent.containsKey(pageId)) {
+        val offlineChildren = wikiOfflineStore.getChildPages(pageId)
+        _wikiUiState.update {
+            val mergedChildren = if (offlineChildren.isNotEmpty()) {
+                it.childPagesByParent + (pageId to offlineChildren)
+            } else it.childPagesByParent
+            it.copy(expandedPageIds = it.expandedPageIds + pageId, childPagesByParent = mergedChildren)
+        }
+        if (offlineChildren.isEmpty() && !st.childPagesByParent.containsKey(pageId) && appSettings.value.isConfluenceReady) {
             viewModelScope.launch {
                 wikiClient.fetchChildPages(pageId, appSettings.value).onSuccess { children ->
                     _wikiUiState.update { cur ->
@@ -2746,12 +2910,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openWikiPage(pageId: String, replaceSiblingInStack: Boolean = false) {
-        val settings = appSettings.value
-        if (pageId.isBlank() || !settings.isConfluenceReady) return
+        if (pageId.isBlank()) return
         val beforeState = _wikiUiState.value
         if (beforeState.selectedPage?.id == pageId) return
 
-        // If navigating back to an ancestor already in pageHistoryStack, pop back to it cleanly
         val existingIdx = beforeState.pageHistoryStack.indexOfFirst { it.id == pageId }
         if (existingIdx >= 0) {
             val target = beforeState.pageHistoryStack[existingIdx]
@@ -2766,25 +2928,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else -> beforeState.pageHistoryStack + beforeState.selectedPage
         }
 
-        val cached = wikiPageDetailCache[pageId]
-        if (cached != null) {
-            _wikiUiState.update {
-                it.copy(
-                    selectedPage = cached,
+        // 1. Instant 0ms offline lookup from local Confluence database
+        val offlineDetail = wikiOfflineStore.getPageDetail(pageId) ?: wikiPageDetailCache[pageId]
+        if (offlineDetail != null) {
+            _wikiUiState.update { cur ->
+                val nextChildren = if (offlineDetail.childPages.isNotEmpty()) {
+                    cur.childPagesByParent + (offlineDetail.id to offlineDetail.childPages)
+                } else cur.childPagesByParent
+                val parentId = offlineDetail.breadcrumbs.lastOrNull()?.id
+                val parentSiblings = if (!parentId.isNullOrBlank()) wikiOfflineStore.getChildPages(parentId) else emptyList()
+                val withSiblings = if (!parentId.isNullOrBlank() && parentSiblings.isNotEmpty()) {
+                    nextChildren + (parentId to parentSiblings)
+                } else nextChildren
+                cur.copy(
+                    selectedPage = offlineDetail,
                     pageHistoryStack = nextHistory,
+                    childPagesByParent = withSiblings,
                     isLoadingPage = false,
                     errorMessage = null
                 )
             }
+            return
         }
 
+        // 2. Fallback to live fetch only if page wasn't in offline snapshot yet
+        val settings = appSettings.value
+        if (!settings.isConfluenceReady) return
         viewModelScope.launch {
-            if (cached == null) {
-                _wikiUiState.update { it.copy(isLoadingPage = true, errorMessage = null) }
-            }
+            _wikiUiState.update { it.copy(isLoadingPage = true, errorMessage = null) }
             wikiClient.fetchPageDetail(pageId, settings)
                 .onSuccess { detail ->
                     wikiPageDetailCache[pageId] = detail
+                    wikiOfflineStore.upsertPageDetailInCache(detail)
                     _wikiUiState.update { cur ->
                         val nextChildren = if (detail.childPages.isNotEmpty()) {
                             cur.childPagesByParent + (detail.id to detail.childPages)
@@ -2795,15 +2970,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             pageHistoryStack = nextHistory,
                             childPagesByParent = nextChildren
                         )
-                    }
-                    // Also preload parent's children if needed so sibling sub-tabs are always available
-                    val parentId = detail.breadcrumbs.lastOrNull()?.id
-                    if (!parentId.isNullOrBlank() && !_wikiUiState.value.childPagesByParent.containsKey(parentId)) {
-                        wikiClient.fetchChildPages(parentId, settings).onSuccess { siblings ->
-                            _wikiUiState.update { cur ->
-                                cur.copy(childPagesByParent = cur.childPagesByParent + (parentId to siblings))
-                            }
-                        }
                     }
                 }
                 .onFailure { err ->
@@ -2835,7 +3001,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun openClientInWiki(clientName: String) {
         val clean = clientName.trim()
         _selectedTicketKey.value = null
-        _wikiUiState.update { it.copy(selectedSpaceKey = null, selectedPage = null, searchQuery = clean) }
+        _wikiUiState.update { it.copy(selectedPage = null, pageHistoryStack = emptyList(), searchQuery = clean) }
         _openWikiTabStamp.value = System.currentTimeMillis()
         if (clean.isNotEmpty()) {
             searchWikiPages(clean)
@@ -2844,8 +3010,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    suspend fun loadWikiImageBytes(url: String): ByteArray? =
-        wikiClient.downloadProtectedBytes(url, appSettings.value).getOrNull()
+    suspend fun loadWikiImageBytes(url: String): ByteArray? {
+        wikiOfflineStore.getCachedMediaBytes(url)?.let { return it }
+        val downloaded = wikiClient.downloadProtectedBytes(url, appSettings.value).getOrNull()
+        if (downloaded != null) {
+            wikiOfflineStore.saveCachedMediaBytes(url, downloaded)
+        }
+        return downloaded
+    }
 
     fun downloadAndShareWikiAttachment(att: ConfluenceAttachment) {
         viewModelScope.launch {

@@ -1,9 +1,15 @@
 package com.helpdesk.jiraagent
 
 import com.helpdesk.jiraagent.data.ConfluenceBlock
+import com.helpdesk.jiraagent.data.ConfluenceBreadcrumb
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluenceHtmlParser
+import com.helpdesk.jiraagent.data.ConfluenceInlineTab
+import com.helpdesk.jiraagent.data.ConfluenceOfflineSnapshot
+import com.helpdesk.jiraagent.data.ConfluenceOfflineStore
+import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.data.ConfluenceSpace
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
@@ -334,6 +340,117 @@ class ConfluenceWikiAndNineFeaturesTest {
         assertEquals(
             ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER,
             (strippedFolderBlocks.first() as ConfluenceBlock.Paragraph).text
+        )
+    }
+
+    @Test
+    fun `ConfluenceOfflineStore persists compressed offline DB enforces 24h sync window and wipes cleanly`() {
+        val tempDir = java.nio.file.Files.createTempDirectory("helpcsl_offline_wiki_test").toFile()
+        try {
+            val store = ConfluenceOfflineStore(tempDir)
+            assertFalse(store.hasOfflineSnapshot())
+            assertTrue(store.isDailySyncDue())
+
+            val subPageSummary = ConfluencePageSummary(id = "101", title = "Локальная сеть МБ", spaceKey = "CSL")
+            val clientSummary = ConfluencePageSummary(id = "100", title = "МБ", spaceKey = "CSL")
+            val clientDetail = ConfluencePageDetail(
+                id = "100",
+                title = "МБ",
+                spaceKey = "CSL",
+                spaceName = "CSL",
+                versionNumber = 3,
+                updatedBy = "ziv",
+                updatedLabel = "22.11.2026 18:00",
+                webUrl = "https://w.csl.by/pages/viewpage.action?pageId=100",
+                breadcrumbs = emptyList(),
+                childPages = listOf(subPageSummary),
+                inlineTabs = emptyList(),
+                attachments = emptyList(),
+                blocks = listOf(ConfluenceBlock.Paragraph(ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER)),
+                hasSubstantialBody = false
+            )
+            val subPageDetail = ConfluencePageDetail(
+                id = "101",
+                title = "Локальная сеть МБ",
+                spaceKey = "CSL",
+                spaceName = "CSL",
+                versionNumber = 5,
+                updatedBy = "ziv",
+                updatedLabel = "22.11.2026 18:30",
+                webUrl = "https://w.csl.by/pages/viewpage.action?pageId=101",
+                breadcrumbs = listOf(ConfluenceBreadcrumb("100", "МБ")),
+                childPages = emptyList(),
+                inlineTabs = listOf(
+                    ConfluenceInlineTab(
+                        id = "tab1",
+                        title = "Маршрутизатор",
+                        blocks = listOf(ConfluenceBlock.Paragraph("MikroTik IP: 10.77.0.1"))
+                    )
+                ),
+                attachments = emptyList(),
+                blocks = listOf(
+                    ConfluenceBlock.Table(
+                        headers = listOf("Узел", "IP"),
+                        rows = listOf(listOf("Сервер 1С", "192.168.55.10"))
+                    )
+                ),
+                hasSubstantialBody = true
+            )
+
+            val now = 1_800_000_000_000L
+            val snapshot = ConfluenceOfflineSnapshot(
+                syncedAtEpochMs = now,
+                syncedAtLabel = "22.11.2026 19:00",
+                syncedUsername = "ziv@csl.by",
+                spaces = listOf(ConfluenceSpace(key = "CSL", name = "CSL")),
+                rootPagesBySpace = mapOf("CSL" to listOf(clientSummary)),
+                recentPages = listOf(subPageSummary),
+                childPagesByParent = mapOf("100" to listOf(subPageSummary)),
+                pagesById = mapOf("100" to clientDetail, "101" to subPageDetail)
+            )
+            store.persistSnapshot(snapshot)
+            store.saveCachedMediaBytes("https://w.csl.by/download/net.png", byteArrayOf(1, 2, 3, 4))
+
+            // Reload from disk with a brand-new instance
+            val reloaded = ConfluenceOfflineStore(tempDir)
+            assertTrue(reloaded.hasOfflineSnapshot())
+            assertFalse(reloaded.isDailySyncDue(now + 12L * 3600_000L))
+            assertTrue(reloaded.isDailySyncDue(now + ConfluenceOfflineStore.DAILY_SYNC_INTERVAL_MS))
+            assertEquals("192.168.55.10", (reloaded.getPageDetail("101")!!.blocks.first() as ConfluenceBlock.Table).rows[0][1])
+
+            val foundByTableIp = reloaded.searchOffline("192.168.55.10", "CSL")
+            assertEquals(1, foundByTableIp.size)
+            assertEquals("101", foundByTableIp.first().id)
+
+            val foundByInlineTab = reloaded.searchOffline("10.77.0.1", "CSL")
+            assertEquals(1, foundByInlineTab.size)
+            assertNotNull(reloaded.getCachedMediaBytes("https://w.csl.by/download/net.png"))
+
+            // Wipe when account is disabled
+            reloaded.clearOfflineDatabase()
+            assertFalse(reloaded.hasOfflineSnapshot())
+            assertEquals(null, ConfluenceOfflineStore(tempDir).getSnapshot())
+            assertEquals(null, reloaded.getCachedMediaBytes("https://w.csl.by/download/net.png"))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Watchlist background ping interval is 5 minutes and formats host names with labels`() {
+        assertEquals(5L * 60L * 1000L, SysadminToolboxEngine.WATCHLIST_BACKGROUND_PING_INTERVAL_MS)
+        val labels = mapOf("93.84.112.45" to "Шлюз Офис Минск")
+        assertEquals(
+            "Шлюз Офис Минск",
+            SysadminToolboxEngine.resolveWatchlistShortTitle("https://93.84.112.45/", labels)
+        )
+        assertEquals(
+            "Шлюз Офис Минск (93.84.112.45)",
+            SysadminToolboxEngine.resolveWatchlistDisplayName("https://93.84.112.45/", labels)
+        )
+        assertEquals(
+            "10.10.1.1",
+            SysadminToolboxEngine.resolveWatchlistDisplayName("10.10.1.1", labels)
         )
     }
 }

@@ -117,6 +117,15 @@ data class ConfluencePageDetail(
 
 class ConfluenceTwoFactorAuthException(message: String) : SecurityException(message)
 
+class ConfluenceAccountRevokedException(message: String) : SecurityException(message)
+
+sealed class ConfluenceAccessCheckResult {
+    data class Authorized(val username: String) : ConfluenceAccessCheckResult()
+    data class OfflineUnreachable(val reason: String) : ConfluenceAccessCheckResult()
+    data class RequiresInitialWeb2fa(val message: String) : ConfluenceAccessCheckResult()
+    data class AccountDisabledOrUnauthorized(val reason: String) : ConfluenceAccessCheckResult()
+}
+
 class ConfluenceWikiClient {
 
     /**
@@ -928,6 +937,381 @@ class ConfluenceWikiClient {
                 blocks = parsedBlocks,
                 hasSubstantialBody = hasRealBody
             )
+        }
+    }
+
+    /**
+     * Checks whether `w.csl.by` is genuinely reachable AND whether the current user's account
+     * is authorized.
+     * - If `w.csl.by` is unreachable (offline, no VPN, DNS/TCP/5xx error, captive portal): returns [ConfluenceAccessCheckResult.OfflineUnreachable].
+     * - If `w.csl.by` IS reachable (confirmed Confluence instance) and authentication fails
+     *   (account disabled, credentials/token revoked, HTTP 401/403, Seraph `AUTHENTICATED_FAILED` / `AUTHENTICATION_DENIED`,
+     *   or anonymous fallback when an offline database already exists): returns [ConfluenceAccessCheckResult.AccountDisabledOrUnauthorized].
+     */
+    suspend fun verifyConfluenceAccountAccess(
+        settings: AppSettings,
+        hasExistingOfflineDatabase: Boolean
+    ): ConfluenceAccessCheckResult = withContext(Dispatchers.IO) {
+        if (!settings.isConfluenceReady) {
+            return@withContext ConfluenceAccessCheckResult.OfflineUnreachable("Учётные данные не настроены")
+        }
+
+        val rawCfg = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
+        val roots = buildCandidateApiRoots(rawCfg).distinct()
+        var confirmedConfluenceReachable = false
+        var reachableRoot: String? = null
+
+        for (root in roots) {
+            val probeOk = runCatching {
+                val statusReq = Request.Builder()
+                    .url("$root/status")
+                    .get()
+                    .header("User-Agent", BROWSER_USER_AGENT)
+                    .header("Accept", "application/json,text/html,*/*")
+                    .build()
+                clientFor(settings).newCall(statusReq).execute().use { resp ->
+                    if (resp.code in 500..599) return@use false
+                    val body = resp.body?.string().orEmpty()
+                    val hasConfluenceHeader = resp.header("X-Confluence-Request-Time") != null ||
+                        resp.header("X-Seraph-LoginReason") != null ||
+                        resp.header("X-AUSERNAME") != null
+                    val hasRunningState = body.contains("\"RUNNING\"", ignoreCase = true) ||
+                        body.contains("Confluence", ignoreCase = true) ||
+                        body.contains("atlassian", ignoreCase = true)
+                    hasConfluenceHeader || hasRunningState
+                }
+            }.getOrDefault(false)
+
+            if (probeOk) {
+                confirmedConfluenceReachable = true
+                reachableRoot = root
+                break
+            }
+        }
+
+        if (!confirmedConfluenceReachable || reachableRoot == null) {
+            return@withContext ConfluenceAccessCheckResult.OfflineUnreachable(
+                "Сервер w.csl.by сейчас недоступен (офлайн-режим)"
+            )
+        }
+
+        val root = reachableRoot
+        val currentUserUrl = "$root/rest/api/user/current"
+        var explicitAuthDenialReason: String? = null
+        var sawInteractive2faChallenge = false
+
+        fun checkCurrentUserMode(mode: AuthAttemptMode): String? {
+            val req = Request.Builder()
+                .url(currentUserUrl)
+                .get()
+                .applyModeHeaders(currentUserUrl, settings, mode)
+                .build()
+            clientFor(settings).newCall(req).execute().use { resp ->
+                val seraph = resp.header("X-Seraph-LoginReason").orEmpty()
+                val body = resp.body?.string().orEmpty()
+                if (isTwoFactorBlockedResponse(body)) {
+                    sawInteractive2faChallenge = true
+                }
+                if (seraph.contains("AUTHENTICATION_DENIED", ignoreCase = true) ||
+                    seraph.contains("AUTHENTICATED_FAILED", ignoreCase = true)
+                ) {
+                    explicitAuthDenialReason = "Сервер w.csl.by отклонил учётную запись ($seraph)"
+                    return null
+                }
+                if (resp.code == 401 || resp.code == 403) {
+                    if (mode == AuthAttemptMode.CONFLUENCE_PAT || mode == AuthAttemptMode.JIRA_BEARER_PAT) {
+                        explicitAuthDenialReason = "Токен доступа Confluence отклонён или учётная запись отключена (HTTP ${resp.code})"
+                    }
+                    return null
+                }
+                if (!resp.isSuccessful) return null
+                val trimmed = body.trim()
+                if (!trimmed.startsWith("{")) return null
+                val obj = runCatching { JsonParser.parseString(trimmed).asJsonObject }.getOrNull() ?: return null
+                val userType = obj.optStr("type").orEmpty()
+                val username = obj.optStr("username")
+                    ?: obj.optStr("userKey")
+                    ?: obj.optStr("displayName")
+                    ?: ""
+                if (userType.equals("known", ignoreCase = true) && username.isNotBlank()) {
+                    return username
+                }
+                return null
+            }
+        }
+
+        try {
+            if (settings.confluenceToken.isNotBlank()) {
+                checkCurrentUserMode(AuthAttemptMode.CONFLUENCE_PAT)?.let { u ->
+                    workingBaseUrlCache = rawCfg to root
+                    return@withContext ConfluenceAccessCheckResult.Authorized(u)
+                }
+            }
+
+            if (buildMergedCookieHeader(currentUserUrl) != null || cookieJar.hasCookiesForUrl(currentUserUrl)) {
+                checkCurrentUserMode(AuthAttemptMode.COOKIE_SESSION_ONLY)?.let { u ->
+                    workingBaseUrlCache = rawCfg to root
+                    return@withContext ConfluenceAccessCheckResult.Authorized(u)
+                }
+            }
+
+            if (settings.authType == AuthType.BEARER_PAT && settings.passwordOrToken.isNotBlank()) {
+                checkCurrentUserMode(AuthAttemptMode.JIRA_BEARER_PAT)?.let { u ->
+                    workingBaseUrlCache = rawCfg to root
+                    return@withContext ConfluenceAccessCheckResult.Authorized(u)
+                }
+            }
+
+            if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
+                val rawUser = settings.usernameOrEmail.trim()
+                val candidateUsers = buildList {
+                    add(rawUser)
+                    if ('@' in rawUser) {
+                        val shortAd = rawUser.substringBefore('@').trim()
+                        if (shortAd.isNotEmpty()) add(shortAd)
+                    }
+                }.distinct()
+
+                for (u in candidateUsers) {
+                    val form = FormBody.Builder(StandardCharsets.UTF_8)
+                        .add("os_username", u)
+                        .add("os_password", settings.passwordOrToken)
+                        .add("os_cookie", "true")
+                        .add("os_destination", "/index.action")
+                        .add("login", "Log in")
+                        .build()
+                    val loginReq = Request.Builder()
+                        .url("$root/dologin.action")
+                        .post(form)
+                        .header("X-Atlassian-Token", "no-check")
+                        .header("User-Agent", BROWSER_USER_AGENT)
+                        .header("Origin", root)
+                        .header("Referer", "$root/login.action")
+                        .build()
+
+                    clientFor(settings).newCall(loginReq).execute().use { resp ->
+                        val seraph = resp.header("X-Seraph-LoginReason").orEmpty()
+                        val body = resp.body?.string().orEmpty()
+                        val finalUrl = resp.request.url.toString()
+                        if (seraph.contains("AUTHENTICATION_DENIED", ignoreCase = true) ||
+                            seraph.contains("AUTHENTICATED_FAILED", ignoreCase = true) ||
+                            body.contains("aui-message-error", ignoreCase = true) ||
+                            body.contains("login-error", ignoreCase = true)
+                        ) {
+                            explicitAuthDenialReason = "Учётная запись отключена или пароль отклонён на w.csl.by"
+                        }
+                        if (isTwoFactorBlockedResponse(body) ||
+                            finalUrl.contains("two-step", ignoreCase = true) ||
+                            finalUrl.contains("elevatedsecurity", ignoreCase = true)
+                        ) {
+                            sawInteractive2faChallenge = true
+                        }
+                    }
+
+                    checkCurrentUserMode(AuthAttemptMode.COOKIE_SESSION_ONLY)?.let { okUser ->
+                        workingBaseUrlCache = rawCfg to root
+                        return@withContext ConfluenceAccessCheckResult.Authorized(okUser)
+                    }
+                }
+
+                val hostKey = root.toHttpUrlOrNull()?.host?.lowercase(Locale.ROOT).orEmpty()
+                if (settings.authType != AuthType.BEARER_PAT && hostKey !in twoFactorHosts && !sawInteractive2faChallenge) {
+                    checkCurrentUserMode(AuthAttemptMode.BASIC_CREDENTIALS)?.let { okUser ->
+                        workingBaseUrlCache = rawCfg to root
+                        return@withContext ConfluenceAccessCheckResult.Authorized(okUser)
+                    }
+                }
+            }
+        } catch (ioe: java.io.IOException) {
+            return@withContext ConfluenceAccessCheckResult.OfflineUnreachable(
+                ioe.message ?: "Ошибка сети при проверке w.csl.by"
+            )
+        } catch (_: Exception) {
+            // Fall through to authorization evaluation below
+        }
+
+        // If credentials were NOT explicitly rejected and no offline DB has been downloaded yet,
+        // allow the user to complete initial 2FA login via WebView / PAT.
+        if (!hasExistingOfflineDatabase && explicitAuthDenialReason == null && sawInteractive2faChallenge) {
+            return@withContext ConfluenceAccessCheckResult.RequiresInitialWeb2fa(
+                "Для первой загрузки офлайн-базы w.csl.by войдите один раз через вкладку «🌐 Web» или укажите PAT-токен."
+            )
+        }
+
+        // w.csl.by IS reachable, and authorization did NOT pass -> wipe required!
+        return@withContext ConfluenceAccessCheckResult.AccountDisabledOrUnauthorized(
+            explicitAuthDenialReason
+                ?: "Сервер w.csl.by доступен, но авторизация учётной записи не прошла (учётная запись отключена или сессия отозвана)."
+        )
+    }
+
+    /**
+     * Bulk-downloads ALL pages in a Confluence space with full HTML body, ancestors, and attachments
+     * for offline storage, reconstructing the alphabetical parent -> child hierarchy locally.
+     */
+    suspend fun fetchAllSpacePagesWithDetails(
+        spaceKey: String,
+        spaceNameHint: String,
+        settings: AppSettings,
+        onBatchProgress: (Int) -> Unit = {}
+    ): Result<List<ConfluencePageDetail>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val encKey = URLEncoder.encode(spaceKey.trim(), "UTF-8")
+            val rawPagesById = LinkedHashMap<String, ConfluencePageDetail>()
+            val batchLimit = 25
+            var start = 0
+
+            while (start < 5000) {
+                val (baseRoot, json) = try {
+                    executeRestGetJson(
+                        "content?spaceKey=$encKey&type=page&status=current&expand=body.view,version,ancestors,space,children.attachment&limit=$batchLimit&start=$start",
+                        settings
+                    )
+                } catch (_: Exception) {
+                    executeRestGetJson(
+                        "content?spaceKey=$encKey&type=page&status=current&expand=body.storage,version,ancestors,space,children.attachment&limit=$batchLimit&start=$start",
+                        settings
+                    )
+                }
+
+                val results = json.optArray("results") ?: break
+                val rawCount = results.size()
+                if (rawCount == 0) break
+
+                for (el in results) {
+                    val obj = el.asObj() ?: continue
+                    val pid = obj.optStr("id") ?: continue
+                    val title = obj.optStr("title").orEmpty().ifBlank { "Страница #$pid" }
+                    val spObj = obj.optObj("space")
+                    val resolvedSpaceKey = spObj?.optStr("key")?.takeIf { it.isNotBlank() } ?: spaceKey
+                    val resolvedSpaceName = spObj?.optStr("name")?.takeIf { it.isNotBlank() }
+                        ?: spaceNameHint.ifBlank { resolvedSpaceKey }
+
+                    val verObj = obj.optObj("version")
+                    val verNum = verObj?.optInt("number") ?: 1
+                    val updatedBy = verObj?.optObj("by")?.optStr("displayName")
+                        ?: verObj?.optObj("by")?.optStr("username")
+                        ?: ""
+                    val updatedWhen = formatConfluenceDate(verObj?.optStr("when"))
+
+                    val webUiRel = obj.optObj("_links")?.optStr("webui").orEmpty()
+                    val fullWebUrl = when {
+                        webUiRel.startsWith("http://", ignoreCase = true) ||
+                            webUiRel.startsWith("https://", ignoreCase = true) -> webUiRel
+                        webUiRel.isNotBlank() -> "$baseRoot/${webUiRel.trimStart('/')}"
+                        else -> "$baseRoot/pages/viewpage.action?pageId=$pid"
+                    }
+
+                    val breadcrumbs = obj.optArray("ancestors")
+                        ?.mapNotNull { aEl ->
+                            val ao = aEl.asObj() ?: return@mapNotNull null
+                            val aid = ao.optStr("id") ?: return@mapNotNull null
+                            val atitle = ao.optStr("title") ?: return@mapNotNull null
+                            ConfluenceBreadcrumb(id = aid, title = atitle)
+                        }
+                        .orEmpty()
+
+                    val bodyObj = obj.optObj("body")
+                    val htmlBody = bodyObj?.optObj("view")?.optStr("value")?.takeIf { it.isNotBlank() }
+                        ?: bodyObj?.optObj("export_view")?.optStr("value")?.takeIf { it.isNotBlank() }
+                        ?: bodyObj?.optObj("storage")?.optStr("value").orEmpty()
+
+                    val inlineTabs = ConfluenceHtmlParser.parseInlineTabs(htmlBody, baseRoot)
+                    // Parse temporarily with hasNativeChildPages = true for childpages-macro cleanup if children exist later
+                    val tempBlocks = ConfluenceHtmlParser.parseHtmlToBlocks(
+                        rawHtml = htmlBody,
+                        baseRoot = baseRoot,
+                        hasNativeChildPages = true
+                    )
+
+                    val attachments = obj.optObj("children")
+                        ?.optObj("attachment")
+                        ?.optArray("results")
+                        ?.mapNotNull { attEl ->
+                            val ao = attEl.asObj() ?: return@mapNotNull null
+                            val aid = ao.optStr("id") ?: return@mapNotNull null
+                            val atitle = ao.optStr("title") ?: return@mapNotNull null
+                            val ext = ao.optObj("extensions")
+                            val media = ext?.optStr("mediaType")
+                                ?: ao.optObj("metadata")?.optStr("mediaType")
+                                ?: "application/octet-stream"
+                            val size = ext?.optLong("fileSize") ?: 0L
+                            val dlRel = ao.optObj("_links")?.optStr("download").orEmpty()
+                            val dlUrl = when {
+                                dlRel.startsWith("http://", ignoreCase = true) ||
+                                    dlRel.startsWith("https://", ignoreCase = true) -> dlRel
+                                dlRel.isNotBlank() -> "$baseRoot/${dlRel.trimStart('/')}"
+                                else -> ""
+                            }
+                            if (dlUrl.isEmpty()) null
+                            else ConfluenceAttachment(
+                                id = aid,
+                                title = atitle,
+                                mediaType = media,
+                                fileSizeBytes = size,
+                                downloadUrl = dlUrl
+                            )
+                        }
+                        .orEmpty()
+
+                    rawPagesById[pid] = ConfluencePageDetail(
+                        id = pid,
+                        title = title,
+                        spaceKey = resolvedSpaceKey,
+                        spaceName = resolvedSpaceName,
+                        versionNumber = verNum,
+                        updatedBy = updatedBy,
+                        updatedLabel = updatedWhen,
+                        webUrl = fullWebUrl,
+                        breadcrumbs = breadcrumbs,
+                        childPages = emptyList(),
+                        inlineTabs = inlineTabs,
+                        attachments = attachments,
+                        blocks = tempBlocks,
+                        hasSubstantialBody = true
+                    )
+                }
+
+                onBatchProgress(rawPagesById.size)
+                val hasNext = json.optObj("_links")?.optStr("next")?.isNotBlank() == true
+                if (rawCount < batchLimit && !hasNext) break
+                start += rawCount
+            }
+
+            // Reconstruct direct children map from ancestors and sort strictly alphabetically
+            val childrenByParentId = HashMap<String, MutableList<ConfluencePageSummary>>()
+            for (detail in rawPagesById.values) {
+                val directParentId = detail.breadcrumbs.lastOrNull()?.id ?: continue
+                childrenByParentId.getOrPut(directParentId) { mutableListOf() }.add(
+                    ConfluencePageSummary(
+                        id = detail.id,
+                        title = detail.title,
+                        spaceKey = detail.spaceKey,
+                        spaceName = detail.spaceName,
+                        updatedLabel = detail.updatedLabel,
+                        updatedBy = detail.updatedBy,
+                        webPath = detail.webUrl
+                    )
+                )
+            }
+
+            rawPagesById.values.map { detail ->
+                val sortedChildren = sortPagesAlphabetically(childrenByParentId[detail.id].orEmpty())
+                val hasRealBody = detail.attachments.isNotEmpty() ||
+                    detail.inlineTabs.isNotEmpty() ||
+                    detail.blocks.any { b ->
+                        when (b) {
+                            is ConfluenceBlock.Paragraph ->
+                                b.text != ConfluenceHtmlParser.EMPTY_PAGE_PLACEHOLDER &&
+                                    b.text != ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER
+                            else -> true
+                        }
+                    }
+                detail.copy(
+                    childPages = sortedChildren,
+                    hasSubstantialBody = hasRealBody
+                )
+            }
         }
     }
 

@@ -63,6 +63,7 @@ fun SysadminToolboxAndroidDialog(
     watchlistLabels: Map<String, String> = emptyMap(),
     watchlistStatuses: List<WatchlistHostStatus>,
     isCheckingWatchlist: Boolean,
+    initialTabIndex: Int = 0,
     onAddHost: (host: String, label: String) -> Unit,
     onUpdateHostLabel: (host: String, label: String) -> Unit = { _, _ -> },
     onRemoveHost: (String) -> Unit,
@@ -71,7 +72,7 @@ fun SysadminToolboxAndroidDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tabIndex by remember { mutableIntStateOf(0) }
+    var tabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
     val tabs = listOf("⚡ WOL", "🌐 Подсети", "🔐 Пароли", "🛡 SSL / Узлы")
 
     LaunchedEffect(tabIndex) {

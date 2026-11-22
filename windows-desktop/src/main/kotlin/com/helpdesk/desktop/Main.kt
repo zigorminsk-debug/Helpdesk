@@ -53,6 +53,14 @@ fun main(args: Array<String>) = application {
     var isMainWindowVisible by remember { mutableStateOf(!startMinimized) }
     var showShiftAnalytics by remember { mutableStateOf(false) }
     var showToolboxDialog by remember { mutableStateOf(false) }
+    var toolboxInitialTab by remember { mutableStateOf(0) }
+
+    LaunchedEffect(state.openWatchlistToolboxStamp) {
+        if (state.openWatchlistToolboxStamp > 0L) {
+            toolboxInitialTab = 3
+            showToolboxDialog = true
+        }
+    }
     var showQrDialog by remember { mutableStateOf(false) }
     var showFullGuide by remember { mutableStateOf(false) }
 
@@ -304,7 +312,11 @@ fun main(args: Array<String>) = application {
                     DesktopSysadminToolboxDialog(
                         state = state,
                         controller = controller,
-                        onDismiss = { showToolboxDialog = false }
+                        initialTabIndex = toolboxInitialTab,
+                        onDismiss = {
+                            showToolboxDialog = false
+                            toolboxInitialTab = 0
+                        }
                     )
                 }
 

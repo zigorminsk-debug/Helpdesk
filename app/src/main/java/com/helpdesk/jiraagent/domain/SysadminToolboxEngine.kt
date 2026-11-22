@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -67,6 +68,8 @@ data class WatchlistHostStatus(
 
 object SysadminToolboxEngine {
 
+    const val WATCHLIST_BACKGROUND_PING_INTERVAL_MS: Long = 5L * 60L * 1000L
+
     val DEFAULT_WATCHLIST_HOSTS = listOf(
         "csl.by",
         "habr.com"
@@ -79,6 +82,22 @@ object SysadminToolboxEngine {
             .removePrefix("http://")
             .substringBefore('/')
             .trim()
+    }
+
+    fun resolveWatchlistShortTitle(rawHost: String, labels: Map<String, String>): String {
+        val key = normalizeHostKey(rawHost)
+        val label = labels[key]?.trim().orEmpty()
+        return label.ifEmpty { key.ifEmpty { rawHost.trim() } }
+    }
+
+    fun resolveWatchlistDisplayName(rawHost: String, labels: Map<String, String>): String {
+        val key = normalizeHostKey(rawHost)
+        val label = labels[key]?.trim().orEmpty()
+        return if (label.isNotEmpty() && !label.equals(key, ignoreCase = true)) {
+            "$label ($key)"
+        } else {
+            key.ifEmpty { rawHost.trim() }
+        }
     }
 
     private val secureRandom = SecureRandom()
@@ -413,6 +432,24 @@ object SysadminToolboxEngine {
                 )
             }
         }.awaitAll().sortedWith(
+            compareByDescending<WatchlistHostStatus> { it.healthLevel.ordinal }
+                .thenBy { it.sslDaysRemaining ?: Long.MAX_VALUE }
+        )
+    }
+
+    /**
+     * Runs a watchlist check with a short confirmation retry on any host that failed the initial probe,
+     * eliminating transient single-packet jitter before firing background offline notifications.
+     */
+    suspend fun checkWatchlistHostsWithOfflineRetry(hosts: List<String>): List<WatchlistHostStatus> {
+        val initial = checkWatchlistHosts(hosts)
+        val failedHosts = initial.filter { !it.isAlive }.map { it.host }
+        if (failedHosts.isEmpty()) return initial
+        delay(1_500L)
+        val recheckedByHost = checkWatchlistHosts(failedHosts).associateBy { normalizeHostKey(it.host) }
+        return initial.map { st ->
+            if (st.isAlive) st else recheckedByHost[normalizeHostKey(st.host)] ?: st
+        }.sortedWith(
             compareByDescending<WatchlistHostStatus> { it.healthLevel.ordinal }
                 .thenBy { it.sslDaysRemaining ?: Long.MAX_VALUE }
         )

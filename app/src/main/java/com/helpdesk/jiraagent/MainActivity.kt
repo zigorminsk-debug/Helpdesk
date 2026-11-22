@@ -182,6 +182,10 @@ class MainActivity : FragmentActivity() {
             intent.removeExtra(NotificationHelper.EXTRA_OPEN_ADMIN_CHAT)
             viewModel.requestOpenAdminChatTab()
         }
+        if (intent?.getBooleanExtra(NotificationHelper.EXTRA_OPEN_WATCHLIST_MONITOR, false) == true) {
+            intent.removeExtra(NotificationHelper.EXTRA_OPEN_WATCHLIST_MONITOR)
+            viewModel.requestOpenWatchlistMonitor()
+        }
     }
 }
 
@@ -233,6 +237,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val watchlistLabels by viewModel.watchlistLabels.collectAsStateWithLifecycle()
     val watchlistStatuses by viewModel.watchlistStatuses.collectAsStateWithLifecycle()
     val isCheckingWatchlist by viewModel.isCheckingWatchlist.collectAsStateWithLifecycle()
+    val openWatchlistStamp by viewModel.openWatchlistStamp.collectAsStateWithLifecycle()
+    val securityWipeNotice by viewModel.securityWipeNotice.collectAsStateWithLifecycle()
     val knowledgeResults by viewModel.knowledgeArchiveResults.collectAsStateWithLifecycle()
     val isSearchingKnowledge by viewModel.isSearchingKnowledge.collectAsStateWithLifecycle()
 
@@ -246,6 +252,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     }
     var showShiftAnalytics by rememberSaveable { mutableStateOf(false) }
     var showToolboxDialog by rememberSaveable { mutableStateOf(false) }
+    var toolboxInitialTab by rememberSaveable { mutableStateOf(0) }
     var showKbArchiveDialog by rememberSaveable { mutableStateOf(false) }
     var showFullGuide by rememberSaveable { mutableStateOf(false) }
     var showQrTransfer by rememberSaveable { mutableStateOf(false) }
@@ -394,11 +401,34 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             watchlistLabels = watchlistLabels,
             watchlistStatuses = watchlistStatuses,
             isCheckingWatchlist = isCheckingWatchlist,
+            initialTabIndex = toolboxInitialTab,
             onAddHost = { host, label -> viewModel.addWatchlistHost(host, label) },
             onUpdateHostLabel = { host, label -> viewModel.updateWatchlistHostLabel(host, label) },
             onRemoveHost = { viewModel.removeWatchlistHost(it) },
             onRefreshHosts = { viewModel.refreshWatchlistHosts() },
-            onDismiss = { showToolboxDialog = false }
+            onDismiss = {
+                showToolboxDialog = false
+                toolboxInitialTab = 0
+            }
+        )
+    }
+
+    securityWipeNotice?.let { wipeMsg ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { viewModel.dismissSecurityWipeNotice() },
+            title = { Text("🔒 База и записи очищены", fontWeight = FontWeight.Bold) },
+            text = { Text(wipeMsg) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.dismissSecurityWipeNotice()
+                        currentTab = BottomDestination.SETTINGS
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                ) {
+                    Text("Понятно")
+                }
+            }
         )
     }
 
@@ -447,6 +477,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     LaunchedEffect(openWikiTabStamp) {
         if (openWikiTabStamp > 0L) {
             currentTab = BottomDestination.WIKI
+        }
+    }
+
+    LaunchedEffect(openWatchlistStamp) {
+        if (openWatchlistStamp > 0L) {
+            toolboxInitialTab = 3
+            showToolboxDialog = true
         }
     }
 

@@ -170,9 +170,11 @@ class DesktopStorage {
                     remoteEvents = emptyList(),
                     legacyLocalNotes = raw.clientDossierNotes ?: emptyMap()
                 ),
-                watchlistHosts = (raw.watchlistHosts ?: SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
-                    .mapNotNull { (it as String?)?.trim()?.takeIf(String::isNotEmpty) }
-                    .ifEmpty { SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS },
+                watchlistHosts = if (raw.watchlistHosts != null) {
+                    raw.watchlistHosts.mapNotNull { (it as String?)?.trim()?.takeIf(String::isNotEmpty) }
+                } else {
+                    SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS
+                },
                 watchlistLabels = (raw.watchlistLabels ?: emptyMap())
                     .mapKeys { (k, _) -> SysadminToolboxEngine.normalizeHostKey(k) }
                     .mapValues { (_, v) -> (v as String?)?.trim().orEmpty() }
@@ -207,6 +209,22 @@ class DesktopStorage {
             System.arraycopy(enc, 0, out, iv.size, enc.size)
             stateFile.writeText(Base64.getEncoder().encodeToString(out))
         }
+    }
+
+    fun offlineWikiDir(): File = File(dataDir, "confluence_offline")
+
+    @Synchronized
+    fun wipeAllPersistedData(keptServerUrl: String, keptConfluenceUrl: String) {
+        runCatching { if (stateFile.exists()) stateFile.delete() }
+        saveState(
+            DesktopPersistedState(
+                appSettings = AppSettings(
+                    serverUrl = keptServerUrl,
+                    confluenceUrl = keptConfluenceUrl
+                ),
+                watchlistHosts = emptyList()
+            )
+        )
     }
 }
 
