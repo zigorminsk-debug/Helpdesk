@@ -84,8 +84,8 @@ object TicketSpeechAnnouncer {
 
         announceJob?.cancel()
         announceJob = scope.launch {
-            delay(delayAfterChimeMs)
-            speakInternal(context.applicationContext, phrase)
+            if (delayAfterChimeMs > 0L) delay(delayAfterChimeMs)
+            speakNow(context.applicationContext, phrase)
         }
     }
 

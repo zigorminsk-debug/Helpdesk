@@ -213,7 +213,7 @@ fun ZabbixMonitorScreen(
         )
     }
 
-    if (hostDiagnosticState.targetHost != null) {
+    if (hostDiagnosticState.targetHost.isNotBlank()) {
         AlertDialog(
             onDismissRequest = onDismissHostDiagnostics,
             title = {
@@ -234,7 +234,7 @@ fun ZabbixMonitorScreen(
                 } else {
                     val rep = hostDiagnosticState.report
                     if (rep == null) {
-                        Text(hostDiagnosticState.errorMessage ?: "Нет данных диагностики")
+                        Text("Нет данных диагностики для указанного узла")
                     } else {
                         val openPorts = rep.portStatuses.filter { it.isOpen }
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

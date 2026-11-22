@@ -97,8 +97,8 @@ private data class AuthenticatedJiraUser(
 
 class JiraApiClient {
 
-    private val standardClient: OkHttpClient = buildBaseClient()
-    private val selfSignedClient: OkHttpClient = buildTrustAllOverlay(standardClient)
+    private val standardClient: OkHttpClient = sharedStandardClient
+    private val selfSignedClient: OkHttpClient = sharedTrustAllClient
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -3375,6 +3375,13 @@ class JiraApiClient {
         private val PHONE_FIELD_HINTS = listOf(
             "phone", "телефон", "тел.", "тел ", "мобил", "контакт", "номер связи", "mobile", "callback"
         )
+
+        val sharedStandardClient: OkHttpClient by lazy { buildBaseClient() }
+        val sharedTrustAllClient: OkHttpClient by lazy { buildTrustAllOverlay(sharedStandardClient) }
+
+        fun sharedClient(trustAllSsl: Boolean): OkHttpClient {
+            return if (trustAllSsl) sharedTrustAllClient else sharedStandardClient
+        }
 
         private fun buildBaseClient(): OkHttpClient {
             return OkHttpClient.Builder()

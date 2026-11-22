@@ -765,7 +765,6 @@ class DesktopController(
             refreshZabbix(silent = true)
         }
     }
-    }
 
     fun saveFilterSettings(newFilter: FilterSettings) {
         _state.update {
