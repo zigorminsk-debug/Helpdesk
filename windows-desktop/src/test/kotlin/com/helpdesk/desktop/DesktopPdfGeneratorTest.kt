@@ -175,4 +175,42 @@ class DesktopPdfGeneratorTest {
             tempCsv.delete()
         }
     }
+
+    @Test
+    fun `generateRepairQrStickerPdf and generateShiftAnalyticsPdf render valid Cyrillic PDFs`() {
+        val item = RepairEquipmentItem(
+            id = "rem-3005",
+            intakeNumber = "REM-3005",
+            clientName = "ООО «Сейлзмодерн»",
+            clientPhone = "+375293371412",
+            linkedTicketKey = "CSL-37950",
+            deviceCategory = "Ноутбук",
+            deviceModel = "HP ProBook 450 G9",
+            serialNumber = "5CD2419XYZ",
+            status = RepairStatus.READY
+        )
+        val qrPdf = DesktopPdfGenerator.generateRepairQrStickerPdf(item)
+        try {
+            assertTrue(qrPdf.exists() && qrPdf.length() > 600L)
+            val qrText = PDDocument.load(qrPdf).use { PDFTextStripper().getText(it) }
+            assertTrue(qrText.contains("REM-3005"), "Sticker PDF must include intake number: $qrText")
+        } finally {
+            qrPdf.delete()
+        }
+
+        val summary = com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator.computeForPeriod(
+            tickets = emptyList(),
+            period = com.helpdesk.jiraagent.domain.ShiftReportPeriod.WEEK_7D,
+            connectedUserDisplayName = "Захаревич Игорь",
+            usernameOrEmail = "ziv@csl.by"
+        )
+        val reportPdf = DesktopPdfGenerator.generateShiftAnalyticsPdf(summary, "Захаревич Игорь")
+        try {
+            assertTrue(reportPdf.exists() && reportPdf.length() > 800L)
+            val repText = PDDocument.load(reportPdf).use { PDFTextStripper().getText(it) }
+            assertTrue(repText.contains("ОТЧЁТ ДЕЖУРНОЙ СМЕНЫ") || repText.contains("Фабрициуса, 9"), "Report PDF text: $repText")
+        } finally {
+            reportPdf.delete()
+        }
+    }
 }

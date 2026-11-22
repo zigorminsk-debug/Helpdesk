@@ -82,6 +82,7 @@ enum class TtsReadoutMode(val title: String, val subtitle: String) {
 
 data class AppSettings(
     val serverUrl: String = "",
+    val confluenceUrl: String = DEFAULT_CONFLUENCE_URL,
     val serverType: JiraServerType = JiraServerType.AUTO,
     val authType: AuthType = AuthType.BASIC_LOGIN_PASSWORD,
     val usernameOrEmail: String = "",
@@ -117,7 +118,12 @@ data class AppSettings(
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&
             (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank())
 
+    val isConfluenceReady: Boolean
+        get() = passwordOrToken.isNotBlank() &&
+            (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank())
+
     companion object {
+        const val DEFAULT_CONFLUENCE_URL = "https://w.csl.by"
         val DEFAULT_QUICK_REPLY_TEMPLATES = listOf(
             "Здравствуйте, {клиент}! Заявка {заявка} принята в работу инженером {инженер}.",
             "Пришлите, пожалуйста, ID и временный пароль AnyDesk / RustDesk для подключения.",

@@ -35,7 +35,13 @@ import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.TicketStage
 import java.awt.Frame
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDropEvent
 import java.awt.image.BufferedImage
+import java.io.File
 import javax.imageio.ImageIO
 import javax.swing.SwingUtilities
 
@@ -46,6 +52,7 @@ fun main(args: Array<String>) = application {
 
     var isMainWindowVisible by remember { mutableStateOf(!startMinimized) }
     var showShiftAnalytics by remember { mutableStateOf(false) }
+    var showToolboxDialog by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showFullGuide by remember { mutableStateOf(false) }
 
@@ -157,7 +164,12 @@ fun main(args: Array<String>) = application {
         icon = appIconPainter,
         onPreviewKeyEvent = { ev ->
             if (ev.type == KeyEventType.KeyDown && ev.key == Key.F5) {
-                controller.refreshTickets(silent = false)
+                when (state.activeTab) {
+                    DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
+                    DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
+                    DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
+                    else -> controller.refreshTickets(silent = false)
+                }
                 true
             } else {
                 false
@@ -167,6 +179,30 @@ fun main(args: Array<String>) = application {
         SideEffect {
             mainComposeWindow = window
         }
+        DisposableEffect(window) {
+            val dropTarget = DropTarget(window, object : DropTargetAdapter() {
+                override fun drop(dtde: DropTargetDropEvent) {
+                    try {
+                        if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                            dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                            val rawList = dtde.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+                            val droppedFiles = rawList?.filterIsInstance<File>().orEmpty()
+                            if (droppedFiles.isNotEmpty()) {
+                                controller.uploadDroppedFiles(droppedFiles)
+                            }
+                            dtde.dropComplete(true)
+                        } else {
+                            dtde.rejectDrop()
+                        }
+                    } catch (_: Throwable) {
+                        runCatching { dtde.dropComplete(false) }
+                    }
+                }
+            })
+            onDispose {
+                runCatching { dropTarget.isActive = false }
+            }
+        }
         HelpCslDesktopTheme {
             Column(modifier = Modifier.fillMaxSize()) {
                 DesktopTopNavigationHeader(
@@ -174,34 +210,43 @@ fun main(args: Array<String>) = application {
                     version = controller.currentVersion,
                     appIconBitmap = appIconBitmap,
                     newQueueCount = newQueueCount,
-                        onSelectTab = { controller.selectTab(it) },
-                        onRefresh = { controller.refreshTickets(silent = false) },
-                        onOpenAnalytics = { showShiftAnalytics = true },
-                        onOpenQr = { showQrDialog = true },
-                        onOpenGuide = { showFullGuide = true }
-                    )
-
-                    // Status / Error / New Update Strip
-                    DesktopStatusBannerStrip(
-                        state = state,
-                        onDismiss = { controller.dismissBanners() },
-                        onInstallUpdate = { upd -> controller.downloadAndRunWindowsSetup(upd) }
-                    )
-
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    onSelectTab = { controller.selectTab(it) },
+                    onRefresh = {
                         when (state.activeTab) {
-                            DesktopMainTab.TICKETS -> DesktopTicketsWorkspace(state, controller)
-                            DesktopMainTab.REPAIR -> DesktopRepairWorkspace(state, controller)
-                            DesktopMainTab.CHAT -> DesktopChatWorkspace(state, controller)
-                            DesktopMainTab.FILTER -> DesktopFilterWorkspace(state, controller)
-                            DesktopMainTab.SETTINGS -> DesktopSettingsWorkspace(
-                                state = state,
-                                controller = controller,
-                                onOpenQrDialog = { showQrDialog = true }
-                            )
+                            DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
+                            DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
+                            DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
+                            else -> controller.refreshTickets(silent = false)
                         }
+                    },
+                    onOpenToolbox = { showToolboxDialog = true },
+                    onOpenAnalytics = { showShiftAnalytics = true },
+                    onOpenQr = { showQrDialog = true },
+                    onOpenGuide = { showFullGuide = true }
+                )
+
+                // Status / Error / New Update Strip
+                DesktopStatusBannerStrip(
+                    state = state,
+                    onDismiss = { controller.dismissBanners() },
+                    onInstallUpdate = { upd -> controller.downloadAndRunWindowsSetup(upd) }
+                )
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when (state.activeTab) {
+                        DesktopMainTab.TICKETS -> DesktopTicketsWorkspace(state, controller)
+                        DesktopMainTab.REPAIR -> DesktopRepairWorkspace(state, controller)
+                        DesktopMainTab.WIKI -> DesktopWikiWorkspace(state, controller)
+                        DesktopMainTab.CHAT -> DesktopChatWorkspace(state, controller)
+                        DesktopMainTab.FILTER -> DesktopFilterWorkspace(state, controller)
+                        DesktopMainTab.SETTINGS -> DesktopSettingsWorkspace(
+                            state = state,
+                            controller = controller,
+                            onOpenQrDialog = { showQrDialog = true }
+                        )
                     }
                 }
+            }
 
                 // Manual Jira Transition Selector (if Jira workflow has ambiguous transitions)
                 state.pendingTransitionPrompt?.let { prompt ->
@@ -250,7 +295,16 @@ fun main(args: Array<String>) = application {
                 if (showShiftAnalytics) {
                     DesktopShiftAnalyticsDialog(
                         state = state,
+                        controller = controller,
                         onDismiss = { showShiftAnalytics = false }
+                    )
+                }
+
+                if (showToolboxDialog) {
+                    DesktopSysadminToolboxDialog(
+                        state = state,
+                        controller = controller,
+                        onDismiss = { showToolboxDialog = false }
                     )
                 }
 
@@ -280,6 +334,7 @@ private fun DesktopTopNavigationHeader(
     newQueueCount: Int,
     onSelectTab: (DesktopMainTab) -> Unit,
     onRefresh: () -> Unit,
+    onOpenToolbox: () -> Unit,
     onOpenAnalytics: () -> Unit,
     onOpenQr: () -> Unit,
     onOpenGuide: () -> Unit
@@ -373,6 +428,9 @@ private fun DesktopTopNavigationHeader(
                     )
                 }
 
+                TextButton(onClick = onOpenToolbox) {
+                    Text("🛠 Инструменты", color = Color.White, fontSize = 12.sp)
+                }
                 TextButton(onClick = onOpenAnalytics) {
                     Text("📊 Смена", color = Color.White, fontSize = 12.sp)
                 }

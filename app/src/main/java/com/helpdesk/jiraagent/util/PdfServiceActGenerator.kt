@@ -1,6 +1,7 @@
 package com.helpdesk.jiraagent.util
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -8,13 +9,21 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
+import androidx.core.content.FileProvider
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.helpdesk.jiraagent.domain.CslCompanyContacts
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
+import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import java.io.File
 import java.io.FileOutputStream
+import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -457,5 +466,250 @@ object PdfServiceActGenerator {
         }
         if (current.isNotEmpty()) lines.add(current.toString())
         return lines
+    }
+
+    /**
+     * Generates a 58x40 mm QR sticker PDF (`165 x 114 pt`) for workshop thermal/office printers.
+     */
+    fun generateRepairQrStickerPdf(context: Context, item: RepairEquipmentItem): File {
+        val labelWidth = 165
+        val labelHeight = 114
+        val doc = PdfDocument()
+        val pageInfo = PdfDocument.PageInfo.Builder(labelWidth, labelHeight, 1).create()
+        val page = doc.startPage(pageInfo)
+        val canvas = page.canvas
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        val code = item.intakeNumber.ifBlank { item.id.take(8).uppercase() }
+
+        // Top navy bar
+        paint.color = Color.parseColor("#04091E")
+        canvas.drawRect(0f, 0f, labelWidth.toFloat(), 16f, paint)
+
+        paint.color = Color.parseColor("#F7631B")
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 7.5f
+        canvas.drawText("csl.by", 6f, 11.5f, paint)
+
+        paint.color = Color.WHITE
+        paint.textSize = 8f
+        canvas.drawText(code, 36f, 11.5f, paint)
+
+        val dateShort = runCatching {
+            Instant.ofEpochMilli(item.createdAtEpochMs)
+                .atZone(ZoneId.of("Europe/Minsk"))
+                .format(DateTimeFormatter.ofPattern("dd.MM.yy"))
+        }.getOrDefault("")
+        paint.color = Color.parseColor("#CBD5E1")
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        paint.textSize = 6.5f
+        canvas.drawText(dateShort, labelWidth - 36f, 11.5f, paint)
+
+        // Vector QR code on left
+        val payload = RepairEquipmentCodec.encodeQrStickerPayload(item)
+        val hints = mapOf(
+            EncodeHintType.CHARACTER_SET to "UTF-8",
+            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+            EncodeHintType.MARGIN to 0
+        )
+        val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, 33, 33, hints)
+        val qrSize = 58f
+        val qrX = 5f
+        val qrY = 21f
+        val cols = matrix.width.coerceAtLeast(1)
+        val cell = qrSize / cols.toFloat()
+        paint.color = Color.BLACK
+        for (my in 0 until matrix.height) {
+            for (mx in 0 until cols) {
+                if (matrix.get(mx, my)) {
+                    val left = qrX + mx * cell
+                    val top = qrY + my * cell
+                    canvas.drawRect(left, top, left + cell + 0.15f, top + cell + 0.15f, paint)
+                }
+            }
+        }
+
+        // Right metadata
+        val tx = qrX + qrSize + 5f
+        var ty = 28f
+        paint.color = Color.parseColor("#0F172A")
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 7.2f
+        canvas.drawText(item.clientName.ifBlank { "Клиент" }.take(22), tx, ty, paint)
+        ty += 10f
+
+        if (item.clientPhone.isNotBlank()) {
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            paint.color = Color.parseColor("#334155")
+            paint.textSize = 6.6f
+            canvas.drawText(item.clientPhone.take(20), tx, ty, paint)
+            ty += 9.5f
+        }
+
+        val dev = "${item.deviceCategory} ${item.deviceModel}".trim().take(22)
+        if (dev.isNotBlank()) {
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            paint.color = Color.parseColor("#0F172A")
+            paint.textSize = 6.6f
+            canvas.drawText(dev, tx, ty, paint)
+            ty += 9.5f
+        }
+
+        if (item.serialNumber.isNotBlank()) {
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            paint.color = Color.parseColor("#475569")
+            paint.textSize = 6.2f
+            canvas.drawText("S/N: ${item.serialNumber.take(18)}", tx, ty, paint)
+            ty += 9f
+        }
+
+        if (item.shelfLocation.isNotBlank()) {
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            paint.color = Color.parseColor("#F7631B")
+            paint.textSize = 6.4f
+            canvas.drawText("Полка: ${item.shelfLocation.take(14)}", tx, ty, paint)
+        }
+
+        paint.color = Color.parseColor("#CBD5E1")
+        paint.strokeWidth = 0.6f
+        canvas.drawLine(5f, labelHeight - 16f, labelWidth - 5f, labelHeight - 16f, paint)
+
+        paint.color = Color.parseColor("#334155")
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        paint.textSize = 6f
+        canvas.drawText(
+            item.reportedDefect.ifBlank { "СЦ ООО «Компьютерная безопасность»" }.take(38),
+            5f,
+            labelHeight - 6f,
+            paint
+        )
+
+        doc.finishPage(page)
+        val actsDir = File(context.cacheDir, "service_acts").apply { mkdirs() }
+        val safeCode = code.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val outFile = File(actsDir, "Sticker_${safeCode}_${System.currentTimeMillis() / 1000}.pdf")
+        FileOutputStream(outFile).use { doc.writeTo(it) }
+        doc.close()
+        return outFile
+    }
+
+    /**
+     * Generates an A4 Shift Analytics Report PDF (`Сегодня` / `7 дней` / `30 дней`).
+     */
+    fun generateShiftAnalyticsPdf(
+        context: Context,
+        summary: PeriodAnalyticsSummary,
+        engineerName: String
+    ): File {
+        val pageWidth = 595
+        val pageHeight = 842
+        val doc = PdfDocument()
+        val page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create())
+        val canvas = page.canvas
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        drawCorporateCslHeader(
+            canvas = canvas,
+            pageWidth = pageWidth,
+            docTitle = "ОТЧЁТ ДЕЖУРНОЙ СМЕНЫ (${summary.period.title.uppercase()} · ${summary.periodRangeDisplay})"
+        )
+
+        val orange = Color.parseColor("#F7631B")
+        val dark = Color.parseColor("#0F172A")
+        val muted = Color.parseColor("#475569")
+
+        var y = 140f
+        paint.color = orange
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 12f
+        canvas.drawText("1. Ключевые показатели очереди и SLA:", 36f, y, paint)
+        y += 20f
+
+        val kpis = listOf(
+            "Поступило обращений за период" to summary.createdInPeriod.toString(),
+            "Закрыто за период (всего / мной)" to "${summary.closedInPeriod} / ${summary.closedByMeInPeriod}",
+            "Сейчас в очереди (Новые / В работе)" to "${summary.activeNewCount} / ${summary.activeInProgressCount}",
+            "Среднее ожидание в «Новых»" to "${summary.avgQueueWaitMinutes} мин.",
+            "Доля заявок в зелёной зоне SLA (< 15 мин)" to "${summary.slaGreenPercent}%"
+        )
+        for ((label, value) in kpis) {
+            paint.color = muted
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            paint.textSize = 10.5f
+            canvas.drawText("• $label:", 44f, y, paint)
+            paint.color = dark
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            canvas.drawText(value, 340f, y, paint)
+            y += 17f
+        }
+
+        y += 10f
+        paint.color = orange
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 12f
+        canvas.drawText("2. Выработка инженеров техподдержки:", 36f, y, paint)
+        y += 20f
+
+        for (eng in summary.engineerStats.take(10)) {
+            paint.color = dark
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            paint.textSize = 10.5f
+            canvas.drawText(eng.engineerName.take(40), 44f, y, paint)
+            paint.color = muted
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            canvas.drawText("Закрыто: ${eng.closedCount}  |  В работе: ${eng.inProgressCount}", 320f, y, paint)
+            y += 16f
+        }
+
+        y += 10f
+        paint.color = orange
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 12f
+        canvas.drawText("3. Топ организаций / клиентов:", 36f, y, paint)
+        y += 20f
+
+        for (cl in summary.topClients.take(8)) {
+            if (y > pageHeight - 90) break
+            paint.color = dark
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            paint.textSize = 10.5f
+            canvas.drawText(cl.clientName.take(44), 44f, y, paint)
+            paint.color = muted
+            canvas.drawText("Всего: ${cl.totalCount} (открыто: ${cl.openCount})", 320f, y, paint)
+            y += 16f
+        }
+
+        val stamp = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
+        paint.color = muted
+        paint.textSize = 9.5f
+        canvas.drawText("Сформировал: $engineerName  ·  Дата: $stamp", 36f, pageHeight - 36f, paint)
+
+        doc.finishPage(page)
+        val actsDir = File(context.cacheDir, "service_acts").apply { mkdirs() }
+        val outFile = File(actsDir, "ShiftReport_${summary.period.name}_${System.currentTimeMillis() / 1000}.pdf")
+        FileOutputStream(outFile).use { doc.writeTo(it) }
+        doc.close()
+        return outFile
+    }
+
+    fun shareExportedFile(
+        context: Context,
+        file: File,
+        mimeType: String,
+        chooserTitle: String
+    ) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(
+            Intent.createChooser(intent, chooserTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }

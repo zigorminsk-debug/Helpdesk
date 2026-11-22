@@ -264,6 +264,16 @@ fun ServerSettingsScreen(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
                 )
 
+                OutlinedTextField(
+                    value = draft.confluenceUrl,
+                    onValueChange = { draft = draft.copy(confluenceUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL Confluence Wiki (вход с теми же данными Jira)") },
+                    placeholder = { Text("https://w.csl.by") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
                 Text(
                     text = "Тип сервера",
                     style = MaterialTheme.typography.labelLarge,

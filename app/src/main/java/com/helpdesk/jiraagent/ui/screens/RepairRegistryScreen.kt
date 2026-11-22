@@ -102,6 +102,7 @@ import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.RepairSubTab
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
+import com.helpdesk.jiraagent.ui.components.RepairReadyNotifyAndroidDialog
 import com.helpdesk.jiraagent.ui.components.rememberSafeBarcodeScanner
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -153,7 +154,10 @@ fun RepairRegistryScreen(
     onSyncNow: () -> Unit,
     onRefreshClients: () -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
-    onAttachPdfToTicket: (ticketKey: String, pdfBytes: ByteArray, fileName: String, note: String) -> Unit
+    onAttachPdfToTicket: (ticketKey: String, pdfBytes: ByteArray, fileName: String, note: String) -> Unit,
+    onPrintQrSticker: (RepairEquipmentItem) -> Unit = {},
+    onPostReadyToTicket: (RepairEquipmentItem) -> Unit = {},
+    onExportCsv: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -163,6 +167,7 @@ fun RepairRegistryScreen(
     var isCreatingNew by remember { mutableStateOf(false) }
     var unfoundScannedSerial by remember { mutableStateOf<String?>(null) }
     var pdfTargetItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
+    var readyNotifyItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
 
     // Open intake dialog automatically when navigated from TicketDetailScreen («🔧 В ремонт»)
     LaunchedEffect(prefillDraftFromTicket) {
@@ -174,16 +179,14 @@ fun RepairRegistryScreen(
     }
 
     val launchBarcodeSearch = rememberSafeBarcodeScanner(
-        prompt = "Наведите камеру на S/N или QR техники для поиска в ремонте"
+        prompt = "Наведите камеру на QR-наклейку REM-… или S/N техники"
     ) { scanned ->
-        val found = items.firstOrNull {
-            it.serialNumber.equals(scanned, ignoreCase = true) ||
-                it.intakeNumber.equals(scanned, ignoreCase = true)
-        }
+        val found = RepairEquipmentCodec.findByScannedQrOrCode(items, scanned)
         if (found != null) {
             selectedSubTab = RepairSubTab.entries.firstOrNull { it.matchesItem(found) }
                 ?: RepairSubTab.ACTIVE
-            searchQuery = scanned
+            isCreatingNew = false
+            editingItem = found
         } else {
             unfoundScannedSerial = scanned
         }
@@ -354,6 +357,16 @@ fun RepairRegistryScreen(
                     }
                     Spacer(modifier = Modifier.width(4.dp))
                 }
+
+                OutlinedButton(
+                    onClick = onExportCsv,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("📊 CSV", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                }
+                Spacer(modifier = Modifier.width(4.dp))
 
                 Button(
                     onClick = {
@@ -561,11 +574,24 @@ fun RepairRegistryScreen(
                         },
                         onOpenLinkedTicket = onOpenLinkedTicket,
                         onOpenPdfDialog = { pdfTargetItem = item },
+                        onPrintSticker = { onPrintQrSticker(item) },
+                        onNotifyReady = { readyNotifyItem = item },
                         onRestore = { onRestoreItem(item) }
                     )
                 }
             }
         }
+    }
+
+    readyNotifyItem?.let { target ->
+        RepairReadyNotifyAndroidDialog(
+            item = target,
+            onSendToJiraTicket = {
+                onPostReadyToTicket(target)
+                readyNotifyItem = null
+            },
+            onDismiss = { readyNotifyItem = null }
+        )
     }
 }
 
@@ -577,6 +603,8 @@ private fun RepairEquipmentCard(
     onQuickChangeStatus: (RepairStatus) -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
     onOpenPdfDialog: () -> Unit,
+    onPrintSticker: () -> Unit,
+    onNotifyReady: () -> Unit,
     onRestore: () -> Unit
 ) {
     val context = LocalContext.current
@@ -839,6 +867,34 @@ private fun RepairEquipmentCard(
                                 softWrap = false
                             )
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = onPrintSticker,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp),
+                        shape = RoundedCornerShape(7.dp)
+                    ) {
+                        Text(
+                            text = "🏷 QR",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onNotifyReady,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp),
+                        shape = RoundedCornerShape(7.dp)
+                    ) {
+                        Text(
+                            text = "📣 Готово",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
 
                     OutlinedButton(

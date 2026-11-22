@@ -52,6 +52,8 @@ import com.helpdesk.jiraagent.domain.QuickReplyTemplates
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
+import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.Dispatchers
@@ -111,6 +113,7 @@ fun DesktopTicketsWorkspace(
     var searchQuery by remember { mutableStateOf("") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showSerialArchiveDialog by remember { mutableStateOf(false) }
+    var showKnowledgeArchiveDialog by remember { mutableStateOf(false) }
     var showPostponedDialog by remember { mutableStateOf(false) }
     var showHabrPanel by remember { mutableStateOf(false) }
 
@@ -237,9 +240,15 @@ fun DesktopTicketsWorkspace(
                 }
                 OutlinedButton(
                     onClick = { showSerialArchiveDialog = true },
-                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
-                    Text("🔎 S/N", fontSize = 12.sp, maxLines = 1)
+                    Text("🔎 S/N", fontSize = 11.5.sp, maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = { showKnowledgeArchiveDialog = true },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    Text("📚 Решения", fontSize = 11.5.sp, maxLines = 1)
                 }
                 if (showHabrPanel) {
                     Button(
@@ -500,6 +509,17 @@ fun DesktopTicketsWorkspace(
             items = state.postponedTickets,
             onCancelItem = { controller.cancelPostponedTicket(it) },
             onDismiss = { showPostponedDialog = false }
+        )
+    }
+
+    if (showKnowledgeArchiveDialog) {
+        DesktopKnowledgeArchiveDialog(
+            initialQuery = searchQuery,
+            excludeTicketKey = state.selectedTicketKey,
+            state = state,
+            controller = controller,
+            onOpenTicket = { key -> controller.selectTicket(key) },
+            onDismiss = { showKnowledgeArchiveDialog = false }
         )
     }
 }
@@ -1380,6 +1400,28 @@ private fun DesktopTicketInspector(
     var showTransferDialog by remember { mutableStateOf(false) }
     var showWorklogDialog by remember { mutableStateOf(false) }
     var showActPdfDialog by remember { mutableStateOf(false) }
+    var showPassportDialog by remember { mutableStateOf(false) }
+    var showTicketKbDialog by remember { mutableStateOf(false) }
+
+    val stopwatchEntry = state.ticketStopwatches[ticket.key]
+    var stopwatchNowMs by remember(ticket.key) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(ticket.key, stopwatchEntry?.isRunning) {
+        while (stopwatchEntry?.isRunning == true) {
+            stopwatchNowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+        stopwatchNowMs = System.currentTimeMillis()
+    }
+    val stopwatchDisplay = remember(stopwatchEntry, stopwatchNowMs) {
+        TicketStopwatchTracker.formatTimerDisplay(stopwatchEntry, stopwatchNowMs)
+    }
+    val stopwatchSuggestedMins = remember(stopwatchEntry, stopwatchNowMs) {
+        TicketStopwatchTracker.roundedMinutesForWorklog(stopwatchEntry, stopwatchNowMs)
+    }
+    val clientPassport = remember(state.clientPassports, ticket.reporterName) {
+        val k = ClientTechPassportCodec.normalizeKey(ticket.reporterName)
+        state.clientPassports[k]
+    }
 
     Column(
         modifier = Modifier
@@ -1479,22 +1521,107 @@ private fun DesktopTicketInspector(
                     }
                 }
 
-                // Secondary Engineer Actions (В ремонт, В чат, PDF-акт, Worklog)
+                // Secondary Engineer Actions (В ремонт, В чат, PDF-акт, Worklog, Таймер, Wiki, Техпаспорт)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (stopwatchEntry?.isRunning == true) DesktopColors.CslOrangeContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(
+                            1.dp,
+                            if (stopwatchEntry?.isRunning == true) DesktopColors.CslOrange else MaterialTheme.colorScheme.outlineVariant
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "⏱ $stopwatchDisplay",
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (stopwatchEntry?.isRunning == true) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (stopwatchEntry?.isRunning == true) "⏸" else "▶",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { controller.toggleTicketStopwatch(ticket.key) }
+                                    .padding(horizontal = 4.dp)
+                            )
+                            if (stopwatchEntry != null) {
+                                Text(
+                                    text = "✕",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { controller.resetTicketStopwatch(ticket.key) }
+                                        .padding(horizontal = 3.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedButton(onClick = { showPassportDialog = true }) {
+                        Text(
+                            if (clientPassport != null && !clientPassport.isEmpty) "🏢 Техпаспорт ✓" else "🏢 Техпаспорт",
+                            fontSize = 12.sp
+                        )
+                    }
+                    OutlinedButton(onClick = { controller.openClientInWiki(ticket.reporterName) }) {
+                        Text("📘 Wiki клиента", fontSize = 12.sp)
+                    }
+                    OutlinedButton(onClick = { showTicketKbDialog = true }) {
+                        Text("📚 База решений", fontSize = 12.sp)
+                    }
                     OutlinedButton(onClick = { controller.openRepairIntakeFromTicket(ticket) }) {
-                        Text("🔧 Принять в ремонт", fontSize = 12.sp)
+                        Text("🔧 В ремонт", fontSize = 12.sp)
                     }
                     OutlinedButton(onClick = { controller.discussTicketInChat(ticket) }) {
-                        Text("💬 Обсудить в чате", fontSize = 12.sp)
+                        Text("💬 В чат", fontSize = 12.sp)
                     }
                     OutlinedButton(onClick = { showActPdfDialog = true }) {
-                        Text("📄 Акт работ PDF", fontSize = 12.sp)
+                        Text("📄 Акт PDF", fontSize = 12.sp)
                     }
                     OutlinedButton(onClick = { showWorklogDialog = true }) {
                         Text("⏱ Списать время", fontSize = 12.sp)
+                    }
+                }
+
+                // Inline synced Client Tech Passport summary strip (if filled by team)
+                if (clientPassport != null && !clientPassport.isEmpty) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = DesktopColors.CslOrangeContainer.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth().clickable { showPassportDialog = true }
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                "🏢 Техпаспорт «${ticket.reporterName}» (нажмите для редактирования)",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = DesktopColors.CslOrange
+                            )
+                            val lines = buildList {
+                                if (clientPassport.addressesAndBranches.isNotBlank()) add("📍 ${clientPassport.addressesAndBranches}")
+                                if (clientPassport.gatewayAndProvider.isNotBlank()) add("🌐 ${clientPassport.gatewayAndProvider}")
+                                if (clientPassport.vpnAndRemoteNotes.isNotBlank()) add("🔐 ${clientPassport.vpnAndRemoteNotes}")
+                                if (clientPassport.serversAndServices.isNotBlank()) add("🖥 ${clientPassport.serversAndServices}")
+                                if (clientPassport.contactsAndNotes.isNotBlank()) add("👤 ${clientPassport.contactsAndNotes}")
+                            }
+                            lines.forEach { ln ->
+                                Text(ln, fontSize = 11.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
                     }
                 }
             }
@@ -1749,6 +1876,18 @@ private fun DesktopTicketInspector(
                         }
                     }
                 }
+
+                Text(
+                    "💡 Можно перетащить файлы прямо из Проводника Windows в это окно (Drag & Drop).",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                DesktopAttachmentThumbnailStrip(
+                    attachments = ticket.attachments.orEmpty(),
+                    controller = controller,
+                    onOpenOriginal = { att -> controller.downloadAndOpenAttachment(att.contentUrl, att.filename) }
+                )
 
                 ticket.attachments.orEmpty().forEach { att ->
                     Row(
@@ -2074,10 +2213,11 @@ private fun DesktopTicketInspector(
             title = "Завершить заявку ${ticket.key}",
             placeholder = "Комментарий о решении (необязательно)...",
             confirmText = "✅ Завершить и вернуться в очередь",
+            suggestedWorklogMinutes = if (stopwatchEntry != null) stopwatchSuggestedMins else null,
             onDismiss = { showCompleteDialog = false },
-            onConfirm = { text ->
+            onConfirmWithWorklog = { text, logMins ->
                 showCompleteDialog = false
-                controller.performTicketAction(ticket.key, TicketWorkflowAction.COMPLETE, text.ifBlank { null })
+                controller.completeTicketWithOptionalWorklog(ticket.key, text.ifBlank { null }, logMins)
             }
         )
     }
@@ -2121,6 +2261,7 @@ private fun DesktopTicketInspector(
     if (showWorklogDialog) {
         WorklogEntryDialog(
             ticketKey = ticket.key,
+            initialMinutes = if (stopwatchEntry != null) stopwatchSuggestedMins else 30,
             onDismiss = { showWorklogDialog = false },
             onSave = { mins, note ->
                 showWorklogDialog = false
@@ -2130,13 +2271,45 @@ private fun DesktopTicketInspector(
     }
 
     if (showActPdfDialog) {
+        val defaultSpent = if (stopwatchEntry != null) {
+            val h = stopwatchSuggestedMins / 60
+            val m = stopwatchSuggestedMins % 60
+            if (h > 0) "$h ч ${m.toString().padStart(2, '0')} мин" else "$m мин"
+        } else "1 ч 00 мин"
         CompletionActPdfDialog(
             ticket = ticket,
+            initialTimeSpent = defaultSpent,
             onDismiss = { showActPdfDialog = false },
             onGenerate = { work, parts, spent, attach ->
                 showActPdfDialog = false
                 controller.generateAndAttachActPdf(ticket, work, parts, spent, attach)
             }
+        )
+    }
+
+    if (showPassportDialog) {
+        DesktopClientPassportDialog(
+            initialPassport = controller.getClientPassport(ticket.reporterName),
+            onSave = { controller.saveClientTechPassport(it) },
+            onOpenInWiki = {
+                showPassportDialog = false
+                controller.openClientInWiki(ticket.reporterName)
+            },
+            onDismiss = { showPassportDialog = false }
+        )
+    }
+
+    if (showTicketKbDialog) {
+        DesktopKnowledgeArchiveDialog(
+            initialQuery = ticket.summary,
+            excludeTicketKey = ticket.key,
+            state = state,
+            controller = controller,
+            onOpenTicket = { key -> controller.selectTicket(key) },
+            onInsertSolution = { sol ->
+                commentDraft = if (commentDraft.isBlank()) sol else "$commentDraft\n$sol"
+            },
+            onDismiss = { showTicketKbDialog = false }
         )
     }
 }
@@ -2146,25 +2319,52 @@ private fun WorkflowCommentDialog(
     title: String,
     placeholder: String,
     confirmText: String,
+    suggestedWorklogMinutes: Int? = null,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: ((String) -> Unit)? = null,
+    onConfirmWithWorklog: ((String, Int?) -> Unit)? = null
 ) {
     var comment by remember { mutableStateOf("") }
+    var autoLogTime by remember { mutableStateOf(suggestedWorklogMinutes != null) }
+    var minutesText by remember { mutableStateOf((suggestedWorklogMinutes ?: 15).toString()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
-            OutlinedTextField(
-                value = comment,
-                onValueChange = { comment = it },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 3,
-                placeholder = { Text(placeholder) }
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = comment,
+                    onValueChange = { comment = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    placeholder = { Text(placeholder) }
+                )
+                if (suggestedWorklogMinutes != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Checkbox(checked = autoLogTime, onCheckedChange = { autoLogTime = it })
+                        Text("⏱ Списать время в Worklog по таймеру:", fontSize = 12.sp)
+                        OutlinedTextField(
+                            value = minutesText,
+                            onValueChange = { minutesText = it.filter(Char::isDigit) },
+                            singleLine = true,
+                            modifier = Modifier.width(82.dp),
+                            suffix = { Text("м", fontSize = 11.sp) }
+                        )
+                    }
+                }
+            }
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(comment.trim()) },
+                onClick = {
+                    val clean = comment.trim()
+                    if (onConfirmWithWorklog != null) {
+                        val mins = if (autoLogTime) minutesText.toIntOrNull() else null
+                        onConfirmWithWorklog(clean, mins)
+                    } else {
+                        onConfirm?.invoke(clean)
+                    }
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
             ) { Text(confirmText) }
         },
@@ -2289,10 +2489,11 @@ private fun AssignColleagueDialog(
 @Composable
 private fun WorklogEntryDialog(
     ticketKey: String,
+    initialMinutes: Int = 30,
     onDismiss: () -> Unit,
     onSave: (Int, String?) -> Unit
 ) {
-    var minutesText by remember { mutableStateOf("30") }
+    var minutesText by remember { mutableStateOf(initialMinutes.toString()) }
     var note by remember { mutableStateOf("") }
 
     AlertDialog(
@@ -2337,12 +2538,13 @@ private fun WorklogEntryDialog(
 @Composable
 private fun CompletionActPdfDialog(
     ticket: HelpdeskTicket,
+    initialTimeSpent: String = "1 ч 00 мин",
     onDismiss: () -> Unit,
     onGenerate: (String, String, String, Boolean) -> Unit
 ) {
     var workSummary by remember { mutableStateOf("Выполнена диагностика и устранение неисправности по обращению ${ticket.key}.") }
     var partsUsed by remember { mutableStateOf("Не использовались") }
-    var timeSpent by remember { mutableStateOf("1 ч 00 мин") }
+    var timeSpent by remember { mutableStateOf(initialTimeSpent) }
     var attachToJira by remember { mutableStateOf(true) }
 
     AlertDialog(

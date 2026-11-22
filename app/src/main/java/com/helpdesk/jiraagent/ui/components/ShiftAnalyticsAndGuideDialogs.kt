@@ -20,12 +20,16 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,7 +47,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
+import com.helpdesk.jiraagent.domain.ShiftReportPeriod
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -58,10 +64,18 @@ fun ShiftAnalyticsDialog(
     connectedUserDisplayName: String?,
     usernameOrEmail: String,
     onSelectClientFilter: (String) -> Unit,
+    onExportPdf: (PeriodAnalyticsSummary) -> Unit = {},
+    onExportCsv: (PeriodAnalyticsSummary) -> Unit = {},
     onDismiss: () -> Unit
 ) {
-    val report = remember(tickets, connectedUserDisplayName, usernameOrEmail) {
-        ShiftAnalyticsCalculator.compute(tickets, connectedUserDisplayName, usernameOrEmail)
+    var period by rememberSaveable { mutableStateOf(ShiftReportPeriod.TODAY) }
+    val summary = remember(tickets, connectedUserDisplayName, usernameOrEmail, period) {
+        ShiftAnalyticsCalculator.computeForPeriod(
+            tickets = tickets,
+            period = period,
+            connectedUserDisplayName = connectedUserDisplayName,
+            usernameOrEmail = usernameOrEmail
+        )
     }
 
     AlertDialog(
@@ -82,36 +96,67 @@ fun ShiftAnalyticsDialog(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ShiftReportPeriod.entries.forEach { p ->
+                        FilterChip(
+                            selected = period == p,
+                            onClick = { period = p },
+                            label = { Text(p.title, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+                Text(
+                    text = "Период: ${summary.periodRangeDisplay}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    KpiMiniBox("За сегодня", "+${report.createdToday}", CslOrange, Modifier.weight(1f))
-                    KpiMiniBox("Закрыто", "${report.closedToday}", CslSuccessGreen, Modifier.weight(1f))
-                    KpiMiniBox("Мной", "${report.closedByMeToday}", CslSuccessGreen, Modifier.weight(1f))
+                    KpiMiniBox("Поступило", "+${summary.createdInPeriod}", CslOrange, Modifier.weight(1f))
+                    KpiMiniBox("Закрыто", "${summary.closedInPeriod}", CslSuccessGreen, Modifier.weight(1f))
+                    KpiMiniBox("Мной", "${summary.closedByMeInPeriod}", CslSuccessGreen, Modifier.weight(1f))
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    KpiMiniBox("В очереди", "${report.activeNewCount}", CslOrange, Modifier.weight(1f))
-                    KpiMiniBox("SLA <15м", "${report.slaGreenPercent}%", CslSuccessGreen, Modifier.weight(1f))
-                    KpiMiniBox("Ср. ожид.", "${report.avgQueueWaitMinutes} м", MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
+                    KpiMiniBox("В очереди", "${summary.activeNewCount}", CslOrange, Modifier.weight(1f))
+                    KpiMiniBox("SLA <15м", "${summary.slaGreenPercent}%", CslSuccessGreen, Modifier.weight(1f))
+                    KpiMiniBox("Ср. ожид.", "${summary.avgQueueWaitMinutes} м", MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
                 }
 
-                Text(
-                    text = "За 7 дней: поступило ${report.createdLast7Days} · решено ${report.closedLast7Days}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { onExportPdf(summary) },
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("📄 PDF", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = { onExportCsv(summary) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("📊 CSV (Excel)", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
 
-                if (report.engineerStats.isNotEmpty()) {
+                if (summary.engineerStats.isNotEmpty()) {
                     HorizontalDivider()
                     Text(
-                        text = "Нагрузка по инженерам:",
+                        text = "Нагрузка по инженерам (${period.title}):",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         color = CslOrange
                     )
-                    report.engineerStats.forEach { eng ->
+                    summary.engineerStats.forEach { eng ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -126,7 +171,7 @@ fun ShiftAnalyticsDialog(
                     }
                 }
 
-                if (report.topClients.isNotEmpty()) {
+                if (summary.topClients.isNotEmpty()) {
                     HorizontalDivider()
                     Text(
                         text = "Топ клиентов по обращениям (нажмите для поиска):",
@@ -134,7 +179,7 @@ fun ShiftAnalyticsDialog(
                         fontWeight = FontWeight.Bold,
                         color = CslOrange
                     )
-                    report.topClients.forEach { cl ->
+                    summary.topClients.forEach { cl ->
                         Surface(
                             onClick = {
                                 onDismiss()

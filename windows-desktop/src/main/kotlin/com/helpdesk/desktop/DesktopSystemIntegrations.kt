@@ -1,10 +1,18 @@
 package com.helpdesk.desktop
 
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.helpdesk.jiraagent.domain.CslCompanyContacts
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
+import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
 import com.helpdesk.jiraagent.domain.RemoteDesktopKind
 import com.helpdesk.jiraagent.model.AlertSoundPreset
+import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +40,8 @@ import java.awt.RenderingHints
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.awt.datatransfer.Transferable
+import java.awt.datatransfer.UnsupportedFlavorException
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -592,6 +602,105 @@ object WindowsExternalLaunchers {
         val enc = URLEncoder.encode(address, "UTF-8")
         openUrl("https://yandex.by/maps/?text=$enc")
     }
+
+    fun copyImageToClipboard(image: BufferedImage) {
+        runCatching {
+            val transferable = object : Transferable {
+                override fun getTransferDataFlavors(): Array<DataFlavor> = arrayOf(DataFlavor.imageFlavor)
+                override fun isDataFlavorSupported(flavor: DataFlavor): Boolean = DataFlavor.imageFlavor.equals(flavor)
+                override fun getTransferData(flavor: DataFlavor): Any {
+                    if (!isDataFlavorSupported(flavor)) throw UnsupportedFlavorException(flavor)
+                    return image
+                }
+            }
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(transferable, null)
+        }
+    }
+
+    /**
+     * Opens Confluence (`w.csl.by`) in the default Windows browser and automatically submits
+     * the same Jira login/password to `dologin.action` when Basic/Form credentials are configured.
+     */
+    fun openConfluenceWithAutoLogin(targetUrl: String, settings: AppSettings) {
+        val rawBase = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }.trimEnd('/')
+        val baseUrl = if (rawBase.startsWith("http://", ignoreCase = true) ||
+            rawBase.startsWith("https://", ignoreCase = true)
+        ) {
+            rawBase
+        } else {
+            "https://$rawBase"
+        }
+
+        val resolvedTarget = when {
+            targetUrl.isBlank() -> baseUrl
+            targetUrl.startsWith("http://", ignoreCase = true) ||
+                targetUrl.startsWith("https://", ignoreCase = true) -> targetUrl
+            else -> "$baseUrl/${targetUrl.trimStart('/')}"
+        }
+
+        if (settings.authType == AuthType.BEARER_PAT ||
+            settings.usernameOrEmail.isBlank() ||
+            settings.passwordOrToken.isBlank()
+        ) {
+            openUrl(resolvedTarget)
+            return
+        }
+
+        runCatching {
+            val destRel = if (resolvedTarget.startsWith(baseUrl, ignoreCase = true)) {
+                resolvedTarget.substring(baseUrl.length).ifBlank { "/index.action" }
+            } else {
+                "/index.action"
+            }
+
+            fun escHtml(s: String): String = s
+                .replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+
+            val actionUrl = "$baseUrl/dologin.action"
+            val html = """
+                <!DOCTYPE html>
+                <html lang="ru">
+                <head>
+                  <meta charset="UTF-8"/>
+                  <title>Вход в Confluence Wiki (w.csl.by)...</title>
+                  <style>
+                    body { background:#04091E; color:#F8FAFC; font-family:Segoe UI,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+                    .box { text-align:center; padding:24px 32px; border:1px solid #F7631B; border-radius:12px; }
+                  </style>
+                </head>
+                <body onload="document.getElementById('ssoForm').submit();">
+                  <div class="box">
+                    <h3>Help-CSL · Вход в Confluence (w.csl.by)…</h3>
+                    <form id="ssoForm" method="POST" action="${escHtml(actionUrl)}">
+                      <input type="hidden" name="os_username" value="${escHtml(settings.usernameOrEmail.trim())}" />
+                      <input type="hidden" name="os_password" value="${escHtml(settings.passwordOrToken)}" />
+                      <input type="hidden" name="os_cookie" value="true" />
+                      <input type="hidden" name="os_destination" value="${escHtml(destRel)}" />
+                      <noscript><button type="submit">Войти в Wiki</button></noscript>
+                    </form>
+                  </div>
+                </body>
+                </html>
+            """.trimIndent()
+
+            val tempHtml = File.createTempFile("helpcsl-wiki-sso-", ".html")
+            tempHtml.deleteOnExit()
+            tempHtml.writeText(html, StandardCharsets.UTF_8)
+            openFile(tempHtml)
+
+            thread(isDaemon = true, name = "helpcsl-sso-cleanup") {
+                runCatching {
+                    Thread.sleep(8_000L)
+                    tempHtml.delete()
+                }
+            }
+        }.onFailure {
+            openUrl(resolvedTarget)
+        }
+    }
 }
 
 object DesktopPdfGenerator {
@@ -957,6 +1066,222 @@ object DesktopPdfGenerator {
         }
         if (cur.isNotEmpty()) lines.add(cur.toString())
         return lines
+    }
+
+    /**
+     * Generates a vector 58x40 mm QR sticker PDF (`REM-...`) suitable for thermal label printers
+     * (Xprinter / Zebra / TSC) and regular office printers.
+     */
+    fun generateRepairQrStickerPdf(item: RepairEquipmentItem): File {
+        val outDir = File(System.getProperty("java.io.tmpdir"), "HelpCSL-Documents").apply { mkdirs() }
+        val code = item.intakeNumber.ifBlank { item.id.take(8).uppercase() }
+        val safeCode = code.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val outFile = File(outDir, "Sticker_${safeCode}_${System.currentTimeMillis() / 1000}.pdf")
+
+        // 58 mm x 40 mm in PDF points (1 mm = 2.83465 pt)
+        val labelWidth = 164.4f
+        val labelHeight = 113.4f
+
+        PDDocument().use { doc ->
+            val page = PDPage(PDRectangle(labelWidth, labelHeight))
+            doc.addPage(page)
+            val fontRegular = loadUnicodeFont(doc, bold = false)
+            val fontBold = loadUnicodeFont(doc, bold = true)
+
+            val payload = RepairEquipmentCodec.encodeQrStickerPayload(item)
+            val hints = mapOf(
+                EncodeHintType.CHARACTER_SET to "UTF-8",
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+                EncodeHintType.MARGIN to 0
+            )
+            val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, 33, 33, hints)
+
+            PDPageContentStream(doc, page).use { cs ->
+                // Top brand strip
+                cs.setNonStrokingColor(Color(4, 9, 30))
+                cs.addRect(0f, labelHeight - 16f, labelWidth, 16f)
+                cs.fill()
+
+                drawTextSafe(cs, fontBold, 7.5f, Color(247, 99, 27), 6f, labelHeight - 11f, "csl.by")
+                drawTextSafe(cs, fontBold, 8f, Color.WHITE, 36f, labelHeight - 11f, code)
+                val dateShort = runCatching {
+                    Instant.ofEpochMilli(item.createdAtEpochMs)
+                        .atZone(ZoneId.of("Europe/Minsk"))
+                        .format(DateTimeFormatter.ofPattern("dd.MM.yy"))
+                }.getOrDefault("")
+                drawTextSafe(cs, fontRegular, 6.8f, Color(203, 213, 225), labelWidth - 36f, labelHeight - 11f, dateShort)
+
+                // Vector QR on left (56 x 56 pt)
+                val qrBoxSize = 58f
+                val qrX = 5f
+                val qrY = labelHeight - 16f - qrBoxSize - 6f
+                val cols = matrix.width.coerceAtLeast(1)
+                val cell = qrBoxSize / cols.toFloat()
+                cs.setNonStrokingColor(Color.BLACK)
+                for (my in 0 until matrix.height) {
+                    for (mx in 0 until cols) {
+                        if (matrix.get(mx, my)) {
+                            val rx = qrX + mx * cell
+                            val ry = qrY + (matrix.height - 1 - my) * cell
+                            cs.addRect(rx, ry, cell + 0.12f, cell + 0.12f)
+                        }
+                    }
+                }
+                cs.fill()
+
+                // Right metadata lines
+                val textX = qrX + qrBoxSize + 5f
+                var ty = labelHeight - 27f
+                val clientShort = item.clientName.ifBlank { "Клиент" }.take(22)
+                drawTextSafe(cs, fontBold, 7.2f, Color(15, 23, 42), textX, ty, clientShort)
+                ty -= 9.5f
+
+                if (item.clientPhone.isNotBlank()) {
+                    drawTextSafe(cs, fontRegular, 6.6f, Color(51, 65, 85), textX, ty, item.clientPhone.take(20))
+                    ty -= 9f
+                }
+
+                val devLine = "${item.deviceCategory} ${item.deviceModel}".trim().take(23)
+                if (devLine.isNotBlank()) {
+                    drawTextSafe(cs, fontBold, 6.6f, Color(15, 23, 42), textX, ty, devLine)
+                    ty -= 9f
+                }
+
+                if (item.serialNumber.isNotBlank()) {
+                    drawTextSafe(cs, fontRegular, 6.2f, Color(71, 85, 105), textX, ty, "S/N: ${item.serialNumber.take(18)}")
+                    ty -= 8.5f
+                }
+
+                if (item.shelfLocation.isNotBlank()) {
+                    drawTextSafe(cs, fontBold, 6.4f, Color(247, 99, 27), textX, ty, "Полка: ${item.shelfLocation.take(14)}")
+                }
+
+                // Bottom defect / footer line
+                cs.setStrokingColor(Color(203, 213, 225))
+                cs.setLineWidth(0.5f)
+                cs.moveTo(5f, 16f)
+                cs.lineTo(labelWidth - 5f, 16f)
+                cs.stroke()
+
+                val bottomLine = item.reportedDefect.ifBlank { "СЦ ООО «Компьютерная безопасность»" }.take(38)
+                drawTextSafe(cs, fontRegular, 6.0f, Color(51, 65, 85), 5f, 7f, bottomLine)
+            }
+            doc.save(outFile)
+        }
+        return outFile
+    }
+
+    /**
+     * Generates a corporate A4 PDF Shift Analytics Report (`Сегодня` / `7 дней` / `30 дней`).
+     */
+    fun generateShiftAnalyticsPdf(
+        summary: PeriodAnalyticsSummary,
+        engineerName: String
+    ): File {
+        val outDir = File(System.getProperty("java.io.tmpdir"), "HelpCSL-Documents").apply { mkdirs() }
+        val outFile = File(outDir, "ShiftReport_${summary.period.name}_${System.currentTimeMillis() / 1000}.pdf")
+        val cleanEngineer = EngineerNameResolver.resolve(
+            rawEngineer = engineerName,
+            connectedUserDisplayName = engineerName,
+            fallbackLabel = "Дежурный инженер"
+        )
+
+        PDDocument().use { doc ->
+            val page = PDPage(PDRectangle.A4)
+            doc.addPage(page)
+            val fontRegular = loadUnicodeFont(doc, bold = false)
+            val fontBold = loadUnicodeFont(doc, bold = true)
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+
+            PDPageContentStream(doc, page).use { cs ->
+                drawCorporateCslHeader(
+                    cs = cs,
+                    pw = pw,
+                    ph = ph,
+                    fontBold = fontBold,
+                    fontRegular = fontRegular,
+                    docTitle = "ОТЧЁТ ДЕЖУРНОЙ СМЕНЫ (${summary.period.title.uppercase()} · ${summary.periodRangeDisplay})"
+                )
+
+                var y = ph - 145f
+                drawTextSafe(cs, fontBold, 11f, Color(247, 99, 27), 36f, y, "1. Ключевые показатели очереди и SLA:")
+                y -= 18f
+
+                val kpis = listOf(
+                    "Поступило клиентских обращений за период" to summary.createdInPeriod.toString(),
+                    "Выполнено и закрыто за период (всего / мной)" to "${summary.closedInPeriod} / ${summary.closedByMeInPeriod}",
+                    "Текущая очередь: Новые / В работе" to "${summary.activeNewCount} / ${summary.activeInProgressCount}",
+                    "Среднее время ожидания в «Новых»" to "${summary.avgQueueWaitMinutes} мин.",
+                    "Доля заявок в зелёной зоне SLA (< 15 мин)" to "${summary.slaGreenPercent}%"
+                )
+                for ((label, value) in kpis) {
+                    drawTextSafe(cs, fontRegular, 10f, Color(51, 65, 85), 44f, y, "• $label:")
+                    drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 340f, y, value)
+                    y -= 16f
+                }
+
+                y -= 10f
+                drawTextSafe(cs, fontBold, 11f, Color(247, 99, 27), 36f, y, "2. Выработка инженеров техподдержки:")
+                y -= 18f
+                if (summary.engineerStats.isEmpty()) {
+                    drawTextSafe(cs, fontRegular, 10f, Color(100, 116, 139), 44f, y, "Нет данных по назначенным заявкам за выбранный период.")
+                    y -= 16f
+                } else {
+                    for (eng in summary.engineerStats.take(10)) {
+                        drawTextSafe(cs, fontBold, 10f, Color(15, 23, 42), 44f, y, eng.engineerName.take(44))
+                        drawTextSafe(
+                            cs,
+                            fontRegular,
+                            10f,
+                            Color(51, 65, 85),
+                            320f,
+                            y,
+                            "Закрыто: ${eng.closedCount}   |   В работе: ${eng.inProgressCount}"
+                        )
+                        y -= 15f
+                    }
+                }
+
+                y -= 10f
+                drawTextSafe(cs, fontBold, 11f, Color(247, 99, 27), 36f, y, "3. Топ организаций / клиентов по числу обращений:")
+                y -= 18f
+                for (cl in summary.topClients.take(8)) {
+                    if (y < 110f) break
+                    drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 44f, y, cl.clientName.take(46))
+                    drawTextSafe(
+                        cs,
+                        fontRegular,
+                        10f,
+                        Color(51, 65, 85),
+                        320f,
+                        y,
+                        "Всего обращений: ${cl.totalCount} (открыто: ${cl.openCount})"
+                    )
+                    y -= 15f
+                }
+
+                val footerY = 72f
+                cs.setStrokingColor(Color(203, 213, 225))
+                cs.setLineWidth(0.8f)
+                cs.moveTo(36f, footerY + 14f)
+                cs.lineTo(pw - 36f, footerY + 14f)
+                cs.stroke()
+
+                val stamp = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
+                drawTextSafe(
+                    cs,
+                    fontRegular,
+                    9.5f,
+                    Color(71, 85, 105),
+                    36f,
+                    footerY,
+                    "Отчёт сформировал: $cleanEngineer   |   Дата формирования: $stamp"
+                )
+            }
+            doc.save(outFile)
+        }
+        return outFile
     }
 }
 

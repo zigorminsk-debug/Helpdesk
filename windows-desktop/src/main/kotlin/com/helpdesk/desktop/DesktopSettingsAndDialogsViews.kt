@@ -19,12 +19,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
+import com.helpdesk.jiraagent.domain.ShiftReportPeriod
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.TtsReadoutMode
+import java.io.File
 import javax.swing.JFileChooser
 
 // =============================================================================
@@ -199,6 +201,14 @@ fun DesktopSettingsWorkspace(
                     value = draft.serverUrl,
                     onValueChange = { draft = draft.copy(serverUrl = it) },
                     label = { Text("Адрес сервера Jira (напр. https://jira.company.by или https://company.atlassian.net)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = draft.confluenceUrl,
+                    onValueChange = { draft = draft.copy(confluenceUrl = it) },
+                    label = { Text("Адрес Confluence Wiki (по умолчанию https://w.csl.by — вход с тем же логином и паролем Jira)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -551,11 +561,14 @@ fun DesktopSettingsWorkspace(
 @Composable
 fun DesktopShiftAnalyticsDialog(
     state: DesktopUiState,
+    controller: DesktopController,
     onDismiss: () -> Unit
 ) {
-    val report = remember(state.tickets, state.connectedUserName, state.settings.usernameOrEmail) {
-        ShiftAnalyticsCalculator.compute(
+    var period by remember { mutableStateOf(ShiftReportPeriod.TODAY) }
+    val summary = remember(state.tickets, state.connectedUserName, state.settings.usernameOrEmail, period) {
+        ShiftAnalyticsCalculator.computeForPeriod(
             tickets = state.tickets,
+            period = period,
             connectedUserDisplayName = state.connectedUserName,
             usernameOrEmail = state.settings.usernameOrEmail
         )
@@ -566,34 +579,75 @@ fun DesktopShiftAnalyticsDialog(
         title = { Text("📊 Статистика и аналитика смены Help-CSL", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.width(620.dp).heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.width(660.dp).heightIn(max = 540.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KpiBox("Новые сейчас", report.activeNewCount.toString(), Modifier.weight(1f))
-                    KpiBox("В работе", report.activeInProgressCount.toString(), Modifier.weight(1f))
-                    KpiBox("Закрыто мной сегодня", report.closedByMeToday.toString(), Modifier.weight(1f))
-                    KpiBox("SLA < 15 мин", "${report.slaGreenPercent}%", Modifier.weight(1f))
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KpiBox("Поступило сегодня", report.createdToday.toString(), Modifier.weight(1f))
-                    KpiBox("Закрыто сегодня (все)", report.closedToday.toString(), Modifier.weight(1f))
-                    KpiBox("За 7 дней поступило", report.createdLast7Days.toString(), Modifier.weight(1f))
-                    KpiBox("Ср. ожидание", "${report.avgQueueWaitMinutes} мин", Modifier.weight(1f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ShiftReportPeriod.entries.forEach { p ->
+                            FilterChip(
+                                selected = period == p,
+                                onClick = { period = p },
+                                label = { Text(p.title, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                    Text(
+                        "Период: ${summary.periodRangeDisplay}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
 
-                if (report.engineerStats.isNotEmpty()) {
-                    Text("👨‍💻 Выработка инженеров:", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                    report.engineerStats.take(8).forEach { eng ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KpiBox("Новые сейчас", summary.activeNewCount.toString(), Modifier.weight(1f))
+                    KpiBox("В работе", summary.activeInProgressCount.toString(), Modifier.weight(1f))
+                    KpiBox("Закрыто мной (${period.title})", summary.closedByMeInPeriod.toString(), Modifier.weight(1f))
+                    KpiBox("SLA < 15 мин", "${summary.slaGreenPercent}%", Modifier.weight(1f))
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KpiBox("Поступило (${period.title})", summary.createdInPeriod.toString(), Modifier.weight(1f))
+                    KpiBox("Закрыто всего (${period.title})", summary.closedInPeriod.toString(), Modifier.weight(1f))
+                    KpiBox("Ср. ожидание в очереди", "${summary.avgQueueWaitMinutes} мин", Modifier.weight(2f))
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { controller.exportShiftAnalyticsPdf(summary) },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("📄 Выгрузить отчёт PDF", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val chooser = JFileChooser()
+                            chooser.selectedFile = File("HelpCSL_ShiftReport_${period.name}.csv")
+                            if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+                                controller.exportShiftAnalyticsCsv(summary, chooser.selectedFile)
+                            }
+                        }
+                    ) {
+                        Text("📊 Экспорт в Excel (.csv)", fontSize = 12.sp)
+                    }
+                }
+
+                if (summary.engineerStats.isNotEmpty()) {
+                    Text("👨‍💻 Выработка инженеров (${period.title}):", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                    summary.engineerStats.take(10).forEach { eng ->
                         Text(
-                            "• ${eng.engineerName}: в работе ${eng.inProgressCount}, закрыто ${eng.closedCount}",
+                            "• ${eng.engineerName}: закрыто ${eng.closedCount}  |  сейчас в работе ${eng.inProgressCount}",
                             fontSize = 12.5.sp
                         )
                     }
                 }
-                if (report.topClients.isNotEmpty()) {
-                    Text("🏢 Топ клиентов по числу обращений:", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                    report.topClients.take(8).forEach { cl ->
+                if (summary.topClients.isNotEmpty()) {
+                    Text("🏢 Топ клиентов по числу обращений (${period.title}):", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                    summary.topClients.take(10).forEach { cl ->
                         Text(
                             "• ${cl.clientName}: всего ${cl.totalCount} (открыто ${cl.openCount})",
                             fontSize = 12.5.sp

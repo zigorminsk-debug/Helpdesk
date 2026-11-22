@@ -33,7 +33,8 @@ kotlin {
                 "com/helpdesk/jiraagent/domain/**",
                 "com/helpdesk/jiraagent/data/JiraApiClient.kt",
                 "com/helpdesk/jiraagent/data/JiraJsonParser.kt",
-                "com/helpdesk/jiraagent/data/HabrNewsRepository.kt"
+                "com/helpdesk/jiraagent/data/HabrNewsRepository.kt",
+                "com/helpdesk/jiraagent/data/ConfluenceWikiClient.kt"
             )
             kotlin.exclude(
                 "**/SettingsTransferCodec.kt"

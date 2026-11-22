@@ -1,5 +1,10 @@
 package com.helpdesk.desktop
 
+import com.helpdesk.jiraagent.data.ConfluenceAttachment
+import com.helpdesk.jiraagent.data.ConfluencePageDetail
+import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.data.ConfluenceSpace
+import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
 import com.helpdesk.jiraagent.data.HabrNewsItem
@@ -12,10 +17,19 @@ import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
+import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
+import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
+import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
+import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
+import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
+import com.helpdesk.jiraagent.domain.WatchlistHostStatus
+import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
+import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PostponedTicket
@@ -36,10 +50,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
 
 enum class DesktopMainTab(val title: String) {
     TICKETS("Заявки"),
     REPAIR("В ремонт"),
+    WIKI("Wiki"),
     CHAT("Чат"),
     FILTER("Фильтр"),
     SETTINGS("Настройки")
@@ -81,14 +98,34 @@ data class DesktopUiState(
     val lastSyncDisplay: String = "ещё не синхронизировано",
     val pendingTransitionPrompt: PendingTransitionPrompt? = null,
 
-    // Client history & S/N search
+    // Client history, S/N search, Knowledge Archive & Stopwatch
     val clientHistoryForKey: String? = null,
     val clientHistoryTickets: List<HelpdeskTicket> = emptyList(),
     val isLoadingClientHistory: Boolean = false,
     val serialSearchResults: List<HelpdeskTicket> = emptyList(),
     val isSearchingSerial: Boolean = false,
+    val knowledgeArchiveResults: List<HelpdeskTicket> = emptyList(),
+    val isSearchingKnowledge: Boolean = false,
+    val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
+    val ticketStopwatches: Map<String, TicketStopwatchEntry> = emptyMap(),
     val diagnosticReport: HostDiagnosticReport? = null,
     val isRunningDiagnostics: Boolean = false,
+    val watchlistHosts: List<String> = SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS,
+    val watchlistStatuses: List<WatchlistHostStatus> = emptyList(),
+    val isCheckingWatchlist: Boolean = false,
+
+    // Confluence Wiki (w.csl.by)
+    val wikiSpaces: List<ConfluenceSpace> = emptyList(),
+    val selectedWikiSpaceKey: String? = null,
+    val wikiPages: List<ConfluencePageSummary> = emptyList(),
+    val wikiChildPagesByParent: Map<String, List<ConfluencePageSummary>> = emptyMap(),
+    val wikiExpandedPageIds: Set<String> = emptySet(),
+    val wikiSearchQuery: String = "",
+    val wikiSearchResults: List<ConfluencePageSummary>? = null,
+    val selectedWikiPage: ConfluencePageDetail? = null,
+    val isLoadingWikiList: Boolean = false,
+    val isLoadingWikiPage: Boolean = false,
+    val wikiError: String? = null,
 
     // Empty state GIF (#1 Roy & #7 Moss) + Habr.com RSS & built-in article reader
     val emptyGifIndex: Int = 0,
@@ -129,7 +166,9 @@ class DesktopController(
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val apiClient = JiraApiClient()
+    val wikiClient = ConfluenceWikiClient()
     private val storage = DesktopStorage()
+    private val jiraAttachmentMemoryCache = ConcurrentHashMap<String, ByteArray>()
 
     private val persisted = storage.loadState()
     private val notifiedTicketKeys = persisted.seenTicketKeys.toMutableSet()
@@ -149,6 +188,9 @@ class DesktopController(
             connectedUserName = persisted.connectedUserName,
             tickets = persisted.cachedTickets,
             postponedTickets = persisted.postponedTickets,
+            clientPassports = persisted.clientPassports,
+            watchlistHosts = persisted.watchlistHosts,
+            ticketStopwatches = persisted.ticketStopwatches,
             repairItems = persisted.repairItems,
             clientsDirectory = persisted.clientDirectory,
             repairRoomKey = persisted.resolvedRepairRoomKey,
@@ -212,6 +254,8 @@ class DesktopController(
             if (_state.value.clientsDirectory.isEmpty()) {
                 refreshClientsDirectory(silent = true)
             }
+        } else if (tab == DesktopMainTab.WIKI) {
+            loadWikiInitialIfNeeded()
         } else if (tab == DesktopMainTab.CHAT && _state.value.settings.isConfigured) {
             refreshChat(silent = true)
         }
@@ -222,6 +266,7 @@ class DesktopController(
             val previewFromHistory = if (ticketKey != null && st.tickets.none { it.key == ticketKey }) {
                 st.clientHistoryTickets.firstOrNull { it.key == ticketKey }
                     ?: st.serialSearchResults.firstOrNull { it.key == ticketKey }
+                    ?: st.knowledgeArchiveResults.firstOrNull { it.key == ticketKey }
             } else {
                 null
             }
@@ -468,6 +513,9 @@ class DesktopController(
                     baselineInitialized = baselineInitialized,
                     seenTicketKeys = synchronized(notifiedTicketKeys) { notifiedTicketKeys.toSet() },
                     deferredAlertKeys = synchronized(notifiedTicketKeys) { deferredTicketKeys.toSet() },
+                    clientPassports = cur.clientPassports,
+                    watchlistHosts = cur.watchlistHosts,
+                    ticketStopwatches = cur.ticketStopwatches,
                     postponedTickets = cur.postponedTickets,
                     repairItems = cur.repairItems,
                     clientDirectory = cur.clientsDirectory,
@@ -838,15 +886,24 @@ class DesktopController(
                 } else {
                     outcome.updatedTicket?.let { replaceTicketInMemory(it) }
                     _state.update { st ->
+                        val nextStopwatches = when (action) {
+                            TicketWorkflowAction.TAKE_IN_WORK ->
+                                TicketStopwatchTracker.startOrResume(st.ticketStopwatches, ticketKey)
+                            TicketWorkflowAction.COMPLETE, TicketWorkflowAction.REJECT ->
+                                TicketStopwatchTracker.stopAndClear(st.ticketStopwatches, ticketKey)
+                            else -> st.ticketStopwatches
+                        }
                         st.copy(
                             isPerformingAction = false,
                             pendingTransitionPrompt = null,
+                            ticketStopwatches = nextStopwatches,
                             selectedTicketKey = if (action == TicketWorkflowAction.COMPLETE || action == TicketWorkflowAction.REJECT) {
                                 null
                             } else st.selectedTicketKey,
                             statusBanner = outcome.statusMessage
                         )
                     }
+                    persistCurrentState()
                     refreshTickets(silent = true)
                 }
             }.onFailure { err ->
@@ -1340,7 +1397,13 @@ class DesktopController(
             ).onSuccess { roomKey ->
                 apiClient.fetchRepairRegistryRemoteEntries(roomKey, cur.settings)
                     .onSuccess { remoteItems ->
+                        val remotePassports = apiClient.fetchClientTechPassports(roomKey, cur.settings)
+                            .getOrDefault(emptyList())
                         val merged = RepairEquipmentCodec.mergeItems(_state.value.repairItems, remoteItems)
+                        val mergedPassports = ClientTechPassportCodec.mergePassports(
+                            localMap = _state.value.clientPassports,
+                            remoteEvents = remotePassports
+                        )
                         val repairClients = merged.mapNotNull { r ->
                             if (r.isDeleted || r.clientName.isBlank()) null
                             else ClientDirectoryEntry(
@@ -1359,9 +1422,10 @@ class DesktopController(
                             it.copy(
                                 repairRoomKey = roomKey,
                                 repairItems = merged,
+                                clientPassports = mergedPassports,
                                 clientsDirectory = grownClients,
                                 isSyncingRepair = false,
-                                statusBanner = if (!silent) "Журнал «В ремонт» синхронизирован ($roomKey)" else it.statusBanner
+                                statusBanner = if (!silent) "Журнал «В ремонт» и техпаспорта синхронизированы ($roomKey)" else it.statusBanner
                             )
                         }
                         persistCurrentState()
@@ -1532,19 +1596,36 @@ class DesktopController(
                             )
                         }
                         persistCurrentState()
-                        if (unseenForeign.isNotEmpty() &&
-                            _state.value.activeTab != DesktopMainTab.CHAT &&
-                            _state.value.settings.adminChatNotificationsEnabled
-                        ) {
-                            val lastMsg = unseenForeign.last()
+                        if (unseenForeign.isNotEmpty()) {
                             val curSt = _state.value
-                            val allowNow = isDesktopAlertAllowedNow(curSt.settings, curSt.respectWorkScheduleOnDesktop)
-                            if (allowNow) {
+                            val mentionedMsg = unseenForeign.lastOrNull { msg ->
+                                AdminChatCodec.isUserMentioned(
+                                    mentionedHandles = msg.mentionedHandles,
+                                    displayName = curSt.connectedUserName,
+                                    usernameOrEmail = curSt.settings.usernameOrEmail
+                                )
+                            }
+                            if (mentionedMsg != null) {
+                                emitDesktopAlert(
+                                    alert = DesktopToastAlert(
+                                        id = "chat-mention-${mentionedMsg.id}",
+                                        title = "📣 Вас упомянули в чате · ${mentionedMsg.authorDisplayName}",
+                                        subtitle = mentionedMsg.text.ifBlank { "📎 ${mentionedMsg.attachmentName.orEmpty()}" }.take(120),
+                                        ticketKey = null
+                                    ),
+                                    playSound = true
+                                )
+                            } else if (
+                                curSt.activeTab != DesktopMainTab.CHAT &&
+                                curSt.settings.adminChatNotificationsEnabled &&
+                                isDesktopAlertAllowedNow(curSt.settings, curSt.respectWorkScheduleOnDesktop)
+                            ) {
+                                val lastMsg = unseenForeign.last()
                                 emitDesktopAlert(
                                     alert = DesktopToastAlert(
                                         id = "chat-${lastMsg.id}",
                                         title = "💬 Чат инженеров · ${lastMsg.authorDisplayName}",
-                                        subtitle = lastMsg.text.take(120),
+                                        subtitle = lastMsg.text.ifBlank { "📎 ${lastMsg.attachmentName.orEmpty()}" }.take(120),
                                         ticketKey = null
                                     ),
                                     playSound = true
@@ -1722,5 +1803,605 @@ class DesktopController(
             }
             st.copy(tickets = nextList)
         }
+    }
+
+    // =========================================================================
+    //  v1.0.40: Attachments Cache, Drag & Drop, Stopwatch, Tech Passport,
+    //  Knowledge Archive, QR Sticker, Chat Images, Toolbox & Confluence Wiki
+    // =========================================================================
+
+    suspend fun loadJiraAttachmentBytes(url: String): ByteArray? {
+        if (url.isBlank()) return null
+        jiraAttachmentMemoryCache[url]?.let { return it }
+        val bytes = apiClient.downloadAttachmentBytes(url, _state.value.settings).getOrNull()
+        if (bytes != null && bytes.size <= 15 * 1024 * 1024) {
+            if (jiraAttachmentMemoryCache.size > 60) {
+                jiraAttachmentMemoryCache.keys.firstOrNull()?.let { jiraAttachmentMemoryCache.remove(it) }
+            }
+            jiraAttachmentMemoryCache[url] = bytes
+        }
+        return bytes
+    }
+
+    suspend fun loadWikiImageBytes(url: String): ByteArray? {
+        return wikiClient.downloadProtectedBytes(url, _state.value.settings).getOrNull()
+    }
+
+    fun uploadDroppedFiles(files: List<File>) {
+        val valid = files.filter { it.isFile && it.exists() }
+        if (valid.isEmpty()) return
+        val cur = _state.value
+        when (cur.activeTab) {
+            DesktopMainTab.TICKETS -> {
+                val key = cur.selectedTicketKey
+                if (key.isNullOrBlank()) {
+                    _state.update { it.copy(errorBanner = "Откройте заявку справа, чтобы перетащить в неё файлы") }
+                    return
+                }
+                _state.update { it.copy(isPerformingAction = true) }
+                scope.launch(Dispatchers.IO) {
+                    var okCount = 0
+                    for (file in valid) {
+                        val mime = runCatching { Files.probeContentType(file.toPath()) }.getOrNull()
+                            ?: "application/octet-stream"
+                        apiClient.uploadIssueAttachment(
+                            issueKey = key,
+                            fileName = file.name,
+                            mimeType = mime,
+                            fileBytes = file.readBytes(),
+                            settings = _state.value.settings,
+                            filterSettings = _state.value.filterSettings
+                        ).onSuccess { updated ->
+                            updated?.let { replaceTicketInMemory(it) }
+                            okCount++
+                        }
+                    }
+                    _state.update {
+                        it.copy(
+                            isPerformingAction = false,
+                            statusBanner = if (okCount > 0) "📎 Перетащено и прикреплено файлов к $key: $okCount" else it.statusBanner,
+                            errorBanner = if (okCount == 0) "Не удалось загрузить перетащенные файлы" else null
+                        )
+                    }
+                }
+            }
+            DesktopMainTab.CHAT -> {
+                valid.forEach { file -> sendChatFileAttachment(file) }
+            }
+            else -> {
+                _state.update { it.copy(statusBanner = "Перетаскивание файлов доступно во вкладках «Заявки» и «Чат»") }
+            }
+        }
+    }
+
+    // --- Live Ticket Stopwatch ---
+
+    fun toggleTicketStopwatch(ticketKey: String) {
+        _state.update { st ->
+            val current = st.ticketStopwatches[ticketKey]
+            val next = if (current?.isRunning == true) {
+                TicketStopwatchTracker.pause(st.ticketStopwatches, ticketKey)
+            } else {
+                TicketStopwatchTracker.startOrResume(st.ticketStopwatches, ticketKey)
+            }
+            st.copy(ticketStopwatches = next)
+        }
+        persistCurrentState()
+    }
+
+    fun resetTicketStopwatch(ticketKey: String) {
+        _state.update { st ->
+            st.copy(ticketStopwatches = TicketStopwatchTracker.stopAndClear(st.ticketStopwatches, ticketKey))
+        }
+        persistCurrentState()
+    }
+
+    fun completeTicketWithOptionalWorklog(
+        ticketKey: String,
+        commentText: String?,
+        worklogMinutes: Int?
+    ) {
+        val cur = _state.value
+        scope.launch {
+            if (worklogMinutes != null && worklogMinutes > 0 && cur.settings.isConfigured) {
+                apiClient.addIssueWorklog(
+                    issueKey = ticketKey,
+                    timeSpentSeconds = worklogMinutes * 60,
+                    commentText = commentText?.takeIf { it.isNotBlank() } ?: "Работы по заявке Helpdesk",
+                    settings = cur.settings
+                )
+            }
+            performTicketAction(
+                ticketKey = ticketKey,
+                action = TicketWorkflowAction.COMPLETE,
+                commentText = commentText?.ifBlank { null }
+            )
+        }
+    }
+
+    // --- Synced Client Tech Passports ---
+
+    fun getClientPassport(clientName: String): ClientTechPassport {
+        val key = ClientTechPassportCodec.normalizeKey(clientName)
+        return _state.value.clientPassports[key]
+            ?: ClientTechPassport(clientKey = key, clientDisplayName = clientName.trim())
+    }
+
+    fun saveClientTechPassport(draft: ClientTechPassport) {
+        val key = ClientTechPassportCodec.normalizeKey(draft.clientDisplayName.ifBlank { draft.clientKey })
+        if (key.isBlank()) return
+        val stamped = draft.copy(
+            clientKey = key,
+            updatedBy = currentEngineerDisplayName(),
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        _state.update { st ->
+            val merged = ClientTechPassportCodec.mergePassports(st.clientPassports, listOf(stamped))
+            st.copy(
+                clientPassports = merged,
+                statusBanner = "📋 Техпаспорт «${stamped.clientDisplayName}» сохранён и отправлен на синхронизацию"
+            )
+        }
+        persistCurrentState()
+
+        val cur = _state.value
+        if (!cur.settings.isConfigured) return
+        scope.launch {
+            val roomKey = apiClient.resolveOrCreateRepairRegistryRoom(
+                settings = cur.settings,
+                filterSettings = cur.filterSettings,
+                cachedRoomKey = _state.value.repairRoomKey
+            ).getOrNull() ?: return@launch
+            if (roomKey != _state.value.repairRoomKey) {
+                _state.update { it.copy(repairRoomKey = roomKey) }
+            }
+            apiClient.postClientTechPassport(roomKey, stamped, cur.settings)
+        }
+    }
+
+    // --- Knowledge Base Archive Search ---
+
+    fun searchKnowledgeArchive(query: String, excludeTicketKey: String? = null) {
+        val cur = _state.value
+        if (query.isBlank() || !cur.settings.isConfigured) return
+        _state.update { it.copy(isSearchingKnowledge = true) }
+        scope.launch {
+            apiClient.searchKnowledgeBaseArchive(
+                rawQuery = query.trim(),
+                excludeTicketKey = excludeTicketKey,
+                settings = cur.settings,
+                filterSettings = cur.filterSettings
+            ).onSuccess { found ->
+                _state.update { it.copy(isSearchingKnowledge = false, knowledgeArchiveResults = found) }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        isSearchingKnowledge = false,
+                        errorBanner = "Ошибка поиска по базе решений: ${err.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    // --- Repair QR Sticker (58x40 mm) & 1-Click Client Ready Notification ---
+
+    fun printRepairQrSticker(item: RepairEquipmentItem) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val pdf = DesktopPdfGenerator.generateRepairQrStickerPdf(item)
+                WindowsExternalLaunchers.openFile(pdf)
+                pdf
+            }.onSuccess { pdf ->
+                _state.update { it.copy(statusBanner = "🏷 QR-наклейка 58×40 мм сформирована: ${pdf.name}") }
+            }.onFailure { err ->
+                _state.update { it.copy(errorBanner = "Ошибка генерации QR-наклейки: ${err.message}") }
+            }
+        }
+    }
+
+    fun postRepairReadyToLinkedTicket(item: RepairEquipmentItem) {
+        val cur = _state.value
+        val key = item.linkedTicketKey.trim()
+        if (key.isBlank() || !cur.settings.isConfigured) return
+        val msg = RepairEquipmentCodec.buildClientReadyMessage(item)
+        scope.launch {
+            apiClient.postIssueComment(
+                issueKey = key,
+                commentText = msg,
+                settings = cur.settings,
+                filterSettings = cur.filterSettings,
+                internalOnly = false
+            ).onSuccess { updated ->
+                updated?.let { replaceTicketInMemory(it) }
+                _state.update { it.copy(statusBanner = "📣 Сообщение о готовности ${item.intakeNumber} отправлено клиенту в $key") }
+            }.onFailure { err ->
+                _state.update { it.copy(errorBanner = "Ошибка отправки в $key: ${err.message}") }
+            }
+        }
+    }
+
+    // --- Chat Clipboard Screenshot & File Upload ---
+
+    fun sendChatClipboardScreenshot(
+        caption: String = "",
+        replyAuthor: String? = null,
+        replyPreview: String? = null
+    ): Boolean {
+        val captured = WindowsExternalLaunchers.readClipboardImagePng() ?: return false
+        val (fileName, pngBytes) = captured
+        val cur = _state.value
+        if (!cur.settings.isConfigured) return false
+        _state.update { it.copy(isSyncingChat = true) }
+        scope.launch(Dispatchers.IO) {
+            val roomKey = apiClient.resolveOrCreateAdminChatRoom(
+                cur.settings,
+                cur.filterSettings,
+                cur.chatRoomKey
+            ).getOrElse { err ->
+                _state.update { it.copy(isSyncingChat = false, errorBanner = "Ошибка комнаты чата: ${err.message}") }
+                return@launch
+            }
+            apiClient.uploadIssueAttachment(
+                issueKey = roomKey,
+                fileName = fileName,
+                mimeType = "image/png",
+                fileBytes = pngBytes,
+                settings = cur.settings,
+                filterSettings = cur.filterSettings
+            ).onSuccess { updatedRoomIssue ->
+                val uploadedAtt = updatedRoomIssue?.attachments
+                    ?.lastOrNull { it.filename.equals(fileName, ignoreCase = true) }
+                    ?: updatedRoomIssue?.attachments?.lastOrNull()
+                val attUrl = uploadedAtt?.contentUrl.orEmpty()
+                if (attUrl.isNotBlank()) {
+                    jiraAttachmentMemoryCache[attUrl] = pngBytes
+                }
+                apiClient.sendAdminChatMessage(
+                    roomIssueKey = roomKey,
+                    rawText = caption.trim(),
+                    replyToAuthor = replyAuthor,
+                    replyToPreview = replyPreview,
+                    attachmentName = uploadedAtt?.filename ?: fileName,
+                    attachmentUrl = attUrl.ifBlank { null },
+                    settings = cur.settings
+                ).onSuccess { msg ->
+                    seenChatIds = seenChatIds + msg.id
+                    _state.update { st ->
+                        st.copy(
+                            isSyncingChat = false,
+                            chatRoomKey = roomKey,
+                            chatMessages = st.chatMessages + msg,
+                            statusBanner = "🖼 Скриншот отправлен в чат инженеров"
+                        )
+                    }
+                    persistCurrentState()
+                }.onFailure { err ->
+                    _state.update { it.copy(isSyncingChat = false, errorBanner = "Ошибка чата: ${err.message}") }
+                }
+            }.onFailure { err ->
+                _state.update { it.copy(isSyncingChat = false, errorBanner = "Не удалось загрузить скриншот: ${err.message}") }
+            }
+        }
+        return true
+    }
+
+    fun sendChatFileAttachment(
+        file: File,
+        caption: String = "",
+        replyAuthor: String? = null,
+        replyPreview: String? = null
+    ) {
+        val cur = _state.value
+        if (!file.exists() || !cur.settings.isConfigured) return
+        _state.update { it.copy(isSyncingChat = true) }
+        scope.launch(Dispatchers.IO) {
+            val roomKey = apiClient.resolveOrCreateAdminChatRoom(
+                cur.settings,
+                cur.filterSettings,
+                cur.chatRoomKey
+            ).getOrElse { err ->
+                _state.update { it.copy(isSyncingChat = false, errorBanner = "Ошибка комнаты чата: ${err.message}") }
+                return@launch
+            }
+            val mime = runCatching { Files.probeContentType(file.toPath()) }.getOrNull() ?: "application/octet-stream"
+            val bytes = file.readBytes()
+            apiClient.uploadIssueAttachment(
+                issueKey = roomKey,
+                fileName = file.name,
+                mimeType = mime,
+                fileBytes = bytes,
+                settings = cur.settings,
+                filterSettings = cur.filterSettings
+            ).onSuccess { updatedRoomIssue ->
+                val uploadedAtt = updatedRoomIssue?.attachments
+                    ?.lastOrNull { it.filename.equals(file.name, ignoreCase = true) }
+                    ?: updatedRoomIssue?.attachments?.lastOrNull()
+                val attUrl = uploadedAtt?.contentUrl.orEmpty()
+                if (attUrl.isNotBlank() && bytes.size <= 10 * 1024 * 1024) {
+                    jiraAttachmentMemoryCache[attUrl] = bytes
+                }
+                apiClient.sendAdminChatMessage(
+                    roomIssueKey = roomKey,
+                    rawText = caption.trim(),
+                    replyToAuthor = replyAuthor,
+                    replyToPreview = replyPreview,
+                    attachmentName = uploadedAtt?.filename ?: file.name,
+                    attachmentUrl = attUrl.ifBlank { null },
+                    settings = cur.settings
+                ).onSuccess { msg ->
+                    seenChatIds = seenChatIds + msg.id
+                    _state.update { st ->
+                        st.copy(
+                            isSyncingChat = false,
+                            chatRoomKey = roomKey,
+                            chatMessages = st.chatMessages + msg,
+                            statusBanner = "📎 Файл «${file.name}» отправлен в чат"
+                        )
+                    }
+                    persistCurrentState()
+                }.onFailure { err ->
+                    _state.update { it.copy(isSyncingChat = false, errorBanner = "Ошибка отправки в чат: ${err.message}") }
+                }
+            }.onFailure { err ->
+                _state.update { it.copy(isSyncingChat = false, errorBanner = "Ошибка загрузки файла: ${err.message}") }
+            }
+        }
+    }
+
+    // --- Sysadmin Toolbox Watchlist ---
+
+    fun addWatchlistHost(rawHost: String) {
+        val clean = rawHost.trim()
+        if (clean.isEmpty()) return
+        _state.update { st ->
+            if (st.watchlistHosts.any { it.equals(clean, ignoreCase = true) }) st
+            else st.copy(watchlistHosts = st.watchlistHosts + clean)
+        }
+        persistCurrentState()
+        refreshWatchlistHosts()
+    }
+
+    fun removeWatchlistHost(host: String) {
+        _state.update { st ->
+            st.copy(
+                watchlistHosts = st.watchlistHosts.filterNot { it.equals(host, ignoreCase = true) },
+                watchlistStatuses = st.watchlistStatuses.filterNot { it.host.equals(host, ignoreCase = true) }
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun refreshWatchlistHosts() {
+        val hosts = _state.value.watchlistHosts
+        if (hosts.isEmpty()) return
+        _state.update { it.copy(isCheckingWatchlist = true) }
+        scope.launch {
+            val statuses = SysadminToolboxEngine.checkWatchlistHosts(hosts)
+            _state.update { it.copy(isCheckingWatchlist = false, watchlistStatuses = statuses) }
+        }
+    }
+
+    // --- Shift Analytics PDF & Excel CSV Export ---
+
+    fun exportShiftAnalyticsPdf(summary: PeriodAnalyticsSummary) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val pdf = DesktopPdfGenerator.generateShiftAnalyticsPdf(summary, currentEngineerDisplayName())
+                WindowsExternalLaunchers.openFile(pdf)
+                pdf
+            }.onSuccess { pdf ->
+                _state.update { it.copy(statusBanner = "📊 PDF-отчёт смены открыт: ${pdf.name}") }
+            }.onFailure { err ->
+                _state.update { it.copy(errorBanner = "Ошибка экспорта PDF: ${err.message}") }
+            }
+        }
+    }
+
+    fun exportShiftAnalyticsCsv(summary: PeriodAnalyticsSummary, targetFile: File) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                targetFile.writeBytes(ShiftAnalyticsCalculator.buildExcelCsvBytes(summary))
+                WindowsExternalLaunchers.openFile(targetFile)
+            }.onSuccess {
+                _state.update { it.copy(statusBanner = "📊 Excel-отчёт сохранён: ${targetFile.name}") }
+            }.onFailure { err ->
+                _state.update { it.copy(errorBanner = "Ошибка сохранения CSV: ${err.message}") }
+            }
+        }
+    }
+
+    // --- Confluence Wiki (w.csl.by with Jira credentials) ---
+
+    fun loadWikiInitialIfNeeded() {
+        val cur = _state.value
+        if (cur.wikiSpaces.isEmpty() && cur.wikiPages.isEmpty() && !cur.isLoadingWikiList) {
+            refreshWikiSpacesAndPages()
+        }
+    }
+
+    fun refreshWikiSpacesAndPages(spaceKeyOverride: String? = _state.value.selectedWikiSpaceKey) {
+        val cur = _state.value
+        if (!cur.settings.isConfluenceReady) {
+            _state.update {
+                it.copy(
+                    wikiError = "Укажите логин и пароль Jira во вкладке «Настройки», чтобы войти в Confluence (w.csl.by)."
+                )
+            }
+            return
+        }
+        _state.update { it.copy(isLoadingWikiList = true, wikiError = null, selectedWikiSpaceKey = spaceKeyOverride) }
+        scope.launch {
+            val spacesRes = wikiClient.fetchSpaces(cur.settings)
+            val pagesRes = wikiClient.fetchSpaceRootOrRecentPages(spaceKeyOverride, cur.settings)
+            val spaces = spacesRes.getOrDefault(_state.value.wikiSpaces)
+            pagesRes.onSuccess { pages ->
+                _state.update { st ->
+                    st.copy(
+                        isLoadingWikiList = false,
+                        wikiSpaces = spaces,
+                        wikiPages = pages,
+                        wikiError = null
+                    )
+                }
+                if (_state.value.selectedWikiPage == null && pages.isNotEmpty()) {
+                    openWikiPage(pages.first().id)
+                }
+            }.onFailure { err ->
+                spacesRes.onFailure { spErr ->
+                    _state.update {
+                        it.copy(
+                            isLoadingWikiList = false,
+                            wikiError = spErr.message ?: err.message ?: "Не удалось подключиться к w.csl.by"
+                        )
+                    }
+                    return@launch
+                }
+                _state.update {
+                    it.copy(
+                        isLoadingWikiList = false,
+                        wikiSpaces = spaces,
+                        wikiError = err.message ?: "Ошибка чтения страниц Confluence"
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectWikiSpace(spaceKey: String?) {
+        _state.update {
+            it.copy(
+                selectedWikiSpaceKey = spaceKey,
+                wikiSearchResults = null,
+                wikiSearchQuery = ""
+            )
+        }
+        refreshWikiSpacesAndPages(spaceKeyOverride = spaceKey)
+    }
+
+    fun searchWikiPages(query: String) {
+        _state.update { it.copy(wikiSearchQuery = query) }
+        val clean = query.trim()
+        if (clean.isEmpty()) {
+            _state.update { it.copy(wikiSearchResults = null) }
+            return
+        }
+        val cur = _state.value
+        if (!cur.settings.isConfluenceReady) return
+        _state.update { it.copy(isLoadingWikiList = true, wikiError = null) }
+        scope.launch {
+            wikiClient.searchPages(
+                rawQuery = clean,
+                spaceKey = cur.selectedWikiSpaceKey,
+                settings = cur.settings
+            ).onSuccess { found ->
+                _state.update { it.copy(isLoadingWikiList = false, wikiSearchResults = found, wikiError = null) }
+                if (found.isNotEmpty()) {
+                    openWikiPage(found.first().id)
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(isLoadingWikiList = false, wikiError = err.message ?: "Ошибка поиска в Confluence")
+                }
+            }
+        }
+    }
+
+    fun toggleWikiTreeExpand(pageId: String) {
+        val cur = _state.value
+        if (pageId in cur.wikiExpandedPageIds) {
+            _state.update { it.copy(wikiExpandedPageIds = it.wikiExpandedPageIds - pageId) }
+            return
+        }
+        _state.update { it.copy(wikiExpandedPageIds = it.wikiExpandedPageIds + pageId) }
+        if (!cur.wikiChildPagesByParent.containsKey(pageId)) {
+            scope.launch {
+                wikiClient.fetchChildPages(pageId, _state.value.settings).onSuccess { children ->
+                    _state.update { st ->
+                        st.copy(wikiChildPagesByParent = st.wikiChildPagesByParent + (pageId to children))
+                    }
+                }
+            }
+        }
+    }
+
+    fun openWikiPage(pageId: String) {
+        val cur = _state.value
+        if (pageId.isBlank() || !cur.settings.isConfluenceReady) return
+        _state.update { it.copy(isLoadingWikiPage = true, wikiError = null) }
+        scope.launch {
+            wikiClient.fetchPageDetail(pageId, cur.settings)
+                .onSuccess { detail ->
+                    _state.update { st ->
+                        val nextChildren = if (detail.childPages.isNotEmpty()) {
+                            st.wikiChildPagesByParent + (detail.id to detail.childPages)
+                        } else {
+                            st.wikiChildPagesByParent
+                        }
+                        st.copy(
+                            isLoadingWikiPage = false,
+                            selectedWikiPage = detail,
+                            wikiChildPagesByParent = nextChildren,
+                            wikiError = null
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _state.update {
+                        it.copy(
+                            isLoadingWikiPage = false,
+                            wikiError = err.message ?: "Не удалось загрузить страницу Confluence"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun openClientInWiki(clientName: String) {
+        val clean = clientName.trim()
+        _state.update {
+            it.copy(
+                activeTab = DesktopMainTab.WIKI,
+                selectedWikiSpaceKey = null,
+                wikiSearchQuery = clean
+            )
+        }
+        if (clean.isNotEmpty()) {
+            searchWikiPages(clean)
+            if (_state.value.wikiSpaces.isEmpty()) {
+                scope.launch {
+                    wikiClient.fetchSpaces(_state.value.settings).onSuccess { spaces ->
+                        _state.update { st -> st.copy(wikiSpaces = spaces) }
+                    }
+                }
+            }
+        } else {
+            loadWikiInitialIfNeeded()
+        }
+    }
+
+    fun downloadAndOpenWikiAttachment(att: ConfluenceAttachment) {
+        val cur = _state.value
+        _state.update { it.copy(isPerformingAction = true) }
+        scope.launch(Dispatchers.IO) {
+            wikiClient.downloadProtectedBytes(att.downloadUrl, cur.settings)
+                .onSuccess { bytes ->
+                    val dir = File(System.getProperty("java.io.tmpdir"), "HelpCSL-Wiki").apply { mkdirs() }
+                    val safeName = att.title.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "wiki_file" }
+                    val target = File(dir, safeName)
+                    target.writeBytes(bytes)
+                    WindowsExternalLaunchers.openFile(target)
+                    _state.update { it.copy(isPerformingAction = false, statusBanner = "📘 Открыт файл из Wiki: $safeName") }
+                }
+                .onFailure { err ->
+                    _state.update { it.copy(isPerformingAction = false, errorBanner = "Ошибка скачивания из Wiki: ${err.message}") }
+                }
+        }
+    }
+
+    fun openWikiInBrowserWithSso(url: String = "") {
+        val cur = _state.value
+        val target = url.ifBlank { cur.selectedWikiPage?.webUrl.orEmpty() }
+        WindowsExternalLaunchers.openConfluenceWithAutoLogin(target, cur.settings)
     }
 }

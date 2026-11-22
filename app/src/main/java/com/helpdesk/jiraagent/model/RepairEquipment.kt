@@ -212,6 +212,67 @@ object RepairEquipmentCodec {
             field.lowercase(Locale.ROOT).contains(q)
         }
     }
+
+    const val QR_STICKER_PREFIX = "HELPCSL_REM:"
+
+    fun encodeQrStickerPayload(item: RepairEquipmentItem): String {
+        val code = item.intakeNumber.ifBlank { item.id.take(8).uppercase(Locale.ROOT) }
+        return "$QR_STICKER_PREFIX$code|${item.id}"
+    }
+
+    fun findByScannedQrOrCode(
+        items: List<RepairEquipmentItem>,
+        rawScan: String
+    ): RepairEquipmentItem? {
+        val trimmed = rawScan.trim()
+        if (trimmed.isEmpty()) return null
+        val active = items.filter { !it.isDeleted }
+
+        if (trimmed.startsWith(QR_STICKER_PREFIX, ignoreCase = true)) {
+            val payload = trimmed.substring(QR_STICKER_PREFIX.length)
+            val parts = payload.split('|')
+            val intake = parts.getOrNull(0)?.trim().orEmpty()
+            val itemId = parts.getOrNull(1)?.trim().orEmpty()
+            if (itemId.isNotEmpty()) {
+                active.firstOrNull { it.id.equals(itemId, ignoreCase = true) }?.let { return it }
+            }
+            if (intake.isNotEmpty()) {
+                active.firstOrNull { it.intakeNumber.equals(intake, ignoreCase = true) }?.let { return it }
+            }
+        }
+
+        // Direct REM-XXXX or S/N match
+        active.firstOrNull { it.intakeNumber.equals(trimmed, ignoreCase = true) }?.let { return it }
+        active.firstOrNull {
+            it.serialNumber.isNotBlank() && it.serialNumber.equals(trimmed, ignoreCase = true)
+        }?.let { return it }
+
+        return null
+    }
+
+    fun buildClientReadyMessage(item: RepairEquipmentItem): String {
+        val client = item.clientName.trim().substringBefore(" (").ifBlank { "Уважаемый клиент" }
+        val dev = listOf(item.deviceCategory.trim(), item.deviceModel.trim())
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
+            .ifBlank { "оборудование" }
+        val rem = item.intakeNumber.ifBlank { item.id.take(8).uppercase(Locale.ROOT) }
+        val statusNote = when (item.status) {
+            RepairStatus.READY -> "готово к выдаче"
+            RepairStatus.WAITING_PARTS -> "прошло диагностику (ожидается согласование / поставка комплектующих)"
+            RepairStatus.ISSUED -> "выдано из сервисного центра"
+            else -> "находится на этапе «${item.status.title}»"
+        }
+        return buildString {
+            append("Здравствуйте, $client! ")
+            append("Ваше оборудование ($dev, квитанция $rem) $statusNote ")
+            append("в сервисном центре ООО «Компьютерная безопасность» (csl.by): ")
+            append("г. Минск, ул. Фабрициуса, 9, Пн–Пт 09:00–17:00, тел. +375 (29) 337-14-12.")
+            if (item.repairNotes.isNotBlank() && item.status == RepairStatus.READY) {
+                append(" Выполненные работы: ${item.repairNotes.trim().take(180)}")
+            }
+        }
+    }
 }
 
 data class ClientDirectoryEntry(

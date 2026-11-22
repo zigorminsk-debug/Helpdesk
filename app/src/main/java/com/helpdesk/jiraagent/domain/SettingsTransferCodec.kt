@@ -93,6 +93,8 @@ object SettingsTransferCodec {
             // Ensure non-null defaults after Gson deserialization
             parsed.copy(
                 appSettings = parsed.appSettings.copy(
+                    confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
+                        ?: AppSettings.DEFAULT_CONFLUENCE_URL,
                     quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )

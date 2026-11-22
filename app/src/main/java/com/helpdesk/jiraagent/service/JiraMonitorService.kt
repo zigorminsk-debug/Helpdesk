@@ -14,7 +14,9 @@ import androidx.core.content.ContextCompat
 import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.update.AppUpdateManager
 import kotlinx.coroutines.CoroutineScope
@@ -286,9 +288,19 @@ class JiraMonitorService : Service() {
                 messages = snapshot.messages,
                 pinnedNote = snapshot.pinnedNote
             )
-            if (settings.adminChatNotificationsEnabled) {
-                for (msg in newColleagueMessages) {
+            var playedMentionAlert = false
+            for (msg in newColleagueMessages) {
+                val mentionedMe = AdminChatCodec.isUserMentioned(
+                    mentionedHandles = msg.mentionedHandles,
+                    displayName = repository.syncStatus.value.connectedUser,
+                    usernameOrEmail = settings.usernameOrEmail
+                )
+                if (mentionedMe || settings.adminChatNotificationsEnabled) {
                     NotificationHelper.showAdminChatMessageNotification(applicationContext, msg)
+                }
+                if (mentionedMe && !playedMentionAlert) {
+                    playedMentionAlert = true
+                    AlertSoundPlayer.playTicketAlert(applicationContext, settings)
                 }
             }
         }

@@ -7,7 +7,9 @@ import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AlertSoundPreset
@@ -15,6 +17,8 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
+import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
@@ -108,6 +112,15 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _clientDossierNotes = MutableStateFlow(loadClientDossierNotes())
     val clientDossierNotes: StateFlow<Map<String, String>> = _clientDossierNotes.asStateFlow()
+
+    private val _clientPassports = MutableStateFlow(loadClientPassports())
+    val clientPassports: StateFlow<Map<String, ClientTechPassport>> = _clientPassports.asStateFlow()
+
+    private val _watchlistHosts = MutableStateFlow(loadWatchlistHosts())
+    val watchlistHosts: StateFlow<List<String>> = _watchlistHosts.asStateFlow()
+
+    private val _ticketStopwatches = MutableStateFlow(loadTicketStopwatches())
+    val ticketStopwatches: StateFlow<Map<String, TicketStopwatchEntry>> = _ticketStopwatches.asStateFlow()
 
     private val _pendingCallSession = MutableStateFlow<PendingCallSession?>(null)
     val pendingCallSession: StateFlow<PendingCallSession?> = _pendingCallSession.asStateFlow()
@@ -316,6 +329,40 @@ class SettingsRepository private constructor(context: Context) {
         return _clientDossierNotes.value[normKey].orEmpty()
     }
 
+    @Synchronized
+    fun upsertClientPassport(passport: ClientTechPassport) {
+        val merged = ClientTechPassportCodec.mergePassports(_clientPassports.value, listOf(passport))
+        _clientPassports.value = merged
+        prefs.edit().putString(KEY_CLIENT_PASSPORTS_JSON, gson.toJson(merged)).apply()
+    }
+
+    @Synchronized
+    fun mergeRemoteClientPassports(remote: List<ClientTechPassport>) {
+        if (remote.isEmpty()) return
+        val merged = ClientTechPassportCodec.mergePassports(_clientPassports.value, remote)
+        _clientPassports.value = merged
+        prefs.edit().putString(KEY_CLIENT_PASSPORTS_JSON, gson.toJson(merged)).apply()
+    }
+
+    fun getClientPassport(clientName: String): ClientTechPassport {
+        val k = ClientTechPassportCodec.normalizeKey(clientName)
+        return _clientPassports.value[k]
+            ?: ClientTechPassport(clientKey = k, clientDisplayName = clientName.trim())
+    }
+
+    @Synchronized
+    fun saveWatchlistHosts(hosts: List<String>) {
+        val clean = hosts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        _watchlistHosts.value = clean
+        cachePrefs.edit().putString(KEY_WATCHLIST_HOSTS_JSON, gson.toJson(clean)).apply()
+    }
+
+    @Synchronized
+    fun saveTicketStopwatches(map: Map<String, TicketStopwatchEntry>) {
+        _ticketStopwatches.value = map
+        cachePrefs.edit().putString(KEY_TICKET_STOPWATCHES_JSON, gson.toJson(map)).apply()
+    }
+
     private fun normalizeClientKey(clientName: String): String =
         clientName.trim().lowercase(Locale.ROOT)
 
@@ -336,6 +383,10 @@ class SettingsRepository private constructor(context: Context) {
         val manualRoomChanged = newSettings.adminChatIssueKey.trim() != _appSettings.value.adminChatIssueKey.trim()
         prefs.edit()
             .putString(KEY_SERVER_URL, newSettings.serverUrl.trim())
+            .putString(
+                KEY_CONFLUENCE_URL,
+                newSettings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
+            )
             .putString(KEY_SERVER_TYPE, newSettings.serverType.name)
             .putString(KEY_AUTH_TYPE, newSettings.authType.name)
             .putString(KEY_USERNAME, newSettings.usernameOrEmail.trim())
@@ -836,9 +887,46 @@ class SettingsRepository private constructor(context: Context) {
         }.getOrDefault(emptyMap())
     }
 
+    private fun loadClientPassports(): Map<String, ClientTechPassport> {
+        val json = prefs.getString(KEY_CLIENT_PASSPORTS_JSON, null)
+        val parsed = if (json != null) {
+            runCatching {
+                val type = object : TypeToken<Map<String, ClientTechPassport>>() {}.type
+                gson.fromJson<Map<String, ClientTechPassport>>(json, type) ?: emptyMap()
+            }.getOrDefault(emptyMap())
+        } else emptyMap()
+        return ClientTechPassportCodec.mergePassports(
+            localMap = parsed,
+            remoteEvents = emptyList(),
+            legacyLocalNotes = _clientDossierNotes.value
+        )
+    }
+
+    private fun loadWatchlistHosts(): List<String> {
+        val json = cachePrefs.getString(KEY_WATCHLIST_HOSTS_JSON, null)
+            ?: return SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS
+        return runCatching {
+            val type = object : TypeToken<List<String>>() {}.type
+            gson.fromJson<List<String>>(json, type)?.filter { it.isNotBlank() }
+                ?.ifEmpty { SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS }
+                ?: SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS
+        }.getOrDefault(SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
+    }
+
+    private fun loadTicketStopwatches(): Map<String, TicketStopwatchEntry> {
+        val json = cachePrefs.getString(KEY_TICKET_STOPWATCHES_JSON, null) ?: return emptyMap()
+        return runCatching {
+            val type = object : TypeToken<Map<String, TicketStopwatchEntry>>() {}.type
+            gson.fromJson<Map<String, TicketStopwatchEntry>>(json, type) ?: emptyMap()
+        }.getOrDefault(emptyMap())
+    }
+
     private fun loadAppSettings(): AppSettings {
         return AppSettings(
             serverUrl = prefs.getString(KEY_SERVER_URL, "").orEmpty(),
+            confluenceUrl = prefs.getString(KEY_CONFLUENCE_URL, AppSettings.DEFAULT_CONFLUENCE_URL)
+                .orEmpty()
+                .ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL },
             serverType = enumOrDefault(prefs.getString(KEY_SERVER_TYPE, null), JiraServerType.AUTO),
             authType = enumOrDefault(prefs.getString(KEY_AUTH_TYPE, null), AuthType.BASIC_LOGIN_PASSWORD),
             usernameOrEmail = prefs.getString(KEY_USERNAME, "").orEmpty(),
@@ -1050,5 +1138,9 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_REPAIR_ITEMS_JSON = "repair_equipment_items_json"
         private const val KEY_RESOLVED_REPAIR_ROOM_KEY = "resolved_repair_room_key"
         private const val KEY_CLIENT_DIRECTORY_JSON = "client_directory_entries_json"
+        private const val KEY_CONFLUENCE_URL = "confluence_wiki_url"
+        private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
+        private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
+        private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"
     }
 }

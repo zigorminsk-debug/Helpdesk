@@ -1,0 +1,1635 @@
+package com.helpdesk.desktop
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogWindow
+import androidx.compose.ui.window.rememberDialogState
+import com.helpdesk.jiraagent.data.ConfluenceAttachment
+import com.helpdesk.jiraagent.data.ConfluenceBlock
+import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
+import com.helpdesk.jiraagent.data.ConfluencePageDetail
+import com.helpdesk.jiraagent.data.ConfluencePageSummary
+import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
+import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.TicketAttachment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import javax.imageio.ImageIO
+
+// =============================================================================
+//  1. CONFLUENCE WIKI TAB (`w.csl.by` with Jira credentials)
+// =============================================================================
+
+@Composable
+fun DesktopWikiWorkspace(
+    state: DesktopUiState,
+    controller: DesktopController
+) {
+    var searchInput by remember(state.wikiSearchQuery) { mutableStateOf(state.wikiSearchQuery) }
+    var copiedNotice by remember { mutableStateOf<String?>(null) }
+    var lightboxTitle by remember { mutableStateOf<String?>(null) }
+    var lightboxBuffered by remember { mutableStateOf<BufferedImage?>(null) }
+
+    Row(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // --- LEFT PANE: Spaces, Search & Page Tree ---
+        Surface(
+            modifier = Modifier.width(365.dp).fillMaxHeight(),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 1.dp
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Header card
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = DesktopColors.CslMidnight
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "📘 Confluence Wiki",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    state.settings.confluenceUrl.ifBlank { "https://w.csl.by" },
+                                    color = DesktopColors.CslOrange,
+                                    fontSize = 11.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                OutlinedButton(
+                                    onClick = { controller.refreshWikiSpacesAndPages() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
+                                ) {
+                                    Text("🔄", fontSize = 12.sp, color = Color.White)
+                                }
+                                Button(
+                                    onClick = { controller.openWikiInBrowserWithSso() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
+                                ) {
+                                    Text("🌐 В браузере", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                        val loginLabel = state.settings.usernameOrEmail.ifBlank { "не задан в Настройках" }
+                        Text(
+                            "🔑 Вход под учётной записью Jira: $loginLabel",
+                            color = Color(0xFFCBD5E1),
+                            fontSize = 10.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Search bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = searchInput,
+                        onValueChange = {
+                            searchInput = it
+                            if (it.isBlank()) controller.searchWikiPages("")
+                        },
+                        placeholder = { Text("Поиск клиента, IP, инструкции в w.csl.by…", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .onPreviewKeyEvent { ev ->
+                                if (ev.type == KeyEventType.KeyDown && ev.key == Key.Enter) {
+                                    controller.searchWikiPages(searchInput)
+                                    true
+                                } else false
+                            }
+                    )
+                    Button(
+                        onClick = { controller.searchWikiPages(searchInput) },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        Text("Найти", fontSize = 12.sp)
+                    }
+                }
+
+                // Spaces strip
+                if (state.wikiSpaces.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        item {
+                            FilterChip(
+                                selected = state.selectedWikiSpaceKey == null,
+                                onClick = { controller.selectWikiSpace(null) },
+                                label = { Text("★ Недавние", fontSize = 11.5.sp) }
+                            )
+                        }
+                        items(state.wikiSpaces, key = { it.key }) { space ->
+                            FilterChip(
+                                selected = state.selectedWikiSpaceKey == space.key,
+                                onClick = { controller.selectWikiSpace(space.key) },
+                                label = {
+                                    Text(
+                                        "${space.key} · ${space.name.take(18)}",
+                                        fontSize = 11.5.sp,
+                                        maxLines = 1
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (state.isLoadingWikiList) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
+                }
+
+                state.wikiError?.let { err ->
+                    Surface(
+                        color = DesktopColors.StatusRed.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, DesktopColors.StatusRed.copy(alpha = 0.35f))
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(err, color = DesktopColors.StatusRed, fontSize = 12.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { controller.refreshWikiSpacesAndPages() },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Повторить", fontSize = 11.5.sp)
+                                }
+                                Button(
+                                    onClick = { controller.openWikiInBrowserWithSso() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("🌐 Войти через браузер", fontSize = 11.5.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Page list / expandable tree
+                val displayedPages = state.wikiSearchResults ?: state.wikiPages
+                val isSearchMode = state.wikiSearchResults != null
+
+                if (isSearchMode) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Найдено страниц: ${displayedPages.size}",
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        TextButton(
+                            onClick = {
+                                searchInput = ""
+                                controller.searchWikiPages("")
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                        ) {
+                            Text("Сбросить поиск", fontSize = 11.5.sp)
+                        }
+                    }
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (displayedPages.isEmpty() && !state.isLoadingWikiList && state.wikiError == null) {
+                        item {
+                            Text(
+                                if (isSearchMode) "Ничего не найдено по запросу «$searchInput»"
+                                else "Нет страниц для отображения. Нажмите 🔄 для загрузки из w.csl.by.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    } else {
+                        items(displayedPages, key = { it.id }) { page ->
+                            WikiTreeNodeItem(
+                                page = page,
+                                depth = 0,
+                                isSearchMode = isSearchMode,
+                                state = state,
+                                controller = controller
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // --- RIGHT PANE: Rich Confluence Page Reader ---
+        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            val detail = state.selectedWikiPage
+            when {
+                state.isLoadingWikiPage && detail == null -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            CircularProgressIndicator(color = DesktopColors.CslOrange)
+                            Text("Загрузка страницы из Confluence (w.csl.by)…", fontSize = 13.sp)
+                        }
+                    }
+                }
+                detail == null -> {
+                    Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("📘 База знаний Confluence (w.csl.by)", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Выберите пространство или введите название организации / IP-адрес слева.\nАвторизация выполняется автоматически под вашим логином и паролем Jira.",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = { controller.openWikiInBrowserWithSso() },
+                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                            ) {
+                                Text("🌐 Открыть w.csl.by в браузере (с автовходом)")
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    ConfluencePageReaderPane(
+                        detail = detail,
+                        isReloading = state.isLoadingWikiPage,
+                        copiedNotice = copiedNotice,
+                        onCopied = { copiedNotice = it },
+                        controller = controller,
+                        onOpenLightbox = { title, img ->
+                            lightboxTitle = title
+                            lightboxBuffered = img
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    if (lightboxBuffered != null) {
+        DesktopImageLightboxDialog(
+            title = lightboxTitle ?: "Изображение Confluence",
+            bufferedImage = lightboxBuffered!!,
+            onDismiss = { lightboxBuffered = null }
+        )
+    }
+}
+
+@Composable
+private fun WikiTreeNodeItem(
+    page: ConfluencePageSummary,
+    depth: Int,
+    isSearchMode: Boolean,
+    state: DesktopUiState,
+    controller: DesktopController
+) {
+    val isSelected = state.selectedWikiPage?.id == page.id
+    val isExpanded = page.id in state.wikiExpandedPageIds
+    val children = state.wikiChildPagesByParent[page.id].orEmpty()
+
+    Column(modifier = Modifier.fillMaxWidth().padding(start = (depth * 14).dp)) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (isSelected) DesktopColors.CslOrangeContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            border = if (isSelected) BorderStroke(1.dp, DesktopColors.CslOrange) else null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { controller.openWikiPage(page.id) }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (!isSearchMode) {
+                    Text(
+                        text = if (isExpanded) "▾" else "▸",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = DesktopColors.CslOrange,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { controller.toggleWikiTreeExpand(page.id) }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                } else {
+                    Text("📄", fontSize = 12.sp)
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = page.title,
+                        fontSize = 12.5.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (page.excerpt.isNotBlank() && isSearchMode) {
+                        Text(
+                            text = page.excerpt,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else if (page.spaceKey.isNotBlank()) {
+                        Text(
+                            text = listOfNotNull(
+                                page.spaceName.ifBlank { page.spaceKey },
+                                page.updatedDisplay.takeIf { it.isNotBlank() }
+                            ).joinToString(" · "),
+                            fontSize = 10.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+        if (!isSearchMode && isExpanded && depth < 3) {
+            Spacer(Modifier.height(3.dp))
+            children.forEach { child ->
+                WikiTreeNodeItem(
+                    page = child,
+                    depth = depth + 1,
+                    isSearchMode = false,
+                    state = state,
+                    controller = controller
+                )
+                Spacer(Modifier.height(3.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfluencePageReaderPane(
+    detail: ConfluencePageDetail,
+    isReloading: Boolean,
+    copiedNotice: String?,
+    onCopied: (String) -> Unit,
+    controller: DesktopController,
+    onOpenLightbox: (String, BufferedImage) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (isReloading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
+        }
+        // Page top bar
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 1.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Breadcrumbs
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (detail.spaceKey.isNotBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(5.dp),
+                                color = DesktopColors.CslMidnight,
+                                modifier = Modifier.clickable { controller.selectWikiSpace(detail.spaceKey) }
+                            ) {
+                                Text(
+                                    detail.spaceName.ifBlank { detail.spaceKey },
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        detail.ancestors.forEach { anc ->
+                            Text("/", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                anc.title,
+                                fontSize = 11.5.sp,
+                                color = DesktopColors.CslOrange,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable { controller.openWikiPage(anc.id) }
+                            )
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        copiedNotice?.let { msg ->
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = DesktopColors.StatusGreen.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    "✓ $msg",
+                                    fontSize = 11.sp,
+                                    color = DesktopColors.StatusGreen,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                WindowsExternalLaunchers.copyToClipboard(detail.webUrl)
+                                onCopied("Ссылка скопирована")
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("🔗 Ссылка", fontSize = 11.5.sp)
+                        }
+                        Button(
+                            onClick = { controller.openWikiInBrowserWithSso(detail.webUrl) },
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Text("🌐 Открыть / Редактировать в w.csl.by", fontSize = 11.5.sp)
+                        }
+                    }
+                }
+
+                Text(detail.title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+
+                val metaParts = listOfNotNull(
+                    detail.updatedBy.takeIf { it.isNotBlank() }?.let { "Автор изм.: $it" },
+                    detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обновлено: $it" },
+                    "Версия v${detail.versionNumber}",
+                    "Нажмите на любую ячейку таблицы, чтобы скопировать IP/пароль"
+                )
+                Text(
+                    metaParts.joinToString("  ·  "),
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Child pages pills
+                if (detail.childPages.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(detail.childPages, key = { it.id }) { child ->
+                            AssistChip(
+                                onClick = { controller.openWikiPage(child.id) },
+                                label = { Text("📂 ${child.title}", fontSize = 11.5.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // Content blocks + attachments
+        SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(detail.blocks) { block ->
+                    ConfluenceBlockView(
+                        block = block,
+                        controller = controller,
+                        onCopied = onCopied,
+                        onOpenLightbox = onOpenLightbox
+                    )
+                }
+
+                if (detail.attachments.isNotEmpty()) {
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "📎 Вложенные файлы страницы (${detail.attachments.size})",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    items(detail.attachments, key = { it.id }) { att ->
+                        ConfluenceAttachmentRow(att = att, onOpen = { controller.downloadAndOpenWikiAttachment(att) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfluenceBlockView(
+    block: ConfluenceBlock,
+    controller: DesktopController,
+    onCopied: (String) -> Unit,
+    onOpenLightbox: (String, BufferedImage) -> Unit
+) {
+    when (block) {
+        is ConfluenceBlock.Heading -> {
+            val size = when (block.level) {
+                1 -> 19.sp
+                2 -> 16.5.sp
+                3 -> 14.5.sp
+                else -> 13.5.sp
+            }
+            Text(
+                text = block.text,
+                fontSize = size,
+                fontWeight = FontWeight.Bold,
+                color = DesktopColors.CslMidnight,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        is ConfluenceBlock.Paragraph -> {
+            Text(
+                text = block.text,
+                fontSize = 13.5.sp,
+                lineHeight = 20.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        is ConfluenceBlock.ListItems -> {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(start = 8.dp)) {
+                block.items.forEachIndexed { idx, item ->
+                    val prefix = if (block.ordered) "${idx + 1}." else "•"
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(prefix, fontWeight = FontWeight.Bold, color = DesktopColors.CslOrange, fontSize = 13.sp)
+                        Text(item, fontSize = 13.sp, lineHeight = 19.sp)
+                    }
+                }
+            }
+        }
+        is ConfluenceBlock.Callout -> {
+            val (bg, border, icon) = when (block.kind) {
+                ConfluenceCalloutKind.WARNING -> Triple(Color(0xFFFFFBEB), DesktopColors.StatusAmber, "⚠")
+                ConfluenceCalloutKind.NOTE -> Triple(Color(0xFFFEF2F2), DesktopColors.StatusRed, "📌")
+                ConfluenceCalloutKind.TIP -> Triple(Color(0xFFECFDF5), DesktopColors.StatusGreen, "💡")
+                ConfluenceCalloutKind.INFO -> Triple(Color(0xFFEFF6FF), Color(0xFF2563EB), "ℹ")
+            }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = bg,
+                border = BorderStroke(1.dp, border.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (block.title.isNotBlank()) {
+                        Text("$icon ${block.title}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = border)
+                    }
+                    Text(block.body, fontSize = 12.5.sp, lineHeight = 18.sp, color = Color(0xFF0F172A))
+                }
+            }
+        }
+        is ConfluenceBlock.Code -> {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = DesktopColors.CslMidnight,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            block.title.ifBlank { "Код / Команда" },
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        TextButton(
+                            onClick = {
+                                WindowsExternalLaunchers.copyToClipboard(block.code)
+                                onCopied("Код скопирован")
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("📋 Копировать", color = DesktopColors.CslOrange, fontSize = 11.sp)
+                        }
+                    }
+                    Text(
+                        text = block.code,
+                        color = Color(0xFFF8FAFC),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    )
+                }
+            }
+        }
+        is ConfluenceBlock.Table -> {
+            val colCount = maxOf(
+                block.headers.size,
+                block.rows.maxOfOrNull { it.size } ?: 0
+            ).coerceAtLeast(1)
+
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    if (block.headers.isNotEmpty()) {
+                        Row(modifier = Modifier.background(DesktopColors.CslMidnight)) {
+                            for (c in 0 until colCount) {
+                                val cellText = block.headers.getOrNull(c).orEmpty()
+                                Box(
+                                    modifier = Modifier
+                                        .widthIn(min = 140.dp, max = 280.dp)
+                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = cellText,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    block.rows.forEachIndexed { rIdx, row ->
+                        val rowBg = if (rIdx % 2 == 0) Color.White else Color(0xFFF8FAFC)
+                        Row(modifier = Modifier.background(rowBg)) {
+                            for (c in 0 until colCount) {
+                                val cellVal = row.getOrNull(c).orEmpty()
+                                Box(
+                                    modifier = Modifier
+                                        .widthIn(min = 140.dp, max = 280.dp)
+                                        .clickable(enabled = cellVal.isNotBlank()) {
+                                            WindowsExternalLaunchers.copyToClipboard(cellVal)
+                                            onCopied("Скопировано: ${cellVal.take(28)}")
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 7.dp)
+                                ) {
+                                    Text(
+                                        text = cellVal.ifBlank { "—" },
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                }
+                            }
+                        }
+                        if (rIdx < block.rows.lastIndex) {
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                        }
+                    }
+                }
+            }
+        }
+        is ConfluenceBlock.Image -> {
+            var buffered by remember(block.url) { mutableStateOf<BufferedImage?>(null) }
+            var composeBmp by remember(block.url) { mutableStateOf<ImageBitmap?>(null) }
+            LaunchedEffect(block.url) {
+                val bytes = controller.loadWikiImageBytes(block.url) ?: return@LaunchedEffect
+                val decoded = withContext(Dispatchers.IO) {
+                    runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull()
+                }
+                if (decoded != null) {
+                    buffered = decoded
+                    composeBmp = decoded.toComposeImageBitmap()
+                }
+            }
+            if (composeBmp != null && buffered != null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.clickable { onOpenLightbox(block.alt.ifBlank { "Схема Confluence" }, buffered!!) }
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Image(
+                            bitmap = composeBmp!!,
+                            contentDescription = block.alt,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.heightIn(max = 320.dp).fillMaxWidth()
+                        )
+                        Text(
+                            "🔍 ${block.alt.ifBlank { "Нажмите для увеличения" }}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfluenceAttachmentRow(
+    att: ConfluenceAttachment,
+    onOpen: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth().clickable { onOpen() }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("📎 ${att.title}", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                if (att.fileSize > 0) {
+                    Text(
+                        "${(att.fileSize / 1024).coerceAtLeast(1)} КБ · ${att.mediaType}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = onOpen,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text("Скачать и открыть", fontSize = 11.5.sp)
+            }
+        }
+    }
+}
+
+// =============================================================================
+//  2. INLINE ATTACHMENT THUMBNAILS + ZOOMABLE LIGHTBOX
+// =============================================================================
+
+@Composable
+fun DesktopAttachmentThumbnailStrip(
+    attachments: List<TicketAttachment>,
+    controller: DesktopController,
+    onOpenOriginal: (TicketAttachment) -> Unit
+) {
+    val imageAttachments = remember(attachments) {
+        attachments.filter { it.isImage }
+    }
+    if (imageAttachments.isEmpty()) return
+
+    var activeLightboxAtt by remember { mutableStateOf<TicketAttachment?>(null) }
+    var activeLightboxImg by remember { mutableStateOf<BufferedImage?>(null) }
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    ) {
+        items(imageAttachments, key = { it.id.ifBlank { it.contentUrl } }) { att ->
+            var buffered by remember(att.contentUrl) { mutableStateOf<BufferedImage?>(null) }
+            var bitmap by remember(att.contentUrl) { mutableStateOf<ImageBitmap?>(null) }
+
+            LaunchedEffect(att.contentUrl) {
+                val url = att.thumbnailUrl?.takeIf { it.isNotBlank() } ?: att.contentUrl
+                val bytes = controller.loadJiraAttachmentBytes(url)
+                    ?: controller.loadJiraAttachmentBytes(att.contentUrl)
+                    ?: return@LaunchedEffect
+                val img = withContext(Dispatchers.IO) {
+                    runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull()
+                }
+                if (img != null) {
+                    buffered = img
+                    bitmap = img.toComposeImageBitmap()
+                }
+            }
+
+            val scope = rememberCoroutineScope()
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .width(155.dp)
+                    .clickable {
+                        scope.launch {
+                            val fullBytes = controller.loadJiraAttachmentBytes(att.contentUrl)
+                            val fullImg = fullBytes?.let { b ->
+                                withContext(Dispatchers.IO) {
+                                    runCatching { ImageIO.read(ByteArrayInputStream(b)) }.getOrNull()
+                                }
+                            } ?: buffered
+                            if (fullImg != null) {
+                                activeLightboxAtt = att
+                                activeLightboxImg = fullImg
+                            } else {
+                                onOpenOriginal(att)
+                            }
+                        }
+                    }
+            ) {
+                Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(92.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF0F172A)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap!!,
+                                contentDescription = att.filename,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Text("🖼 Загрузка…", color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                    Text(
+                        "🔍 ${att.filename}",
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    }
+
+    if (activeLightboxImg != null) {
+        DesktopImageLightboxDialog(
+            title = activeLightboxAtt?.filename ?: "Просмотр скриншота",
+            bufferedImage = activeLightboxImg!!,
+            onOpenExternal = activeLightboxAtt?.let { att -> { onOpenOriginal(att) } },
+            onDismiss = {
+                activeLightboxImg = null
+                activeLightboxAtt = null
+            }
+        )
+    }
+}
+
+@Composable
+fun DesktopImageLightboxDialog(
+    title: String,
+    bufferedImage: BufferedImage,
+    onOpenExternal: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    val composeBitmap = remember(bufferedImage) { bufferedImage.toComposeImageBitmap() }
+    var zoom by remember { mutableStateOf(1.0f) }
+    var copied by remember { mutableStateOf(false) }
+
+    DialogWindow(
+        onCloseRequest = onDismiss,
+        title = "🔍 $title",
+        state = rememberDialogState(width = 1040.dp, height = 760.dp)
+    ) {
+        HelpCslDesktopTheme {
+            Column(modifier = Modifier.fillMaxSize().background(DesktopColors.CslMidnight)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "$title (${bufferedImage.width}×${bufferedImage.height} px)",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.5.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { zoom = (zoom - 0.25f).coerceAtLeast(0.25f) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) { Text("−", color = Color.White) }
+                        Text("${(zoom * 100).toInt()}%", color = Color.White, fontSize = 12.sp)
+                        OutlinedButton(
+                            onClick = { zoom = (zoom + 0.25f).coerceAtMost(4.0f) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) { Text("+", color = Color.White) }
+                        OutlinedButton(
+                            onClick = { zoom = 1.0f },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) { Text("100%", color = Color.White, fontSize = 11.5.sp) }
+                        Button(
+                            onClick = {
+                                WindowsExternalLaunchers.copyImageToClipboard(bufferedImage)
+                                copied = true
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Text(if (copied) "✓ В буфере" else "📋 Копировать картинку", fontSize = 11.5.sp)
+                        }
+                        onOpenExternal?.let { openExt ->
+                            OutlinedButton(
+                                onClick = openExt,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("📂 В Windows", color = Color.White, fontSize = 11.5.sp)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("Закрыть", color = Color.White, fontSize = 11.5.sp)
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = composeBitmap,
+                        contentDescription = title,
+                        modifier = Modifier.size(
+                            width = (bufferedImage.width * zoom).coerceAtLeast(120f).dp,
+                            height = (bufferedImage.height * zoom).coerceAtLeast(90f).dp
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+//  3. TEAM-SYNCED CLIENT TECH PASSPORT DIALOG (`[HELPCSL_PASSPORT_V1]`)
+// =============================================================================
+
+@Composable
+fun DesktopClientPassportDialog(
+    initialPassport: ClientTechPassport,
+    onSave: (ClientTechPassport) -> Unit,
+    onOpenInWiki: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var addresses by remember { mutableStateOf(initialPassport.addressesAndBranches) }
+    var gateway by remember { mutableStateOf(initialPassport.gatewayAndProvider) }
+    var vpn by remember { mutableStateOf(initialPassport.vpnAndRemoteNotes) }
+    var servers by remember { mutableStateOf(initialPassport.serversAndServices) }
+    var notes by remember { mutableStateOf(initialPassport.contactsAndNotes) }
+
+    DialogWindow(
+        onCloseRequest = onDismiss,
+        title = "🏢 Техпаспорт клиента · ${initialPassport.clientDisplayName}",
+        state = rememberDialogState(width = 720.dp, height = 650.dp)
+    ) {
+        HelpCslDesktopTheme {
+            Column(
+                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "🏢 ${initialPassport.clientDisplayName}",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (initialPassport.updatedAtEpochMs > 0)
+                                "Облачная синхронизация через Jira · обновил: ${initialPassport.updatedBy.ifBlank { "инженер" }}"
+                            else "Единое техдосье организации для всех инженеров на Windows и Android",
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(onClick = onOpenInWiki) {
+                        Text("📘 Найти в Wiki (w.csl.by)", fontSize = 12.sp)
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = addresses,
+                        onValueChange = { addresses = it },
+                        label = { Text("📍 Адреса офисов / филиалов / режим работы") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = gateway,
+                        onValueChange = { gateway = it },
+                        label = { Text("🌐 Шлюз / Внешний IP / Провайдер / Роутер (MikroTik, Keenetic…)") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = vpn,
+                        onValueChange = { vpn = it },
+                        label = { Text("🔐 VPN / AnyDesk / RustDesk / RDP-порты") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = servers,
+                        onValueChange = { servers = it },
+                        label = { Text("🖥 Серверы / Домен AD / Базы 1С / Принтеры и МФУ") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = notes,
+                        onValueChange = { notes = it },
+                        label = { Text("👤 Контактные лица на местах и особые пометки") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Отмена") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            onSave(
+                                initialPassport.copy(
+                                    addressesAndBranches = addresses.trim(),
+                                    gatewayAndProvider = gateway.trim(),
+                                    vpnAndRemoteNotes = vpn.trim(),
+                                    serversAndServices = servers.trim(),
+                                    contactsAndNotes = notes.trim()
+                                )
+                            )
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("💾 Сохранить и синхронизировать")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+//  4. KNOWLEDGE BASE ARCHIVE SEARCH («База решений по закрытым заявкам»)
+// =============================================================================
+
+@Composable
+fun DesktopKnowledgeArchiveDialog(
+    initialQuery: String,
+    excludeTicketKey: String?,
+    state: DesktopUiState,
+    controller: DesktopController,
+    onOpenTicket: (String) -> Unit,
+    onInsertSolution: ((String) -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    var query by remember { mutableStateOf(initialQuery) }
+    var expandedKey by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (initialQuery.isNotBlank()) {
+            controller.searchKnowledgeArchive(initialQuery, excludeTicketKey)
+        }
+    }
+
+    DialogWindow(
+        onCloseRequest = onDismiss,
+        title = "📚 База решений (поиск по решённым заявкам Jira)",
+        state = rememberDialogState(width = 860.dp, height = 640.dp)
+    ) {
+        HelpCslDesktopTheme {
+            Column(
+                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text("Код ошибки, модель МФУ, 1С, VPN, симптомы…") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .onPreviewKeyEvent { ev ->
+                                if (ev.type == KeyEventType.KeyDown && ev.key == Key.Enter) {
+                                    controller.searchKnowledgeArchive(query, excludeTicketKey)
+                                    true
+                                } else false
+                            }
+                    )
+                    Button(
+                        onClick = { controller.searchKnowledgeArchive(query, excludeTicketKey) },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("🔍 Найти решения")
+                    }
+                }
+
+                if (state.isSearchingKnowledge) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (state.knowledgeArchiveResults.isEmpty() && !state.isSearchingKnowledge) {
+                        item {
+                            Text(
+                                "Введите ключевые слова ошибки (например: «0x0000011b», «Kyocera замятие», «ЭЦП Авест», «1С лицензия») и нажмите «Найти решения».",
+                                fontSize = 12.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+                    items(state.knowledgeArchiveResults, key = { it.key }) { t ->
+                        val isExp = expandedKey == t.key
+                        val lastComment = t.comments.lastOrNull()
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                expandedKey = if (isExp) null else t.key
+                            }
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "${t.key} · ${t.summary}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.5.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "${t.status} · ${t.createdIso.take(10)}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    "Клиент: ${t.reporterName}  |  Инженер: ${t.assigneeName ?: "—"}",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (lastComment != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color.White,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            "💡 Решение (${lastComment.author}): ${if (isExp) lastComment.body else lastComment.body.take(220)}",
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(8.dp)
+                                        )
+                                    }
+                                } else if (isExp && t.description.isNotBlank()) {
+                                    Text(t.description.take(500), fontSize = 12.sp)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onOpenTicket(t.key)
+                                            onDismiss()
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Открыть карточку ${t.key}", fontSize = 11.5.sp)
+                                    }
+                                    if (lastComment != null && onInsertSolution != null) {
+                                        Button(
+                                            onClick = {
+                                                onInsertSolution(lastComment.body)
+                                                onDismiss()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("Вставить решение в ответ", fontSize = 11.5.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+//  5. SYSADMIN TOOLBOX DIALOG (Wake-on-LAN, Subnet, Password Gen, Watchlist)
+// =============================================================================
+
+@Composable
+fun DesktopSysadminToolboxDialog(
+    state: DesktopUiState,
+    controller: DesktopController,
+    onDismiss: () -> Unit
+) {
+    var tabIndex by remember { mutableStateOf(0) }
+    val tabs = listOf("⚡ Wake-on-LAN", "🌐 IP / Подсети", "🔐 Генератор паролей", "🛡 Монитор SSL и узлов")
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(tabIndex) {
+        if (tabIndex == 3 && state.watchlistStatuses.isEmpty() && !state.isCheckingWatchlist) {
+            controller.refreshWatchlistHosts()
+        }
+    }
+
+    DialogWindow(
+        onCloseRequest = onDismiss,
+        title = "🛠 Инструменты системного администратора · Help-CSL",
+        state = rememberDialogState(width = 760.dp, height = 580.dp)
+    ) {
+        HelpCslDesktopTheme {
+            Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+                TabRow(
+                    selectedTabIndex = tabIndex,
+                    containerColor = DesktopColors.CslMidnight,
+                    contentColor = Color.White
+                ) {
+                    tabs.forEachIndexed { idx, title ->
+                        Tab(
+                            selected = tabIndex == idx,
+                            onClick = { tabIndex = idx },
+                            text = {
+                                Text(
+                                    title,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (tabIndex == idx) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (tabIndex == idx) DesktopColors.CslOrange else Color.White
+                                )
+                            }
+                        )
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(18.dp)) {
+                    when (tabIndex) {
+                        0 -> {
+                            var mac by remember { mutableStateOf("") }
+                            var broadcast by remember { mutableStateOf("255.255.255.255") }
+                            var portText by remember { mutableStateOf("9") }
+                            var resultMsg by remember { mutableStateOf<String?>(null) }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    "Отправка Magic Packet (UDP) для дистанционного включения ПК или сервера в локальной/VPN-сети",
+                                    fontSize = 12.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedTextField(
+                                    value = mac,
+                                    onValueChange = { mac = it },
+                                    label = { Text("MAC-адрес сетевой карты (например: AA:BB:CC:DD:EE:FF или AABB.CCDD.EEFF)") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedTextField(
+                                        value = broadcast,
+                                        onValueChange = { broadcast = it },
+                                        label = { Text("Broadcast IP / Шлюз подсети") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = portText,
+                                        onValueChange = { portText = it.filter(Char::isDigit) },
+                                        label = { Text("UDP порт") },
+                                        singleLine = true,
+                                        modifier = Modifier.width(120.dp)
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            val port = portText.toIntOrNull() ?: 9
+                                            SysadminToolboxEngine.sendWakeOnLan(mac, broadcast, port)
+                                                .onSuccess { r ->
+                                                    resultMsg = "✓ Magic Packet успешно отправлен на ${r.normalizedMac} через ${r.targetAddress}:${r.port} (и порт 7)"
+                                                }
+                                                .onFailure { e ->
+                                                    resultMsg = "⚠ Ошибка: ${e.message}"
+                                                }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                ) {
+                                    Text("⚡ Разбудить компьютер (Wake-on-LAN)")
+                                }
+                                resultMsg?.let {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(it, fontSize = 12.5.sp, modifier = Modifier.padding(12.dp))
+                                    }
+                                }
+                            }
+                        }
+
+                        1 -> {
+                            var ipInput by remember { mutableStateOf("192.168.1.10/24") }
+                            val calc = remember(ipInput) { SysadminToolboxEngine.calculateSubnet(ipInput) }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OutlinedTextField(
+                                    value = ipInput,
+                                    onValueChange = { ipInput = it },
+                                    label = { Text("IPv4 и префикс CIDR или маска (например: 192.168.10.25/24 или 10.8.0.5 255.255.252.0)") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                calc.onSuccess { info ->
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            SubnetRow("Адрес сети:", "${info.networkAddress}/${info.cidrPrefix}")
+                                            SubnetRow("Маска подсети:", "${info.subnetMask}  (Wildcard: ${info.wildcardMask})")
+                                            SubnetRow("Первый рабочий хост (шлюз):", info.firstUsableHost)
+                                            SubnetRow("Последний рабочий хост:", info.lastUsableHost)
+                                            SubnetRow("Broadcast:", info.broadcastAddress)
+                                            SubnetRow("Доступно узлов:", "${info.usableHostCount} хостов")
+                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val summary = """
+                                                            Сеть: ${info.networkAddress}/${info.cidrPrefix}
+                                                            Маска: ${info.subnetMask}
+                                                            Диапазон: ${info.firstUsableHost} — ${info.lastUsableHost}
+                                                            Broadcast: ${info.broadcastAddress} (${info.usableHostCount} узлов)
+                                                        """.trimIndent()
+                                                        WindowsExternalLaunchers.copyToClipboard(summary)
+                                                    }
+                                                ) { Text("📋 Скопировать расчёт", fontSize = 12.sp) }
+                                            }
+                                        }
+                                    }
+                                }.onFailure { err ->
+                                    Text("⚠ ${err.message}", color = DesktopColors.StatusRed, fontSize = 12.5.sp)
+                                }
+                            }
+                        }
+
+                        2 -> {
+                            var service by remember { mutableStateOf("VPN / RDP") }
+                            var login by remember { mutableStateOf("") }
+                            var length by remember { mutableStateOf(16f) }
+                            var useSymbols by remember { mutableStateOf(true) }
+                            var password by remember {
+                                mutableStateOf(SysadminToolboxEngine.generateStrongPassword(16, true))
+                            }
+                            var copiedCard by remember { mutableStateOf(false) }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedTextField(
+                                        value = service,
+                                        onValueChange = { service = it },
+                                        label = { Text("Сервис (1С, RDP, Почта, VPN)") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = login,
+                                        onValueChange = { login = it },
+                                        label = { Text("Логин пользователя") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("Длина: ${length.toInt()}", fontSize = 12.5.sp)
+                                    Slider(
+                                        value = length,
+                                        onValueChange = {
+                                            length = it
+                                            password = SysadminToolboxEngine.generateStrongPassword(it.toInt(), useSymbols)
+                                            copiedCard = false
+                                        },
+                                        valueRange = 10f..28f,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    FilterChip(
+                                        selected = useSymbols,
+                                        onClick = {
+                                            useSymbols = !useSymbols
+                                            password = SysadminToolboxEngine.generateStrongPassword(length.toInt(), useSymbols)
+                                            copiedCard = false
+                                        },
+                                        label = { Text("Спецсимволы !@#") }
+                                    )
+                                }
+                                OutlinedTextField(
+                                    value = password,
+                                    onValueChange = { password = it },
+                                    label = { Text("Сгенерированный пароль") },
+                                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedButton(onClick = {
+                                        password = SysadminToolboxEngine.generateStrongPassword(length.toInt(), useSymbols)
+                                        copiedCard = false
+                                    }) {
+                                        Text("🎲 Новый пароль")
+                                    }
+                                    OutlinedButton(onClick = {
+                                        WindowsExternalLaunchers.copyToClipboard(password)
+                                    }) {
+                                        Text("📋 Только пароль")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val card = SysadminToolboxEngine.formatCredentialCard(service, login, password)
+                                            WindowsExternalLaunchers.copyToClipboard(card)
+                                            copiedCard = true
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                    ) {
+                                        Text(if (copiedCard) "✓ Карточка скопирована" else "📋 Скопировать карточку доступа для клиента")
+                                    }
+                                }
+                            }
+                        }
+
+                        3 -> {
+                            var newHost by remember { mutableStateOf("") }
+                            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = newHost,
+                                        onValueChange = { newHost = it },
+                                        label = { Text("Добавить домен или IP для контроля доступности и SSL") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Button(
+                                        onClick = {
+                                            controller.addWatchlistHost(newHost)
+                                            newHost = ""
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                    ) {
+                                        Text("+ Добавить")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { controller.refreshWatchlistHosts() },
+                                        enabled = !state.isCheckingWatchlist
+                                    ) {
+                                        Text(if (state.isCheckingWatchlist) "Проверка…" else "🔄 Проверить все")
+                                    }
+                                }
+
+                                if (state.isCheckingWatchlist) {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
+                                }
+
+                                LazyColumn(
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    items(state.watchlistHosts, key = { it }) { host ->
+                                        val st = state.watchlistStatuses.firstOrNull { it.host.equals(host, ignoreCase = true) }
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(
+                                                1.dp,
+                                                when {
+                                                    st == null -> MaterialTheme.colorScheme.outlineVariant
+                                                    !st.isOnline -> DesktopColors.StatusRed
+                                                    st.isSslExpiringSoon -> DesktopColors.StatusAmber
+                                                    else -> DesktopColors.StatusGreen.copy(alpha = 0.5f)
+                                                }
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    val badge = when {
+                                                        st == null -> "⏳ Ожидает проверки"
+                                                        !st.isOnline -> "🔴 Недоступен"
+                                                        st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
+                                                        else -> "🟢 Онлайн"
+                                                    }
+                                                    Text("$host  ·  $badge", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                    if (st != null) {
+                                                        val details = buildList {
+                                                            st.resolvedIp?.let { add("IP: $it") }
+                                                            st.latencyMs?.let { add("${it} мс") }
+                                                            if (st.openPorts.isNotEmpty()) add("Порты: ${st.openPorts.joinToString(",")}")
+                                                            st.sslDaysRemaining?.let { add("SSL: $it дн.") }
+                                                        }.joinToString(" · ")
+                                                        Text(details, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    }
+                                                }
+                                                TextButton(onClick = { controller.removeWatchlistHost(host) }) {
+                                                    Text("✕", color = DesktopColors.StatusRed)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubnetRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontSize = 12.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+    }
+}

@@ -48,10 +48,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Handyman
+import androidx.compose.material.icons.filled.LibraryBooks
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -97,16 +100,20 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.helpdesk.jiraagent.data.InAppBannerAlert
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.AppUpdateUiState
 import com.helpdesk.jiraagent.ui.MainViewModel
 import com.helpdesk.jiraagent.ui.components.AppFullGuideDialog
+import com.helpdesk.jiraagent.ui.components.KnowledgeBaseArchiveAndroidDialog
 import com.helpdesk.jiraagent.ui.components.QrSettingsTransferDialog
 import com.helpdesk.jiraagent.ui.components.SerialHistoryResultsDialog
 import com.helpdesk.jiraagent.ui.components.ShiftAnalyticsDialog
+import com.helpdesk.jiraagent.ui.components.SysadminToolboxAndroidDialog
 import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
 import com.helpdesk.jiraagent.ui.screens.AdminChatScreen
+import com.helpdesk.jiraagent.ui.screens.ConfluenceWikiScreen
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.RepairRegistryScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
@@ -121,10 +128,11 @@ import kotlinx.coroutines.delay
 
 private enum class BottomDestination(val label: String) {
     TICKETS("Заявки"),
-    REPAIR("В ремонт"),
+    REPAIR("Ремонт"),
+    WIKI("Wiki"),
     CHAT("Чат"),
     FILTER("Фильтр"),
-    SETTINGS("Настройки")
+    SETTINGS("Сервер")
 }
 
 class MainActivity : FragmentActivity() {
@@ -217,6 +225,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val repairSyncError by viewModel.repairSyncError.collectAsStateWithLifecycle()
     val pendingRepairDraft by viewModel.pendingRepairDraftFromTicket.collectAsStateWithLifecycle()
     val openRepairTabStamp by viewModel.openRepairTabStamp.collectAsStateWithLifecycle()
+    val wikiUiState by viewModel.wikiUiState.collectAsStateWithLifecycle()
+    val openWikiTabStamp by viewModel.openWikiTabStamp.collectAsStateWithLifecycle()
+    val clientPassports by viewModel.clientPassports.collectAsStateWithLifecycle()
+    val ticketStopwatches by viewModel.ticketStopwatches.collectAsStateWithLifecycle()
+    val watchlistHosts by viewModel.watchlistHosts.collectAsStateWithLifecycle()
+    val watchlistStatuses by viewModel.watchlistStatuses.collectAsStateWithLifecycle()
+    val isCheckingWatchlist by viewModel.isCheckingWatchlist.collectAsStateWithLifecycle()
+    val knowledgeResults by viewModel.knowledgeArchiveResults.collectAsStateWithLifecycle()
+    val isSearchingKnowledge by viewModel.isSearchingKnowledge.collectAsStateWithLifecycle()
 
     val activeWorkshopCount = remember(repairItems) {
         repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
@@ -227,6 +244,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
     }
     var showShiftAnalytics by rememberSaveable { mutableStateOf(false) }
+    var showToolboxDialog by rememberSaveable { mutableStateOf(false) }
+    var showKbArchiveDialog by rememberSaveable { mutableStateOf(false) }
     var showFullGuide by rememberSaveable { mutableStateOf(false) }
     var showQrTransfer by rememberSaveable { mutableStateOf(false) }
     var showPostCallWorklogPrompt by rememberSaveable { mutableStateOf(false) }
@@ -362,7 +381,32 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 currentTab = BottomDestination.TICKETS
                 externalSearchFilter = client
             },
+            onExportPdf = { sum -> viewModel.shareShiftAnalyticsPdf(sum) },
+            onExportCsv = { sum -> viewModel.shareShiftAnalyticsCsv(sum) },
             onDismiss = { showShiftAnalytics = false }
+        )
+    }
+
+    if (showToolboxDialog) {
+        SysadminToolboxAndroidDialog(
+            watchlistHosts = watchlistHosts,
+            watchlistStatuses = watchlistStatuses,
+            isCheckingWatchlist = isCheckingWatchlist,
+            onAddHost = { viewModel.addWatchlistHost(it) },
+            onRemoveHost = { viewModel.removeWatchlistHost(it) },
+            onRefreshHosts = { viewModel.refreshWatchlistHosts() },
+            onDismiss = { showToolboxDialog = false }
+        )
+    }
+
+    if (showKbArchiveDialog) {
+        KnowledgeBaseArchiveAndroidDialog(
+            initialQuery = externalSearchFilter,
+            results = knowledgeResults,
+            isSearching = isSearchingKnowledge,
+            onSearch = { q -> viewModel.searchKnowledgeArchive(q) },
+            onOpenTicket = { key -> viewModel.openTicket(key) },
+            onDismiss = { showKbArchiveDialog = false }
         )
     }
 
@@ -394,6 +438,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     LaunchedEffect(openRepairTabStamp) {
         if (openRepairTabStamp > 0L) {
             currentTab = BottomDestination.REPAIR
+        }
+    }
+
+    LaunchedEffect(openWikiTabStamp) {
+        if (openWikiTabStamp > 0L) {
+            currentTab = BottomDestination.WIKI
         }
     }
 
@@ -457,6 +507,17 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 onGenerateServiceActPdf = { input -> viewModel.generateAndAttachServiceAct(input) },
                 onScanSerialHistory = { sn -> viewModel.searchByHardwareSerial(sn) },
                 onSendToRepair = { t, sn -> viewModel.sendTicketToRepairIntake(t, sn) },
+                stopwatchEntry = ticketStopwatches[activeKey],
+                onToggleStopwatch = { viewModel.toggleTicketStopwatch(activeKey) },
+                onResetStopwatch = { viewModel.resetTicketStopwatch(activeKey) },
+                clientPassport = activeTicket?.let {
+                    clientPassports[ClientTechPassportCodec.normalizeKey(it.reporterName)]
+                },
+                onSaveClientPassport = { p -> viewModel.saveClientTechPassport(p) },
+                onOpenClientInWiki = { client -> viewModel.openClientInWiki(client) },
+                knowledgeResults = knowledgeResults,
+                isSearchingKnowledge = isSearchingKnowledge,
+                onSearchKnowledge = { q -> viewModel.searchKnowledgeArchive(q, activeKey) },
                 loadAttachmentBytes = { url -> viewModel.loadAttachmentBytes(url) },
                 onUploadAttachmentUri = { uri, name ->
                     viewModel.uploadAttachmentFromUri(activeKey, uri, name)
@@ -559,6 +620,20 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showKbArchiveDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "База решений",
+                            tint = Color.White
+                        )
+                    }
+                    IconButton(onClick = { showToolboxDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Handyman,
+                            contentDescription = "Инструменты сисадмина",
+                            tint = Color.White
+                        )
+                    }
                     IconButton(onClick = { showShiftAnalytics = true }) {
                         Icon(
                             imageVector = Icons.Default.BarChart,
@@ -575,10 +650,11 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     }
                     if (appSettings.isConfigured || postponedTickets.isNotEmpty()) {
                         IconButton(onClick = {
-                            if (currentTab == BottomDestination.REPAIR) {
-                                viewModel.syncRepairRegistry()
-                            } else {
-                                viewModel.refreshNow()
+                            when (currentTab) {
+                                BottomDestination.REPAIR -> viewModel.syncRepairRegistry()
+                                BottomDestination.WIKI -> viewModel.refreshWikiSpacesAndPages()
+                                BottomDestination.CHAT -> viewModel.refreshAdminChat()
+                                else -> viewModel.refreshNow()
                             }
                         }) {
                             Icon(
@@ -592,7 +668,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             )
         },
         bottomBar = {
-            val navLabelSize = with(LocalDensity.current) { 10.dp.toSp() }
+            val navLabelSize = with(LocalDensity.current) { 9.5.dp.toSp() }
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = NavigationBarDefaults.Elevation
@@ -635,6 +711,20 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     label = {
                         Text(
                             text = BottomDestination.REPAIR.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    colors = navItemColors
+                )
+                NavigationBarItem(
+                    selected = currentTab == BottomDestination.WIKI,
+                    onClick = { currentTab = BottomDestination.WIKI },
+                    icon = { Icon(Icons.Default.LibraryBooks, contentDescription = null) },
+                    label = {
+                        Text(
+                            text = BottomDestination.WIKI.label,
                             fontSize = navLabelSize,
                             maxLines = 1,
                             softWrap = false
@@ -823,9 +913,20 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             onOpenLinkedTicket = { key -> viewModel.openTicket(key) },
                             onAttachPdfToTicket = { key, bytes, name, note ->
                                 viewModel.attachRepairPdfToTicket(key, bytes, name, note)
-                            }
+                            },
+                            onPrintQrSticker = { item -> viewModel.shareRepairQrStickerPdf(item) },
+                            onPostReadyToTicket = { item -> viewModel.postRepairReadyToLinkedTicket(item) },
+                            onExportCsv = { viewModel.shareRepairRegistryCsv() }
                         )
                     }
+                }
+
+                BottomDestination.WIKI -> Box(modifier = Modifier.weight(1f)) {
+                    ConfluenceWikiScreen(
+                        wikiState = wikiUiState,
+                        settings = appSettings,
+                        viewModel = viewModel
+                    )
                 }
 
                 BottomDestination.CHAT -> AdminChatScreen(
@@ -845,6 +946,9 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     onSaveRoomSettings = { key, notif -> viewModel.saveChatRoomSettings(key, notif) },
                     onOpenTicket = { key -> viewModel.openTicket(key) },
                     onOpenServerSettings = { currentTab = BottomDestination.SETTINGS },
+                    onSendAttachmentUri = { uri -> viewModel.sendChatAttachmentFromUri(uri) },
+                    loadAttachmentBytes = { url -> viewModel.loadAttachmentBytes(url) },
+                    connectedUserDisplayName = syncStatus.connectedUser,
                     modifier = Modifier.weight(1f)
                 )
 

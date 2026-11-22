@@ -9,12 +9,16 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
+import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PostponedTicket
@@ -50,6 +54,9 @@ data class DesktopPersistedState(
     val seenTicketKeys: Set<String> = emptySet(),
     val deferredAlertKeys: Set<String> = emptySet(),
     val clientDossierNotes: Map<String, String> = emptyMap(),
+    val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
+    val watchlistHosts: List<String> = SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS,
+    val ticketStopwatches: Map<String, TicketStopwatchEntry> = emptyMap(),
     val postponedTickets: List<PostponedTicket> = emptyList(),
     val repairItems: List<RepairEquipmentItem> = emptyList(),
     val clientDirectory: List<ClientDirectoryEntry> = emptyList(),
@@ -98,7 +105,10 @@ class DesktopStorage {
             val raw = gson.fromJson(json, DesktopPersistedState::class.java) ?: DesktopPersistedState()
 
             val safeApp = (raw.appSettings ?: AppSettings()).let { s ->
+                val safeWikiUrl = (s.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
+                    ?: AppSettings.DEFAULT_CONFLUENCE_URL
                 s.copy(
+                    confluenceUrl = safeWikiUrl,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )
@@ -153,6 +163,15 @@ class DesktopStorage {
                 seenTicketKeys = raw.seenTicketKeys ?: emptySet(),
                 deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
                 clientDossierNotes = raw.clientDossierNotes ?: emptyMap(),
+                clientPassports = ClientTechPassportCodec.mergePassports(
+                    localMap = raw.clientPassports ?: emptyMap(),
+                    remoteEvents = emptyList(),
+                    legacyLocalNotes = raw.clientDossierNotes ?: emptyMap()
+                ),
+                watchlistHosts = (raw.watchlistHosts ?: SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
+                    .mapNotNull { (it as String?)?.trim()?.takeIf(String::isNotEmpty) }
+                    .ifEmpty { SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS },
+                ticketStopwatches = raw.ticketStopwatches ?: emptyMap(),
                 postponedTickets = raw.postponedTickets ?: emptyList(),
                 repairItems = safeRepairs,
                 clientDirectory = safeDir,
@@ -252,6 +271,8 @@ object DesktopQrTransferCodec {
             ?: throw IllegalArgumentException("Не удалось разобрать пакет настроек")
         parsed.copy(
             appSettings = parsed.appSettings.copy(
+                confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
+                    ?: AppSettings.DEFAULT_CONFLUENCE_URL,
                 quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                     ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
             )

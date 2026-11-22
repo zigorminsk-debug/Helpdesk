@@ -1,10 +1,13 @@
 package com.helpdesk.desktop
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,18 +16,23 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
@@ -32,9 +40,16 @@ import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.RepairSubTab
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import javax.imageio.ImageIO
+import javax.swing.JFileChooser
 
 private val REPAIR_TS_FMT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.of("Europe/Minsk"))
@@ -53,6 +68,7 @@ fun DesktopRepairWorkspace(
     var editingItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
     var showEditor by remember { mutableStateOf(false) }
     var pendingDeleteItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
+    var readyNotifyItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
 
     // Open intake pre-filled from ticket when engineer clicked «🔧 Принять в ремонт»
     LaunchedEffect(state.pendingRepairPrefillTicket) {
@@ -212,6 +228,8 @@ fun DesktopRepairWorkspace(
                         onPrintPdf = { attach ->
                             controller.printOrOpenRepairReceiptPdf(item, attachToTicket = attach)
                         },
+                        onPrintSticker = { controller.printRepairQrSticker(item) },
+                        onNotifyReady = { readyNotifyItem = item },
                         onOpenLinkedTicket = { key ->
                             controller.selectTab(DesktopMainTab.TICKETS)
                             controller.selectTicket(key)
@@ -253,6 +271,17 @@ fun DesktopRepairWorkspace(
             }
         )
     }
+
+    readyNotifyItem?.let { target ->
+        RepairReadyNotifyDialog(
+            item = target,
+            onSendToJiraTicket = {
+                controller.postRepairReadyToLinkedTicket(target)
+                readyNotifyItem = null
+            },
+            onDismiss = { readyNotifyItem = null }
+        )
+    }
 }
 
 @Composable
@@ -262,6 +291,8 @@ private fun RepairItemDesktopCard(
     onEdit: () -> Unit,
     onAdvanceStatus: (RepairStatus) -> Unit,
     onPrintPdf: (Boolean) -> Unit,
+    onPrintSticker: () -> Unit,
+    onNotifyReady: () -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
     onRequestSoftDelete: () -> Unit,
     onRestore: () -> Unit
@@ -394,6 +425,18 @@ private fun RepairItemDesktopCard(
                             ) {
                                 Text("→ ${next.shortTitle}", fontSize = 11.5.sp)
                             }
+                        }
+                        OutlinedButton(
+                            onClick = onPrintSticker,
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                        ) {
+                            Text("🏷 QR 58×40", fontSize = 11.5.sp)
+                        }
+                        OutlinedButton(
+                            onClick = onNotifyReady,
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                        ) {
+                            Text("📣 Готово", fontSize = 11.5.sp)
                         }
                         OutlinedButton(
                             onClick = { onPrintPdf(false) },
@@ -708,6 +751,17 @@ fun DesktopChatWorkspace(
     var draft by remember { mutableStateOf("") }
     var replyTarget by remember { mutableStateOf<AdminChatMessage?>(null) }
     var showEditPinDialog by remember { mutableStateOf(false) }
+    var chatLightboxTitle by remember { mutableStateOf<String?>(null) }
+    var chatLightboxImg by remember { mutableStateOf<BufferedImage?>(null) }
+
+    val colleagueHandles = remember(state.chatMessages) {
+        state.chatMessages
+            .filterNot { it.isOwnMessage }
+            .map { it.authorDisplayName.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(8)
+    }
 
     LaunchedEffect(state.pendingChatDraft) {
         if (state.pendingChatDraft.isNotBlank()) {
@@ -782,13 +836,25 @@ fun DesktopChatWorkspace(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(state.chatMessages, key = { it.id }) { msg ->
+                        val mentionsMe = remember(msg.mentionedHandles, state.connectedUserName, state.settings.usernameOrEmail) {
+                            AdminChatCodec.isUserMentioned(
+                                mentionedHandles = msg.mentionedHandles,
+                                displayName = state.connectedUserName,
+                                usernameOrEmail = state.settings.usernameOrEmail
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = if (msg.isOwnMessage) Arrangement.End else Arrangement.Start
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = if (msg.isOwnMessage) DesktopColors.CslOrangeContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                color = when {
+                                    mentionsMe -> DesktopColors.CslOrangeContainer
+                                    msg.isOwnMessage -> DesktopColors.CslOrangeContainer
+                                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                                },
+                                border = if (mentionsMe && !msg.isOwnMessage) BorderStroke(1.5.dp, DesktopColors.CslOrange) else null,
                                 modifier = Modifier.widthIn(max = 580.dp)
                             ) {
                                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -802,6 +868,9 @@ fun DesktopChatWorkspace(
                                             fontSize = 12.sp,
                                             color = DesktopColors.CslOrange
                                         )
+                                        if (mentionsMe && !msg.isOwnMessage) {
+                                            Text("📣 @упоминание", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = DesktopColors.CslOrange)
+                                        }
                                         Text(
                                             msg.createdIso.take(16).replace('T', ' '),
                                             fontSize = 10.5.sp,
@@ -823,7 +892,51 @@ fun DesktopChatWorkspace(
                                         }
                                     }
 
-                                    Text(msg.text, fontSize = 13.sp)
+                                    if (msg.text.isNotBlank()) {
+                                        Text(msg.text, fontSize = 13.sp)
+                                    }
+
+                                    // Inline image or file attachment in chat
+                                    if (!msg.attachmentUrl.isNullOrBlank()) {
+                                        val attName = msg.attachmentName ?: "вложение"
+                                        val lower = attName.lowercase()
+                                        val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") ||
+                                            lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp")
+                                        if (isImg) {
+                                            var buf by remember(msg.attachmentUrl) { mutableStateOf<BufferedImage?>(null) }
+                                            var bmp by remember(msg.attachmentUrl) { mutableStateOf<ImageBitmap?>(null) }
+                                            LaunchedEffect(msg.attachmentUrl) {
+                                                val bytes = controller.loadJiraAttachmentBytes(msg.attachmentUrl) ?: return@LaunchedEffect
+                                                val decoded = withContext(Dispatchers.IO) {
+                                                    runCatching { ImageIO.read(ByteArrayInputStream(bytes)) }.getOrNull()
+                                                }
+                                                if (decoded != null) {
+                                                    buf = decoded
+                                                    bmp = decoded.toComposeImageBitmap()
+                                                }
+                                            }
+                                            if (bmp != null && buf != null) {
+                                                Image(
+                                                    bitmap = bmp!!,
+                                                    contentDescription = attName,
+                                                    contentScale = ContentScale.Fit,
+                                                    modifier = Modifier
+                                                        .heightIn(max = 220.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            chatLightboxTitle = attName
+                                                            chatLightboxImg = buf
+                                                        }
+                                                )
+                                            }
+                                        }
+                                        OutlinedButton(
+                                            onClick = { controller.downloadAndOpenAttachment(msg.attachmentUrl, attName) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
+                                        ) {
+                                            Text("📎 $attName", fontSize = 11.5.sp)
+                                        }
+                                    }
 
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         msg.mentionedTicketKeys.forEach { key ->
@@ -877,6 +990,21 @@ fun DesktopChatWorkspace(
             }
         }
 
+        if (colleagueHandles.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(colleagueHandles, key = { it }) { name ->
+                    val handle = name.substringBefore(' ').trim()
+                    AssistChip(
+                        onClick = {
+                            val token = "@$handle "
+                            draft = if (draft.isBlank()) token else "$draft $token"
+                        },
+                        label = { Text("@$handle", fontSize = 11.sp) }
+                    )
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -888,7 +1016,19 @@ fun DesktopChatWorkspace(
                 modifier = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { ev ->
-                        if (ev.type == KeyEventType.KeyDown && ev.key == Key.Enter && ev.isCtrlPressed && draft.isNotBlank()) {
+                        if (ev.type == KeyEventType.KeyDown && ev.isCtrlPressed && ev.key == Key.V) {
+                            val sent = controller.sendChatClipboardScreenshot(
+                                caption = draft,
+                                replyAuthor = replyTarget?.authorDisplayName,
+                                replyPreview = replyTarget?.text
+                            )
+                            if (sent) {
+                                draft = ""
+                                replyTarget = null
+                                return@onPreviewKeyEvent true
+                            }
+                            false
+                        } else if (ev.type == KeyEventType.KeyDown && ev.key == Key.Enter && ev.isCtrlPressed && draft.isNotBlank()) {
                             val textToSend = draft
                             val rt = replyTarget
                             draft = ""
@@ -898,8 +1038,43 @@ fun DesktopChatWorkspace(
                         } else false
                     },
                 maxLines = 3,
-                placeholder = { Text("Сообщение коллегам (можно упомянуть CSL-37368; Ctrl+Enter — отправить)...") }
+                placeholder = { Text("Сообщение (@Имя для вызова коллеги, Ctrl+V — скриншот, Ctrl+Enter — отправить)...") }
             )
+            OutlinedButton(
+                onClick = {
+                    val ok = controller.sendChatClipboardScreenshot(
+                        caption = draft,
+                        replyAuthor = replyTarget?.authorDisplayName,
+                        replyPreview = replyTarget?.text
+                    )
+                    if (ok) {
+                        draft = ""
+                        replyTarget = null
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+            ) {
+                Text("📸 Скрин", fontSize = 12.sp)
+            }
+            OutlinedButton(
+                onClick = {
+                    val chooser = JFileChooser()
+                    if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+                        val f: File = chooser.selectedFile
+                        controller.sendChatFileAttachment(
+                            file = f,
+                            caption = draft,
+                            replyAuthor = replyTarget?.authorDisplayName,
+                            replyPreview = replyTarget?.text
+                        )
+                        draft = ""
+                        replyTarget = null
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+            ) {
+                Text("📎 Файл", fontSize = 12.sp)
+            }
             Button(
                 onClick = {
                     val textToSend = draft
@@ -914,6 +1089,14 @@ fun DesktopChatWorkspace(
                 Text("Отправить ➤", fontWeight = FontWeight.Bold)
             }
         }
+    }
+
+    if (chatLightboxImg != null) {
+        DesktopImageLightboxDialog(
+            title = chatLightboxTitle ?: "Скриншот из чата",
+            bufferedImage = chatLightboxImg!!,
+            onDismiss = { chatLightboxImg = null }
+        )
     }
 
     if (showEditPinDialog) {
@@ -943,3 +1126,80 @@ fun DesktopChatWorkspace(
         )
     }
 }
+
+@Composable
+private fun RepairReadyNotifyDialog(
+    item: RepairEquipmentItem,
+    onSendToJiraTicket: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var message by remember(item.id) { mutableStateOf(RepairEquipmentCodec.buildClientReadyMessage(item)) }
+    val phone = item.clientPhone.trim()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("📣 Уведомить клиента о готовности · ${item.intakeNumber}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(modifier = Modifier.width(520.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = message,
+                    onValueChange = { message = it },
+                    minLines = 5,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Текст уведомления для клиента") }
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(onClick = { WindowsExternalLaunchers.copyToClipboard(message) }) {
+                        Text("📋 Скопировать текст", fontSize = 11.5.sp)
+                    }
+                    if (phone.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                WindowsExternalLaunchers.copyToClipboard(message)
+                                WindowsExternalLaunchers.openViber(phone)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7360F2))
+                        ) {
+                            Text("Viber (текст в буфере)", fontSize = 11.5.sp)
+                        }
+                        Button(
+                            onClick = {
+                                WindowsExternalLaunchers.copyToClipboard(message)
+                                WindowsExternalLaunchers.openWhatsApp(phone)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
+                        ) {
+                            Text("WhatsApp", fontSize = 11.5.sp)
+                        }
+                    }
+                    if (item.linkedTicketKey.isNotBlank()) {
+                        Button(
+                            onClick = onSendToJiraTicket,
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        ) {
+                            Text("💬 Отправить в ${item.linkedTicketKey}", fontSize = 11.5.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    WindowsExternalLaunchers.copyToClipboard(message)
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+            ) {
+                Text("Скопировать и закрыть")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
+        }
+    )
+}
+

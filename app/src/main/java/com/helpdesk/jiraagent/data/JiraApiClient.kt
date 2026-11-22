@@ -12,6 +12,8 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
+import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
@@ -796,6 +798,60 @@ class JiraApiClient {
                         summary = it.summary,
                         labels = it.labels
                     )
+                }
+        }
+    }
+
+    /**
+     * Searches historical resolved/closed tickets in Jira («База решений — как мы это уже чинили?»).
+     */
+    suspend fun searchKnowledgeBaseArchive(
+        rawQuery: String,
+        excludeTicketKey: String? = null,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        maxResults: Int = 30
+    ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = rawQuery.trim()
+                .replace("\\", " ")
+                .replace("\"", " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (clean.isEmpty()) return@runCatching emptyList()
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+
+            val jqlResolved = "text ~ \"$clean\" AND statusCategory = Done ORDER BY updated DESC"
+            val jqlAny = "text ~ \"$clean\" ORDER BY updated DESC"
+
+            val resultJson = runCatching {
+                if (preferCloud) {
+                    runCatching { executeCloudJqlSearch(baseUrl, jqlResolved, maxResults, settings) }
+                        .getOrElse { executeV2GetSearch(baseUrl, jqlResolved, maxResults, settings) }
+                } else {
+                    runCatching { executeV2GetSearch(baseUrl, jqlResolved, maxResults, settings) }
+                        .getOrElse { executeCloudJqlSearch(baseUrl, jqlResolved, maxResults, settings) }
+                }
+            }.getOrElse {
+                if (preferCloud) {
+                    runCatching { executeCloudJqlSearch(baseUrl, jqlAny, maxResults, settings) }
+                        .getOrElse { executeV2GetSearch(baseUrl, jqlAny, maxResults, settings) }
+                } else {
+                    runCatching { executeV2GetSearch(baseUrl, jqlAny, maxResults, settings) }
+                        .getOrElse { executeCloudJqlSearch(baseUrl, jqlAny, maxResults, settings) }
+                }
+            }
+
+            JiraJsonParser.parseSearchResponse(resultJson, settings, filterSettings)
+                .filterNot { t ->
+                    (!excludeTicketKey.isNullOrBlank() && t.key.equals(excludeTicketKey, ignoreCase = true)) ||
+                        AdminChatCodec.isAdminChatStorageIssue(
+                            issueKey = t.key,
+                            summary = t.summary,
+                            labels = t.labels,
+                            configuredChatKey = settings.adminChatIssueKey
+                        )
                 }
         }
     }
@@ -2433,11 +2489,13 @@ class JiraApiClient {
         rawText: String,
         replyToAuthor: String? = null,
         replyToPreview: String? = null,
+        attachmentName: String? = null,
+        attachmentUrl: String? = null,
         settings: AppSettings
     ): Result<AdminChatMessage> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanText = rawText.trim()
-            if (cleanText.isEmpty()) {
+            if (cleanText.isEmpty() && attachmentUrl.isNullOrBlank()) {
                 throw JiraApiException("Введите текст сообщения")
             }
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
@@ -2448,7 +2506,9 @@ class JiraApiClient {
             val encodedBody = AdminChatCodec.encodeMessage(
                 text = cleanText,
                 replyToAuthor = replyToAuthor,
-                replyToPreview = replyToPreview
+                replyToPreview = replyToPreview,
+                attachmentName = attachmentName,
+                attachmentUrl = attachmentUrl
             )
             val encodedKey = URLEncoder.encode(roomIssueKey, "UTF-8")
 
@@ -2521,6 +2581,9 @@ class JiraApiClient {
                                 replyToAuthor = decoded.replyToAuthor,
                                 replyToPreview = decoded.replyToPreview,
                                 mentionedTicketKeys = decoded.mentionedTicketKeys,
+                                mentionedHandles = decoded.mentionedHandles,
+                                attachmentName = decoded.attachmentName,
+                                attachmentUrl = decoded.attachmentUrl,
                                 createdIso = java.time.Instant.ofEpochMilli(nowMs).toString(),
                                 createdEpochMillis = nowMs
                             )
@@ -2680,6 +2743,42 @@ class JiraApiClient {
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
             val preferCloud = isCloudTarget(settings, baseUrl)
             val encoded = RepairEquipmentCodec.encodeEntryComment(item)
+            addCommentToIssue(
+                baseUrl = baseUrl,
+                preferCloud = preferCloud,
+                issueKey = roomIssueKey,
+                commentText = encoded,
+                settings = settings,
+                internalOnly = true
+            )
+        }
+    }
+
+    suspend fun fetchClientTechPassports(
+        roomIssueKey: String,
+        settings: AppSettings
+    ): Result<List<ClientTechPassport>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val rawComments = fetchLatestRawCommentsJson(baseUrl, preferCloud, roomIssueKey, settings)
+            rawComments.mapNotNull { el ->
+                if (!el.isJsonObject) return@mapNotNull null
+                val bodyText = JiraJsonParser.extractReadableText(el.asJsonObject.get("body"))
+                ClientTechPassportCodec.decodeComment(bodyText)
+            }
+        }
+    }
+
+    suspend fun postClientTechPassport(
+        roomIssueKey: String,
+        passport: ClientTechPassport,
+        settings: AppSettings
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encoded = ClientTechPassportCodec.encodeComment(passport)
             addCommentToIssue(
                 baseUrl = baseUrl,
                 preferCloud = preferCloud,
@@ -3203,6 +3302,9 @@ class JiraApiClient {
             replyToAuthor = decoded.replyToAuthor,
             replyToPreview = decoded.replyToPreview,
             mentionedTicketKeys = decoded.mentionedTicketKeys,
+            mentionedHandles = decoded.mentionedHandles,
+            attachmentName = decoded.attachmentName,
+            attachmentUrl = decoded.attachmentUrl,
             createdIso = createdIso,
             createdEpochMillis = createdMillis
         )

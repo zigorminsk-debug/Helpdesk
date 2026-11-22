@@ -2,11 +2,14 @@ package com.helpdesk.jiraagent.ui.screens
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,6 +44,7 @@ import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
@@ -74,16 +79,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketStage
@@ -123,10 +135,28 @@ fun AdminChatScreen(
     onSaveRoomSettings: (String, Boolean) -> Unit,
     onOpenTicket: (String) -> Unit,
     onOpenServerSettings: () -> Unit,
+    onSendAttachmentUri: (Uri) -> Unit = {},
+    loadAttachmentBytes: (suspend (String) -> Result<ByteArray>)? = null,
+    connectedUserDisplayName: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { pickedUri: Uri? ->
+        if (pickedUri != null) {
+            onSendAttachmentUri(pickedUri)
+        }
+    }
+    val colleagueHandles = remember(messages) {
+        messages
+            .filterNot { it.isOwnMessage }
+            .map { it.authorDisplayName.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(8)
+    }
 
     var showRoomSettingsDialog by rememberSaveable { mutableStateOf(false) }
     var showPinnedNoteDialog by rememberSaveable { mutableStateOf(false) }
@@ -510,6 +540,12 @@ fun AdminChatScreen(
                 items(messages, key = { it.id }) { msg ->
                     ChatMessageBubble(
                         message = msg,
+                        mentionsMe = !msg.isOwnMessage && AdminChatCodec.isUserMentioned(
+                            mentionedHandles = msg.mentionedHandles,
+                            displayName = connectedUserDisplayName,
+                            usernameOrEmail = appSettings.usernameOrEmail
+                        ),
+                        loadAttachmentBytes = loadAttachmentBytes,
                         onReply = { onSelectReply(msg) },
                         onDelete = if (msg.isOwnMessage) {
                             { deleteCandidateId = msg.id }
@@ -617,6 +653,30 @@ fun AdminChatScreen(
                         }
                     }
 
+                    colleagueHandles.forEach { fullName ->
+                        val handle = "@" + fullName.substringBefore(' ').trim()
+                        Surface(
+                            onClick = {
+                                val cur = chatUiState.draftText
+                                val next = if (cur.isBlank()) "$handle " else "${cur.trimEnd()} $handle "
+                                onDraftChange(next)
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            color = CslOrange.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = handle,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = CslOrange,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
                     QUICK_CHAT_PHRASES.forEach { phrase ->
                         Surface(
                             onClick = {
@@ -639,12 +699,23 @@ fun AdminChatScreen(
                     }
                 }
 
-                // Input row with Voice 🎤 and Send button
+                // Input row with Photo 📸, Voice 🎤 and Send button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    IconButton(
+                        onClick = { photoPickerLauncher.launch("image/*") },
+                        enabled = !chatUiState.isSending,
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = "Прикрепить скриншот / фото",
+                            tint = CslOrange
+                        )
+                    }
                     OutlinedTextField(
                         value = chatUiState.draftText,
                         onValueChange = onDraftChange,
@@ -725,6 +796,8 @@ fun AdminChatScreen(
 @Composable
 private fun ChatMessageBubble(
     message: AdminChatMessage,
+    mentionsMe: Boolean = false,
+    loadAttachmentBytes: (suspend (String) -> Result<ByteArray>)? = null,
     onReply: () -> Unit,
     onDelete: (() -> Unit)?,
     onTicketClick: (String) -> Unit
@@ -734,15 +807,15 @@ private fun ChatMessageBubble(
         formatChatTime(message.createdEpochMillis)
     }
 
-    val bubbleBg = if (isMine) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surface
+    val bubbleBg = when {
+        mentionsMe -> MaterialTheme.colorScheme.primaryContainer
+        isMine -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surface
     }
-    val bubbleBorder = if (isMine) {
-        CslOrange.copy(alpha = 0.45f)
-    } else {
-        MaterialTheme.colorScheme.outlineVariant
+    val bubbleBorder = when {
+        mentionsMe -> CslOrange
+        isMine -> CslOrange.copy(alpha = 0.45f)
+        else -> MaterialTheme.colorScheme.outlineVariant
     }
 
     Row(
@@ -817,11 +890,42 @@ private fun ChatMessageBubble(
                     }
                 }
 
-                Text(
-                    text = message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                if (message.text.isNotBlank()) {
+                    Text(
+                        text = message.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                if (!message.attachmentUrl.isNullOrBlank() && loadAttachmentBytes != null) {
+                    val attName = message.attachmentName ?: "скриншот"
+                    var bitmap by remember(message.attachmentUrl) { mutableStateOf<ImageBitmap?>(null) }
+                    LaunchedEffect(message.attachmentUrl) {
+                        val bytes = loadAttachmentBytes(message.attachmentUrl).getOrNull() ?: return@LaunchedEffect
+                        val decoded = withContext(Dispatchers.IO) {
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                        }
+                        bitmap = decoded
+                    }
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap!!,
+                            contentDescription = attName,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                    } else {
+                        Text(
+                            text = "📎 $attName",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CslOrange
+                        )
+                    }
+                }
 
                 if (message.mentionedTicketKeys.isNotEmpty()) {
                     FlowRow(

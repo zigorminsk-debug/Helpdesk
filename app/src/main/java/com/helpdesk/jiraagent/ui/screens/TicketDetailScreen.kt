@@ -83,7 +83,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -101,8 +103,13 @@ import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
+import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
+import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
+import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.ui.components.AssignColleagueDialog
 import com.helpdesk.jiraagent.ui.components.ClientDossierCard
+import com.helpdesk.jiraagent.ui.components.ClientTechPassportAndroidDialog
+import com.helpdesk.jiraagent.ui.components.KnowledgeBaseArchiveAndroidDialog
 import com.helpdesk.jiraagent.ui.components.ServiceActPdfDialog
 import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
 import com.helpdesk.jiraagent.ui.components.rememberSafeBarcodeScanner
@@ -131,6 +138,7 @@ import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import com.helpdesk.jiraagent.util.DialerLauncher
 import com.helpdesk.jiraagent.util.MessengerApp
 import com.helpdesk.jiraagent.util.MessengerLauncher
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -158,6 +166,15 @@ fun TicketDetailScreen(
     onGenerateServiceActPdf: (ServiceActInput) -> Unit = {},
     onScanSerialHistory: (String) -> Unit = {},
     onSendToRepair: (HelpdeskTicket, String) -> Unit = { _, _ -> },
+    stopwatchEntry: TicketStopwatchEntry? = null,
+    onToggleStopwatch: () -> Unit = {},
+    onResetStopwatch: () -> Unit = {},
+    clientPassport: ClientTechPassport? = null,
+    onSaveClientPassport: (ClientTechPassport) -> Unit = {},
+    onOpenClientInWiki: (String) -> Unit = {},
+    knowledgeResults: List<HelpdeskTicket> = emptyList(),
+    isSearchingKnowledge: Boolean = false,
+    onSearchKnowledge: (String) -> Unit = {},
     loadAttachmentBytes: suspend (String) -> Result<ByteArray>,
     onUploadAttachmentUri: (Uri, String?) -> Unit,
     onOpenExternalAttachment: (TicketAttachment) -> Unit,
@@ -182,8 +199,22 @@ fun TicketDetailScreen(
     var showWorklogDialog by rememberSaveable { mutableStateOf(false) }
     var showColleagueDialog by rememberSaveable { mutableStateOf(false) }
     var showServiceActDialog by rememberSaveable { mutableStateOf(false) }
+    var showPassportDialog by rememberSaveable { mutableStateOf(false) }
+    var showKbArchiveDialog by rememberSaveable { mutableStateOf(false) }
     var scannedSerialForActOrChoice by rememberSaveable { mutableStateOf("") }
     var showScannedSerialChoiceDialog by rememberSaveable { mutableStateOf(false) }
+
+    var stopwatchNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(ticketKey, stopwatchEntry?.isRunning) {
+        while (stopwatchEntry?.isRunning == true) {
+            stopwatchNowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+        stopwatchNowMs = System.currentTimeMillis()
+    }
+    val stopwatchDisplay = remember(stopwatchEntry, stopwatchNowMs) {
+        TicketStopwatchTracker.formatTimerDisplay(stopwatchEntry, stopwatchNowMs)
+    }
 
     val launchDetailScanner = rememberSafeBarcodeScanner(
         prompt = "Наведите камеру на штрихкод / S/N оборудования"
@@ -281,6 +312,36 @@ fun TicketDetailScreen(
                 onGenerateServiceActPdf(input)
             },
             onDismiss = { showServiceActDialog = false }
+        )
+    }
+
+    if (showPassportDialog && ticket != null) {
+        val initial = clientPassport ?: ClientTechPassport(
+            clientKey = ticket.reporterName.trim().lowercase(),
+            clientDisplayName = ticket.reporterName
+        )
+        ClientTechPassportAndroidDialog(
+            initialPassport = initial,
+            onSave = onSaveClientPassport,
+            onOpenInWiki = {
+                showPassportDialog = false
+                onOpenClientInWiki(ticket.reporterName)
+            },
+            onDismiss = { showPassportDialog = false }
+        )
+    }
+
+    if (showKbArchiveDialog) {
+        KnowledgeBaseArchiveAndroidDialog(
+            initialQuery = ticket?.summary.orEmpty(),
+            results = knowledgeResults,
+            isSearching = isSearchingKnowledge,
+            onSearch = onSearchKnowledge,
+            onOpenTicket = { key -> onOpenHistoricalTicket(key) },
+            onInsertSolution = { sol ->
+                standaloneCommentDraft = if (standaloneCommentDraft.isBlank()) sol else "$standaloneCommentDraft\n$sol"
+            },
+            onDismiss = { showKbArchiveDialog = false }
         )
     }
 
@@ -564,6 +625,100 @@ fun TicketDetailScreen(
                         modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // Live Stopwatch Row
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (stopwatchEntry?.isRunning == true) CslOrange.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(1.dp, if (stopwatchEntry?.isRunning == true) CslOrange else MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "⏱ Таймер работ: $stopwatchDisplay",
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (stopwatchEntry?.isRunning == true) CslOrange else MaterialTheme.colorScheme.onSurface
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(
+                                        onClick = onToggleStopwatch,
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            if (stopwatchEntry?.isRunning == true) "⏸ Пауза" else "▶ Старт",
+                                            color = CslOrange,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    if (stopwatchEntry != null) {
+                                        TextButton(
+                                            onClick = onResetStopwatch,
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                        ) {
+                                            Text("Сброс", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Client Tech Passport + Wiki + Knowledge Archive row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showPassportDialog = true },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    if (clientPassport != null && !clientPassport.isEmpty) "🏢 Паспорт ✓" else "🏢 Паспорт",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { onOpenClientInWiki(ticket.reporterName) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
+                            ) {
+                                Text("📘 Wiki", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                            OutlinedButton(
+                                onClick = { showKbArchiveDialog = true },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
+                            ) {
+                                Text("📚 Решения", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            }
+                        }
+
+                        if (clientPassport != null && !clientPassport.isEmpty) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = CslOrange.copy(alpha = 0.08f),
+                                border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth().clickable { showPassportDialog = true }
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text("🏢 Техпаспорт организации:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, color = CslOrange)
+                                    listOf(
+                                        clientPassport.addressesAndBranches.takeIf { it.isNotBlank() }?.let { "📍 $it" },
+                                        clientPassport.gatewayAndProvider.takeIf { it.isNotBlank() }?.let { "🌐 $it" },
+                                        clientPassport.vpnAndRemoteNotes.takeIf { it.isNotBlank() }?.let { "🔐 $it" },
+                                        clientPassport.serversAndServices.takeIf { it.isNotBlank() }?.let { "🖥 $it" }
+                                    ).filterNotNull().forEach { ln ->
+                                        Text(ln, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
