@@ -117,4 +117,60 @@ class DesktopPdfGeneratorTest {
             "Desktop tray notifications must default to 24/7 active mode so weekends/evenings are never muted unexpectedly"
         )
     }
+
+    @Test
+    fun `tray badge renderer and repair Excel CSV exporter produce valid UTF8 BOM semicolon output`() {
+        val base = java.awt.image.BufferedImage(64, 64, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        val cleanIcon = DesktopTrayIconRenderer.renderTrayIcon(base, unreadCount = 0)
+        val badgedIcon = DesktopTrayIconRenderer.renderTrayIcon(base, unreadCount = 12)
+        assertTrue(cleanIcon.width == 64 && cleanIcon.height == 64)
+        assertTrue(badgedIcon.width == 64 && badgedIcon.height == 64)
+        // Bottom-right corner pixel area must contain non-transparent badge pixels when unreadCount > 0
+        var nonTransparentBadgePixels = 0
+        for (y in 36 until 62) {
+            for (x in 30 until 62) {
+                if (((badgedIcon.getRGB(x, y) ushr 24) and 0xFF) > 0) {
+                    nonTransparentBadgePixels++
+                }
+            }
+        }
+        assertTrue(nonTransparentBadgePixels > 100, "Expected visible badge pixels in bottom-right corner")
+
+        val tempCsv = java.io.File.createTempFile("helpcsl-repairs-", ".csv")
+        try {
+            val exported = DesktopRepairCsvExporter.exportToCsv(
+                items = listOf(
+                    RepairEquipmentItem(
+                        id = "rem-2001",
+                        intakeNumber = "REM-2001",
+                        clientName = "ООО «Сейлзмодерн»; Минск",
+                        clientPhone = "+375293371412",
+                        linkedTicketKey = "CSL-37500",
+                        deviceCategory = "Ноутбук",
+                        deviceModel = "Lenovo ThinkPad T14",
+                        serialNumber = "PF3ABCD1",
+                        reportedDefect = "Не заряжается от Type-C",
+                        status = RepairStatus.DIAGNOSTICS,
+                        assignedEngineer = "ziv@csl.by"
+                    )
+                ),
+                outFile = tempCsv
+            )
+            val rawBytes = exported.readBytes()
+            // Verify UTF-8 BOM (EF BB BF) for Russian Excel
+            assertTrue(
+                rawBytes.size > 3 &&
+                    rawBytes[0] == 0xEF.toByte() &&
+                    rawBytes[1] == 0xBB.toByte() &&
+                    rawBytes[2] == 0xBF.toByte(),
+                "CSV must start with UTF-8 BOM"
+            )
+            val csvText = String(rawBytes, Charsets.UTF_8)
+            assertTrue(csvText.contains("\"ООО «Сейлзмодерн»; Минск\""), "Semicolon in cell must be quoted: $csvText")
+            assertTrue(csvText.contains("Захаревич Игорь"), "Engineer login ziv@csl.by must resolve to full name: $csvText")
+            assertFalse(csvText.contains("ziv@csl.by"), "Raw email must not appear in CSV: $csvText")
+        } finally {
+            tempCsv.delete()
+        }
+    }
 }

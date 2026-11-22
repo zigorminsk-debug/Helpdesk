@@ -1,7 +1,10 @@
 package com.helpdesk.jiraagent
 
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.HostDiagnosticReport
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
+import com.helpdesk.jiraagent.domain.QuickReplyTemplates
+import com.helpdesk.jiraagent.domain.TcpPortStatus
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import org.junit.Assert.assertEquals
@@ -115,5 +118,86 @@ class BelarusWorkCalendarTest {
         )
         assertEquals(AlertSoundPreset.CUSTOM_URI, custom.alertSoundPreset)
         assertEquals("Signal_CSL.mp3", custom.customAlertSoundTitle)
+    }
+
+    @Test
+    fun showsEmptyQueueGifsOnlyAtBeginningOfWorkingDayAndDisablesAfterward() {
+        val settings = AppSettings(workStartTime = "09:00", workEndTime = "17:30")
+
+        fun minskInstant(year: Int, month: Int, day: Int, hour: Int, minute: Int) =
+            LocalDateTime.of(year, month, day, hour, minute)
+                .atZone(BelarusWorkCalendar.MINSK_ZONE)
+                .toInstant()
+
+        // Monday 23.11.2026 at 09:05 (start of working day) -> TRUE
+        val morning0905 = minskInstant(2026, 11, 23, 9, 5)
+        assertTrue(
+            BelarusWorkCalendar.shouldShowMorningGif(
+                settings = settings,
+                sessionStartedEpochMs = morning0905.toEpochMilli() - 2 * 60_000L,
+                nowInstant = morning0905
+            )
+        )
+
+        // Monday 23.11.2026 at 08:40 (pre-shift arrival within 30 min window) -> TRUE
+        val morning0840 = minskInstant(2026, 11, 23, 8, 40)
+        assertTrue(BelarusWorkCalendar.shouldShowMorningGif(settings = settings, nowInstant = morning0840))
+
+        // Monday 23.11.2026 at 10:15 (after morning window) -> FALSE
+        val midday1015 = minskInstant(2026, 11, 23, 10, 15)
+        assertFalse(BelarusWorkCalendar.shouldShowMorningGif(settings = settings, nowInstant = midday1015))
+
+        // Monday 23.11.2026 at 09:15 when already shown > 10 minutes in session -> FALSE
+        val morning0915 = minskInstant(2026, 11, 23, 9, 15)
+        assertFalse(
+            BelarusWorkCalendar.shouldShowMorningGif(
+                settings = settings,
+                sessionStartedEpochMs = morning0915.toEpochMilli() - 12 * 60_000L,
+                maxSessionDisplayMinutes = 10L,
+                nowInstant = morning0915
+            )
+        )
+
+        // Monday 23.11.2026 at 09:05 when manually dismissed today -> FALSE
+        assertFalse(
+            BelarusWorkCalendar.shouldShowMorningGif(
+                settings = settings,
+                dismissedDateIso = "2026-11-23",
+                nowInstant = morning0905
+            )
+        )
+
+        // Saturday 21.11.2026 at 09:05 (weekend) -> FALSE
+        val saturday0905 = minskInstant(2026, 11, 21, 9, 5)
+        assertFalse(BelarusWorkCalendar.shouldShowMorningGif(settings = settings, nowInstant = saturday0905))
+    }
+
+    @Test
+    fun expandsQuickReplyPlaceholdersAndFormatsDiagnosticReportForComment() {
+        val expanded = QuickReplyTemplates.expand(
+            templateBody = "Здравствуйте, {клиент}! Заявка {заявка} принята инженером {инженер}.",
+            clientName = "ООО Белинвестторг (Минск)",
+            ticketKey = "CSL-37401",
+            engineerName = "Захаревич Игорь"
+        )
+        assertEquals(
+            "Здравствуйте, ООО Белинвестторг! Заявка CSL-37401 принята инженером Захаревич Игорь.",
+            expanded
+        )
+
+        val report = HostDiagnosticReport(
+            targetHost = "mail.csl.by",
+            resolvedIp = "93.84.112.10",
+            icmpReachable = true,
+            icmpLatencyMs = 8L,
+            portStatuses = listOf(
+                TcpPortStatus(443, "HTTPS", true, 12L),
+                TcpPortStatus(3389, "RDP", false, null)
+            )
+        )
+        val note = QuickReplyTemplates.formatDiagnosticReportForComment(report)
+        assertTrue(note.contains("mail.csl.by"))
+        assertTrue(note.contains("93.84.112.10"))
+        assertTrue(note.contains("443/HTTPS"))
     }
 }

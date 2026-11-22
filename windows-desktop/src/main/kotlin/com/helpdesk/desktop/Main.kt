@@ -14,6 +14,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,15 +54,16 @@ fun main(args: Array<String>) = application {
         position = WindowPosition(Alignment.Center)
     )
 
-    val appIconBitmap = remember {
+    val baseAwtIcon = remember {
         runCatching {
             DesktopController::class.java.getResourceAsStream("/help-csl.png")!!.use { stream ->
-                ImageIO.read(stream).toComposeImageBitmap()
+                ImageIO.read(stream)
             }
         }.getOrElse {
-            BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB).toComposeImageBitmap()
+            BufferedImage(64, 64, BufferedImage.TYPE_INT_ARGB)
         }
     }
+    val appIconBitmap = remember(baseAwtIcon) { baseAwtIcon.toComposeImageBitmap() }
     val appIconPainter = remember(appIconBitmap) { BitmapPainter(appIconBitmap) }
     var mainComposeWindow by remember { mutableStateOf<ComposeWindow?>(null) }
 
@@ -66,6 +71,11 @@ fun main(args: Array<String>) = application {
     val trayState = rememberTrayState()
     val newQueueCount = remember(state.tickets) {
         state.tickets.count { it.isClientTicket && it.stage == TicketStage.NEW }
+    }
+    val trayIconPainter = remember(baseAwtIcon, newQueueCount) {
+        BitmapPainter(
+            DesktopTrayIconRenderer.renderTrayIcon(baseAwtIcon, newQueueCount).toComposeImageBitmap()
+        )
     }
 
     val restoreMainWindow: () -> Unit = {
@@ -107,7 +117,7 @@ fun main(args: Array<String>) = application {
     }
 
     Tray(
-        icon = appIconPainter,
+        icon = trayIconPainter,
         state = trayState,
         tooltip = "Help-CSL v${controller.currentVersion} · Новых заявок: $newQueueCount",
         onAction = { restoreMainWindow() },
@@ -144,7 +154,15 @@ fun main(args: Array<String>) = application {
         visible = isMainWindowVisible,
         state = mainWindowState,
         title = "Help-CSL v${controller.currentVersion} — Служба технической поддержки (Windows)",
-        icon = appIconPainter
+        icon = appIconPainter,
+        onPreviewKeyEvent = { ev ->
+            if (ev.type == KeyEventType.KeyDown && ev.key == Key.F5) {
+                controller.refreshTickets(silent = false)
+                true
+            } else {
+                false
+            }
+        }
     ) {
         SideEffect {
             mainComposeWindow = window

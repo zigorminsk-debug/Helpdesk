@@ -369,6 +369,41 @@ fun DesktopSettingsWorkspace(
                     )
                 }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Switch(
+                        checked = draft.staleTicketReminderEnabled,
+                        onCheckedChange = { draft = draft.copy(staleTicketReminderEnabled = it) }
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "⏰ Повторное SLA-напоминание о непринятых заявках в «Новые»",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            "Если клиентская заявка остаётся без исполнителя дольше заданного времени, Help-CSL покажет напоминание со звуком.",
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedTextField(
+                        value = draft.staleTicketReminderMinutes.toString(),
+                        onValueChange = { v ->
+                            v.filter(Char::isDigit).toIntOrNull()?.let { mins ->
+                                draft = draft.copy(staleTicketReminderMinutes = mins.coerceIn(5, 120))
+                            }
+                        },
+                        enabled = draft.staleTicketReminderEnabled,
+                        label = { Text("Порог SLA (мин)") },
+                        singleLine = true,
+                        modifier = Modifier.width(150.dp)
+                    )
+                }
+
                 HorizontalDivider()
 
                 Text("Мелодия звукового оповещения Windows:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)

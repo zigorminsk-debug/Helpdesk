@@ -239,4 +239,55 @@ object BelarusWorkCalendar {
         }
         return result
     }
+
+    fun currentMinskDateIso(nowInstant: Instant = Instant.now()): String {
+        return nowInstant.atZone(MINSK_ZONE).toLocalDate().toString()
+    }
+
+    /**
+     * Shows the IT Crowd empty-queue GIF ONLY at the beginning of a working day:
+     * - Must be a working day in Belarus (or custom extra working date);
+     * - Current Minsk time must fall within `[workStart - 30 min .. workStart + 45 min]`
+     *   (default `08:30` – `09:45` Minsk time);
+     * - Not manually dismissed today ([dismissedDateIso] != today);
+     * - Shown for at most [maxSessionDisplayMinutes] (default 10 min) after app launch,
+     *   after which it automatically turns off for the rest of the day.
+     */
+    fun shouldShowMorningGif(
+        settings: AppSettings = AppSettings(),
+        dismissedDateIso: String? = null,
+        sessionStartedEpochMs: Long? = null,
+        maxSessionDisplayMinutes: Long = 10L,
+        nowInstant: Instant = Instant.now()
+    ): Boolean {
+        val minskNow = nowInstant.atZone(MINSK_ZONE)
+        val today = minskNow.toLocalDate()
+        if (dismissedDateIso != null && dismissedDateIso == today.toString()) {
+            return false
+        }
+
+        val (workingDay, _) = isWorkingDay(
+            date = today,
+            extraWorkingDatesRaw = settings.extraWorkingDates,
+            extraHolidayDatesRaw = settings.extraHolidayDates
+        )
+        if (!workingDay) return false
+
+        val startTime = parseLocalTimeOrDefault(settings.workStartTime, LocalTime.of(9, 0))
+        val windowStart = if (startTime.toSecondOfDay() >= 30 * 60) startTime.minusMinutes(30) else LocalTime.MIN
+        val windowEnd = if (startTime.toSecondOfDay() <= (23 * 3600 + 14 * 60)) startTime.plusMinutes(45) else LocalTime.MAX
+
+        val curTime = minskNow.toLocalTime()
+        if (curTime.isBefore(windowStart) || curTime.isAfter(windowEnd)) {
+            return false
+        }
+
+        if (sessionStartedEpochMs != null && maxSessionDisplayMinutes > 0L) {
+            val elapsedMs = nowInstant.toEpochMilli() - sessionStartedEpochMs
+            if (elapsedMs > maxSessionDisplayMinutes * 60_000L) {
+                return false
+            }
+        }
+        return true
+    }
 }

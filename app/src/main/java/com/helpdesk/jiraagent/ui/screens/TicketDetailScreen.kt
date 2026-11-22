@@ -109,6 +109,7 @@ import com.helpdesk.jiraagent.ui.components.rememberSafeBarcodeScanner
 import com.helpdesk.jiraagent.util.ServiceActInput
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import com.helpdesk.jiraagent.domain.QuickReplyTemplates
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
@@ -314,7 +315,13 @@ fun TicketDetailScreen(
                     QuickReplyMacrosBar(
                         templates = appSettings.quickReplyTemplates,
                         onSelectTemplate = { tpl ->
-                            commentDraft = if (commentDraft.isBlank()) tpl else "${commentDraft.trimEnd()} $tpl"
+                            val expanded = QuickReplyTemplates.expand(
+                                templateBody = tpl,
+                                clientName = ticket?.reporterName,
+                                ticketKey = ticketKey,
+                                engineerName = engineerDisplayName
+                            )
+                            commentDraft = if (commentDraft.isBlank()) expanded else "${commentDraft.trimEnd()} $expanded"
                         }
                     )
                     VoiceCommentTextField(
@@ -841,10 +848,16 @@ fun TicketDetailScreen(
                         QuickReplyMacrosBar(
                             templates = appSettings.quickReplyTemplates,
                             onSelectTemplate = { tpl ->
+                                val expanded = QuickReplyTemplates.expand(
+                                    templateBody = tpl,
+                                    clientName = ticket?.reporterName,
+                                    ticketKey = ticketKey,
+                                    engineerName = engineerDisplayName
+                                )
                                 standaloneCommentDraft = if (standaloneCommentDraft.isBlank()) {
-                                    tpl
+                                    expanded
                                 } else {
-                                    "${standaloneCommentDraft.trimEnd()} $tpl"
+                                    "${standaloneCommentDraft.trimEnd()} $expanded"
                                 }
                             }
                         )

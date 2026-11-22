@@ -92,6 +92,7 @@ data class DesktopUiState(
 
     // Empty state GIF (#1 Roy & #7 Moss) + Habr.com RSS & built-in article reader
     val emptyGifIndex: Int = 0,
+    val dismissedGifDateIso: String = "",
     val habrCategory: HabrFeedCategory = HabrFeedCategory.SYSADMIN,
     val habrItems: List<HabrNewsItem> = emptyList(),
     val isLoadingHabr: Boolean = false,
@@ -133,6 +134,8 @@ class DesktopController(
     private val persisted = storage.loadState()
     private val notifiedTicketKeys = persisted.seenTicketKeys.toMutableSet()
     private val deferredTicketKeys = persisted.deferredAlertKeys.toMutableSet()
+    private val lastStaleReminderByKey = mutableMapOf<String, Long>()
+    val sessionStartedEpochMs: Long = System.currentTimeMillis()
     private var baselineInitialized: Boolean = persisted.baselineInitialized
     private var seenChatIds: Set<String> = persisted.cachedChatMessages.map { it.id }.toSet()
 
@@ -142,6 +145,7 @@ class DesktopController(
             filterSettings = persisted.filterSettings,
             minimizeToTray = persisted.minimizeToTray,
             respectWorkScheduleOnDesktop = persisted.respectWorkScheduleOnDesktop,
+            dismissedGifDateIso = persisted.dismissedGifDateIso,
             connectedUserName = persisted.connectedUserName,
             tickets = persisted.cachedTickets,
             postponedTickets = persisted.postponedTickets,
@@ -309,6 +313,66 @@ class DesktopController(
         _state.update { it.copy(emptyGifIndex = (it.emptyGifIndex + 1) % 2) }
     }
 
+    fun dismissMorningGifToday() {
+        val today = BelarusWorkCalendar.currentMinskDateIso()
+        _state.update { it.copy(dismissedGifDateIso = today) }
+        persistCurrentState()
+    }
+
+    fun addQuickReplyTemplate(rawText: String) {
+        val cleaned = rawText.trim()
+        if (cleaned.isEmpty()) return
+        _state.update { st ->
+            val current = st.settings.quickReplyTemplates
+            if (current.any { it.equals(cleaned, ignoreCase = true) }) {
+                st
+            } else {
+                st.copy(settings = st.settings.copy(quickReplyTemplates = current + cleaned))
+            }
+        }
+        persistCurrentState()
+    }
+
+    fun removeQuickReplyTemplate(templateText: String) {
+        _state.update { st ->
+            st.copy(
+                settings = st.settings.copy(
+                    quickReplyTemplates = st.settings.quickReplyTemplates.filterNot { it == templateText }
+                )
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun resetQuickReplyTemplates() {
+        _state.update { st ->
+            st.copy(
+                settings = st.settings.copy(
+                    quickReplyTemplates = AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
+                )
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun exportRepairsToExcelCsv() {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val file = DesktopRepairCsvExporter.exportToCsv(_state.value.repairItems)
+                DesktopPdfGenerator.openFile(file)
+                file
+            }.onSuccess { file ->
+                _state.update {
+                    it.copy(statusBanner = "📊 Журнал мастерской выгружен в Excel: ${file.name}")
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(errorBanner = "Не удалось выгрузить CSV: ${err.message}")
+                }
+            }
+        }
+    }
+
     fun loadHabrFeed(category: HabrFeedCategory = _state.value.habrCategory, force: Boolean = true) {
         _state.update { it.copy(habrCategory = category, isLoadingHabr = true) }
         scope.launch {
@@ -390,6 +454,7 @@ class DesktopController(
                     filterSettings = cur.filterSettings,
                     minimizeToTray = cur.minimizeToTray,
                     respectWorkScheduleOnDesktop = cur.respectWorkScheduleOnDesktop,
+                    dismissedGifDateIso = cur.dismissedGifDateIso,
                     connectedUserName = cur.connectedUserName,
                     resolvedChatRoomKey = cur.chatRoomKey,
                     resolvedRepairRoomKey = cur.repairRoomKey,
@@ -560,6 +625,8 @@ class DesktopController(
 
                     if (freshNewClientTickets.isNotEmpty()) {
                         triggerNewTicketAlerts(freshNewClientTickets)
+                    } else if (!isInitialBoot && allowAlertsNow) {
+                        checkStaleUnacceptedTickets(fetched)
                     }
                 }
                 .onFailure { err ->
@@ -648,6 +715,64 @@ class DesktopController(
             val top = freshTickets.last()
             DesktopSoundPlayer.speakTicketSummaryWindows(top.reporterName, top.summary)
         }
+    }
+
+    private fun checkStaleUnacceptedTickets(tickets: List<HelpdeskTicket>) {
+        val cur = _state.value
+        val settings = cur.settings
+        if (!settings.staleTicketReminderEnabled) return
+        val thresholdMinutes = settings.staleTicketReminderMinutes.coerceIn(5, 120)
+        val thresholdMs = thresholdMinutes * 60_000L
+        val nowMs = System.currentTimeMillis()
+
+        // Clean up keys no longer in NEW stage
+        val activeNewKeys = tickets.asSequence()
+            .filter { it.isClientTicket && it.stage == TicketStage.NEW && it.assigneeName.isNullOrBlank() }
+            .map { it.key }
+            .toSet()
+        synchronized(lastStaleReminderByKey) {
+            lastStaleReminderByKey.keys.retainAll(activeNewKeys)
+        }
+
+        val overdueCandidates = tickets.filter { t ->
+            t.isClientTicket &&
+                t.stage == TicketStage.NEW &&
+                t.assigneeName.isNullOrBlank() &&
+                t.createdEpochMillis > 0L &&
+                (nowMs - t.createdEpochMillis) >= thresholdMs
+        }
+        if (overdueCandidates.isEmpty()) return
+
+        val dueForReminder = synchronized(lastStaleReminderByKey) {
+            overdueCandidates.filter { t ->
+                val lastReminded = lastStaleReminderByKey[t.key] ?: t.createdEpochMillis
+                (nowMs - lastReminded) >= thresholdMs
+            }.also { list ->
+                list.forEach { lastStaleReminderByKey[it.key] = nowMs }
+            }
+        }
+        if (dueForReminder.isEmpty()) return
+
+        val oldest = dueForReminder.minByOrNull { it.createdEpochMillis } ?: dueForReminder.first()
+        val waitMins = ((nowMs - oldest.createdEpochMillis) / 60_000L).coerceAtLeast(thresholdMinutes.toLong())
+        val alert = if (dueForReminder.size == 1) {
+            DesktopToastAlert(
+                id = "sla-${oldest.key}-$nowMs",
+                title = "⏰ Ждёт реакции ${waitMins} мин · ${oldest.key}",
+                subtitle = "${oldest.reporterName.ifBlank { "Клиент" }}: ${oldest.summary}",
+                ticketKey = oldest.key,
+                isStormSummary = false
+            )
+        } else {
+            DesktopToastAlert(
+                id = "sla-batch-$nowMs",
+                title = "⏰ Не приняты в работу: ${dueForReminder.size} заявки (> $thresholdMinutes мин)",
+                subtitle = dueForReminder.take(3).joinToString(" · ") { "${it.key} (${it.reporterName})" },
+                ticketKey = oldest.key,
+                isStormSummary = true
+            )
+        }
+        emitDesktopAlert(alert, playSound = true)
     }
 
     private suspend fun processDuePostponedTickets() {

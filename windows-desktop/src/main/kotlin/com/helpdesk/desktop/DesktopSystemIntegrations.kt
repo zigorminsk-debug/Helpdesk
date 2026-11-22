@@ -18,6 +18,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle
 import org.apache.pdfbox.pdmodel.font.PDType0Font
 import org.apache.pdfbox.pdmodel.font.PDType1Font
 import org.apache.pdfbox.pdmodel.font.PDFont
+import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
@@ -27,6 +28,7 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.GraphicsEnvironment
 import java.awt.Image
+import java.awt.RenderingHints
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -41,6 +43,8 @@ import java.net.URI
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
+import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -1072,5 +1076,147 @@ object DesktopUpdateManager {
             if (da != db) return da.compareTo(db)
         }
         return 0
+    }
+}
+
+object DesktopTrayIconRenderer {
+
+    fun renderTrayIcon(baseIcon: BufferedImage, unreadCount: Int): BufferedImage {
+        val size = 64
+        val canvas = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+        val g = canvas.createGraphics()
+        try {
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+
+            g.drawImage(baseIcon, 0, 0, size, size, null)
+
+            if (unreadCount > 0) {
+                val badgeLabel = if (unreadCount > 9) "9+" else unreadCount.toString()
+                val badgeH = 30
+                val badgeW = if (badgeLabel.length > 1) 38 else 30
+                val bx = size - badgeW - 1
+                val by = size - badgeH - 1
+
+                // Dark halo + bright orange-red badge for instant taskbar visibility
+                g.color = Color(0x04, 0x09, 0x1E, 235)
+                g.fillRoundRect(bx - 2, by - 2, badgeW + 4, badgeH + 4, badgeH + 4, badgeH + 4)
+
+                g.color = Color(0xEF, 0x44, 0x44)
+                g.fillRoundRect(bx, by, badgeW, badgeH, badgeH, badgeH)
+
+                g.stroke = BasicStroke(2.2f)
+                g.color = Color.WHITE
+                g.drawRoundRect(bx, by, badgeW, badgeH, badgeH, badgeH)
+
+                val fontSize = if (badgeLabel.length > 1) 17 else 19
+                g.font = Font(Font.SANS_SERIF, Font.BOLD, fontSize)
+                val fm = g.fontMetrics
+                val tx = bx + (badgeW - fm.stringWidth(badgeLabel)) / 2
+                val ty = by + ((badgeH - fm.height) / 2) + fm.ascent
+                g.drawString(badgeLabel, tx, ty)
+            }
+        } finally {
+            g.dispose()
+        }
+        return canvas
+    }
+}
+
+object DesktopRepairCsvExporter {
+
+    private val MINSK_ZONE = ZoneId.of("Europe/Minsk")
+    private val DATE_TIME_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+    private val FILE_DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm")
+
+    fun exportToCsv(
+        items: List<RepairEquipmentItem>,
+        outFile: File? = null
+    ): File {
+        val activeItems = items
+            .filter { !it.isDeleted }
+            .sortedByDescending { it.updatedAtEpochMs }
+
+        val target = outFile ?: run {
+            val docs = File(System.getProperty("user.home", "."), "Documents/Help-CSL_Acts").apply { mkdirs() }
+            val stamp = ZonedDateTime.now(MINSK_ZONE).format(FILE_DATE_FMT)
+            File(docs, "Help-CSL_Журнал_Ремонта_$stamp.csv")
+        }
+        target.parentFile?.mkdirs()
+
+        val sb = StringBuilder()
+        // UTF-8 BOM so Microsoft Excel (Russian locale) opens Cyrillic cleanly
+        sb.append('\uFEFF')
+        val headers = listOf(
+            "Квитанция №",
+            "Статус",
+            "Клиент / Организация",
+            "Телефон",
+            "Заявка Jira",
+            "Тип устройства",
+            "Модель оборудования",
+            "Серийный номер (S/N)",
+            "Комплектность",
+            "Заявленная неисправность",
+            "Заметки СЦ / Ремонт",
+            "Полка / Место",
+            "Инженер СЦ",
+            "Принято",
+            "Обновлено",
+            "Выдано"
+        )
+        sb.append(headers.joinToString(";") { csvCell(it) }).append("\r\n")
+
+        for (item in activeItems) {
+            val humanEngineer = EngineerNameResolver.resolve(
+                displayOrLogin = item.assignedEngineer,
+                fallbackLoginOrEmail = null
+            )
+            val row = listOf(
+                item.intakeNumber.ifBlank { item.id.take(8).uppercase() },
+                item.status.title,
+                item.clientName,
+                item.clientPhone,
+                item.linkedTicketKey,
+                item.deviceCategory,
+                item.deviceModel,
+                item.serialNumber,
+                item.accessories,
+                item.reportedDefect,
+                item.repairNotes,
+                item.shelfLocation,
+                humanEngineer,
+                formatEpoch(item.createdAtEpochMs),
+                formatEpoch(item.updatedAtEpochMs),
+                item.issuedAtEpochMs?.let { formatEpoch(it) }.orEmpty()
+            )
+            sb.append(row.joinToString(";") { csvCell(it) }).append("\r\n")
+        }
+
+        target.writeBytes(sb.toString().toByteArray(StandardCharsets.UTF_8))
+        return target
+    }
+
+    private fun formatEpoch(epochMs: Long): String {
+        if (epochMs <= 0L) return ""
+        return runCatching {
+            Instant.ofEpochMilli(epochMs).atZone(MINSK_ZONE).format(DATE_TIME_FMT)
+        }.getOrDefault("")
+    }
+
+    private fun csvCell(raw: String?): String {
+        val cleaned = raw.orEmpty()
+            .replace("\r\n", " ")
+            .replace('\n', ' ')
+            .replace('\r', ' ')
+            .trim()
+        // Prevent Excel formula injection if text starts with =, +, - (non-phone), @
+        val safe = if (cleaned.startsWith("=") || cleaned.startsWith("@")) "'$cleaned" else cleaned
+        return if (safe.contains(';') || safe.contains('"')) {
+            "\"${safe.replace("\"", "\"\"")}\""
+        } else {
+            safe
+        }
     }
 }

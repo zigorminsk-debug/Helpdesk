@@ -507,6 +507,7 @@ fun TicketsScreen(
             ) {
                 if (displayedTickets.isEmpty() && postponedTickets.isEmpty() && offlineQueuedActions.isEmpty()) {
                     EmptyTicketsPlaceholder(
+                        appSettings = appSettings,
                         isConfigured = appSettings.isConfigured,
                         tabMode = tabMode,
                         hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
@@ -540,6 +541,7 @@ fun TicketsScreen(
                         if (displayedTickets.isEmpty()) {
                             item(key = "empty_tickets_gif") {
                                 EmptyTicketsPlaceholder(
+                                    appSettings = appSettings,
                                     isConfigured = appSettings.isConfigured,
                                     tabMode = tabMode,
                                     hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
@@ -1413,6 +1415,7 @@ private fun ErrorBanner(errorMessage: String, onRetry: () -> Unit) {
 
 @Composable
 private fun EmptyTicketsPlaceholder(
+    appSettings: AppSettings,
     isConfigured: Boolean,
     tabMode: TicketTabMode,
     hasSearch: Boolean,
@@ -1432,6 +1435,7 @@ private fun EmptyTicketsPlaceholder(
         emptyStatusText = emptyMessage,
         showRefreshButton = isConfigured,
         onRefreshNow = onRefresh,
+        settings = appSettings,
         scrollable = scrollable
     )
 }

@@ -122,6 +122,12 @@ fun DesktopRepairWorkspace(
             ) {
                 Text(if (state.isSyncingRepair) "Синхр..." else "🔄 Синхронизировать", fontSize = 12.sp)
             }
+            OutlinedButton(
+                onClick = { controller.exportRepairsToExcelCsv() },
+                enabled = state.repairItems.any { !it.isDeleted }
+            ) {
+                Text("📊 В Excel (.csv)", fontSize = 12.sp)
+            }
             Button(
                 onClick = {
                     editingItem = RepairEquipmentItem(

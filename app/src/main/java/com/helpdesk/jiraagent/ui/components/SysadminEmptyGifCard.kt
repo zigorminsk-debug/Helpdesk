@@ -1,22 +1,26 @@
 package com.helpdesk.jiraagent.ui.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Movie
 import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.Drawable
-import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.view.View
 import android.widget.ImageView
+import android.widget.Toast
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,16 +37,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +67,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -66,22 +77,40 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.helpdesk.jiraagent.data.HabrArticleBlock
+import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
 import com.helpdesk.jiraagent.data.HabrNewsItem
 import com.helpdesk.jiraagent.data.HabrNewsRepository
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
+import java.time.Instant
 import kotlin.random.Random
+
+private const val MORNING_GIF_PREFS = "help_csl_morning_gif"
+private const val KEY_DISMISSED_DATE = "dismissed_date_iso"
 
 data class SysadminGifItem(
     val id: String,
@@ -95,13 +124,13 @@ object SysadminGifCatalog {
         SysadminGifItem(
             id = "roy_off_on",
             assetPath = "admin_gifs/admin_gif_01.gif",
-            quote = "«Вы пробовали выключить и снова включить?» — очередь чиста!",
+            quote = "«Вы пробовали выключить и снова включить?» — доброе утро, очередь чиста!",
             aspectRatio = 439f / 256f
         ),
         SysadminGifItem(
             id = "moss_fire",
             assetPath = "admin_gifs/admin_gif_07.gif",
-            quote = "В очереди чисто. Главное правило админа — не трогать то, что работает!",
+            quote = "Доброе утро! В очереди чисто. Главное правило админа — не трогать то, что работает!",
             aspectRatio = 440f / 248f
         )
     )
@@ -112,6 +141,7 @@ fun SysadminEmptyStatePanel(
     emptyStatusText: String,
     showRefreshButton: Boolean,
     onRefreshNow: () -> Unit,
+    settings: AppSettings = AppSettings(),
     scrollable: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -123,6 +153,36 @@ fun SysadminEmptyStatePanel(
     val safeIndex = currentIndex.mod(gifs.size)
     val currentGif = gifs[safeIndex]
 
+    val gifPrefs = remember(context) {
+        context.getSharedPreferences(MORNING_GIF_PREFS, Context.MODE_PRIVATE)
+    }
+    var dismissedDateIso by remember {
+        mutableStateOf(gifPrefs.getString(KEY_DISMISSED_DATE, null))
+    }
+    val sessionStartedEpochMs = remember { System.currentTimeMillis() }
+    val nowInstant by produceState(initialValue = Instant.now()) {
+        while (true) {
+            delay(20_000L)
+            value = Instant.now()
+        }
+    }
+
+    val showMorningGif = remember(settings, dismissedDateIso, nowInstant) {
+        BelarusWorkCalendar.shouldShowMorningGif(
+            settings = settings,
+            dismissedDateIso = dismissedDateIso,
+            sessionStartedEpochMs = sessionStartedEpochMs,
+            maxSessionDisplayMinutes = 10L,
+            nowInstant = nowInstant
+        )
+    }
+
+    val dismissGifToday: () -> Unit = {
+        val today = BelarusWorkCalendar.currentMinskDateIso()
+        dismissedDateIso = today
+        gifPrefs.edit().putString(KEY_DISMISSED_DATE, today).apply()
+    }
+
     var habrCategoryName by rememberSaveable { mutableStateOf(HabrFeedCategory.NEWS.name) }
     val habrCategory = remember(habrCategoryName) {
         runCatching { HabrFeedCategory.valueOf(habrCategoryName) }.getOrDefault(HabrFeedCategory.NEWS)
@@ -133,6 +193,7 @@ fun SysadminEmptyStatePanel(
     }
     var isLoadingHabr by remember { mutableStateOf(habrItems.isEmpty()) }
     var habrError by remember { mutableStateOf<String?>(null) }
+    var activeReaderIndex by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(habrCategory, reloadNonce) {
         val force = reloadNonce > 0
@@ -155,31 +216,31 @@ fun SysadminEmptyStatePanel(
         isLoadingHabr = false
     }
 
-    val openUrl: (String) -> Unit = { url ->
-        runCatching {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-        }
-    }
-
     if (scrollable) {
         LazyColumn(
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            item(key = "gif_top_block") {
-                GifAndStatusTopBlock(
-                    gifs = gifs,
-                    safeIndex = safeIndex,
-                    currentGif = currentGif,
-                    onSelectIndex = { currentIndex = it },
-                    emptyStatusText = emptyStatusText,
-                    showRefreshButton = showRefreshButton,
-                    onRefreshNow = onRefreshNow
-                )
+            item(key = if (showMorningGif) "gif_top_block" else "clean_queue_strip") {
+                if (showMorningGif) {
+                    GifAndStatusTopBlock(
+                        gifs = gifs,
+                        safeIndex = safeIndex,
+                        currentGif = currentGif,
+                        onSelectIndex = { currentIndex = it },
+                        onDismissToday = dismissGifToday,
+                        emptyStatusText = emptyStatusText,
+                        showRefreshButton = showRefreshButton,
+                        onRefreshNow = onRefreshNow
+                    )
+                } else {
+                    CompactEmptyQueueStrip(
+                        emptyStatusText = emptyStatusText,
+                        showRefreshButton = showRefreshButton,
+                        onRefreshNow = onRefreshNow
+                    )
+                }
             }
 
             item(key = "habr_feed_header") {
@@ -189,11 +250,11 @@ fun SysadminEmptyStatePanel(
                     onSelectCategory = { cat ->
                         if (cat != habrCategory) {
                             reloadNonce = 0
+                            activeReaderIndex = null
                             habrCategoryName = cat.name
                         }
                     },
-                    onRefreshFeed = { reloadNonce++ },
-                    onOpenHabrSite = { openUrl("https://habr.com/ru/") }
+                    onRefreshFeed = { reloadNonce++ }
                 )
             }
 
@@ -211,7 +272,10 @@ fun SysadminEmptyStatePanel(
                 ) { newsItem ->
                     HabrNewsItemCard(
                         item = newsItem,
-                        onClick = { openUrl(newsItem.url) }
+                        onClick = {
+                            val idx = habrItems.indexOfFirst { it.id == newsItem.id }
+                            activeReaderIndex = if (idx >= 0) idx else 0
+                        }
                     )
                 }
             }
@@ -223,15 +287,24 @@ fun SysadminEmptyStatePanel(
                 .padding(vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            GifAndStatusTopBlock(
-                gifs = gifs,
-                safeIndex = safeIndex,
-                currentGif = currentGif,
-                onSelectIndex = { currentIndex = it },
-                emptyStatusText = emptyStatusText,
-                showRefreshButton = showRefreshButton,
-                onRefreshNow = onRefreshNow
-            )
+            if (showMorningGif) {
+                GifAndStatusTopBlock(
+                    gifs = gifs,
+                    safeIndex = safeIndex,
+                    currentGif = currentGif,
+                    onSelectIndex = { currentIndex = it },
+                    onDismissToday = dismissGifToday,
+                    emptyStatusText = emptyStatusText,
+                    showRefreshButton = showRefreshButton,
+                    onRefreshNow = onRefreshNow
+                )
+            } else {
+                CompactEmptyQueueStrip(
+                    emptyStatusText = emptyStatusText,
+                    showRefreshButton = showRefreshButton,
+                    onRefreshNow = onRefreshNow
+                )
+            }
 
             HabrFeedHeaderCard(
                 selectedCategory = habrCategory,
@@ -239,11 +312,11 @@ fun SysadminEmptyStatePanel(
                 onSelectCategory = { cat ->
                     if (cat != habrCategory) {
                         reloadNonce = 0
+                        activeReaderIndex = null
                         habrCategoryName = cat.name
                     }
                 },
-                onRefreshFeed = { reloadNonce++ },
-                onOpenHabrSite = { openUrl("https://habr.com/ru/") }
+                onRefreshFeed = { reloadNonce++ }
             )
 
             if (habrError != null && habrItems.isEmpty()) {
@@ -252,10 +325,81 @@ fun SysadminEmptyStatePanel(
                     onRetry = { reloadNonce++ }
                 )
             } else {
-                habrItems.forEach { newsItem ->
+                habrItems.forEachIndexed { idx, newsItem ->
                     HabrNewsItemCard(
                         item = newsItem,
-                        onClick = { openUrl(newsItem.url) }
+                        onClick = { activeReaderIndex = idx }
+                    )
+                }
+            }
+        }
+    }
+
+    val openIdx = activeReaderIndex
+    if (openIdx != null && openIdx in habrItems.indices) {
+        HabrArticleReaderDialog(
+            item = habrItems[openIdx],
+            hasPrev = openIdx > 0,
+            hasNext = openIdx < habrItems.lastIndex,
+            onPrev = { if (openIdx > 0) activeReaderIndex = openIdx - 1 },
+            onNext = { if (openIdx < habrItems.lastIndex) activeReaderIndex = openIdx + 1 },
+            onDismiss = { activeReaderIndex = null }
+        )
+    }
+}
+
+@Composable
+private fun CompactEmptyQueueStrip(
+    emptyStatusText: String,
+    showRefreshButton: Boolean,
+    onRefreshNow: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = CslSuccessGreen,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = emptyStatusText,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (showRefreshButton) {
+                FilledTonalButton(
+                    onClick = onRefreshNow,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = CslOrange.copy(alpha = 0.14f),
+                        contentColor = CslOrange
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "Обновить",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -269,6 +413,7 @@ private fun GifAndStatusTopBlock(
     safeIndex: Int,
     currentGif: SysadminGifItem,
     onSelectIndex: (Int) -> Unit,
+    onDismissToday: () -> Unit,
     emptyStatusText: String,
     showRefreshButton: Boolean,
     onRefreshNow: () -> Unit
@@ -288,40 +433,80 @@ private fun GifAndStatusTopBlock(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
-            Crossfade(
-                targetState = currentGif,
-                animationSpec = tween(durationMillis = 300),
-                label = "sysadmin_gif_crossfade"
-            ) { gif ->
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 208.dp)
+                        .aspectRatio(currentGif.aspectRatio)
+                        .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
+                        .background(Color(0xFF04091E))
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 168.dp, max = 216.dp)
-                            .aspectRatio(gif.aspectRatio)
-                            .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
-                            .background(Color(0xFF04091E)),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Crossfade(
+                        targetState = currentGif,
+                        animationSpec = tween(durationMillis = 300),
+                        label = "sysadmin_gif_crossfade"
+                    ) { gif ->
                         AnimatedAssetGifView(
                             assetPath = gif.assetPath,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
 
-                    Text(
-                        text = gif.quote,
+                    Surface(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center
-                    )
+                            .align(Alignment.TopStart)
+                            .padding(8.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        color = CslMidnight.copy(alpha = 0.82f)
+                    ) {
+                        Text(
+                            text = "☀️ Начало смены",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CslOrange,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Surface(
+                        onClick = onDismissToday,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        color = CslMidnight.copy(alpha = 0.82f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Скрыть гифку",
+                                tint = Color.White,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "Скрыть",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White
+                            )
+                        }
+                    }
                 }
+
+                Text(
+                    text = currentGif.quote,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
             }
         }
 
@@ -415,8 +600,7 @@ private fun HabrFeedHeaderCard(
     selectedCategory: HabrFeedCategory,
     isLoading: Boolean,
     onSelectCategory: (HabrFeedCategory) -> Unit,
-    onRefreshFeed: () -> Unit,
-    onOpenHabrSite: () -> Unit
+    onRefreshFeed: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -449,26 +633,14 @@ private fun HabrFeedHeaderCard(
                 Spacer(Modifier.width(8.dp))
 
                 Text(
-                    text = "Новости habr.com/ru",
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onOpenHabrSite() },
+                    text = "Свежее на habr.com · Чтение в приложении",
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-
-                IconButton(
-                    onClick = onOpenHabrSite,
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Открыть habr.com/ru",
-                        tint = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
 
                 IconButton(
                     onClick = onRefreshFeed,
@@ -597,10 +769,10 @@ private fun HabrNewsItemCard(
                 }
 
                 Icon(
-                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = null,
+                    imageVector = Icons.Default.MenuBook,
+                    contentDescription = "Читать статью",
                     modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = CslOrange
                 )
             }
 
@@ -620,6 +792,374 @@ private fun HabrNewsItemCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun HabrArticleReaderDialog(
+    item: HabrNewsItem,
+    hasPrev: Boolean,
+    hasNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var detail by remember(item.url) { mutableStateOf<HabrArticleDetail?>(null) }
+    var isLoading by remember(item.url) { mutableStateOf(true) }
+    var errorMsg by remember(item.url) { mutableStateOf<String?>(null) }
+    var retryNonce by remember(item.url) { mutableIntStateOf(0) }
+
+    LaunchedEffect(item.url, retryNonce) {
+        isLoading = true
+        errorMsg = null
+        HabrNewsRepository.loadArticle(item, forceRefresh = retryNonce > 0)
+            .onSuccess { loaded -> detail = loaded }
+            .onFailure { err -> errorMsg = err.message ?: "Не удалось загрузить публикацию" }
+        isLoading = false
+    }
+
+    val copyToClipboard: (String, String) -> Unit = { label, text ->
+        runCatching {
+            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            cb?.setPrimaryClip(ClipData.newPlainText(label, text))
+            Toast.makeText(context, "$label скопировано", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 14.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.background,
+            tonalElevation = 4.dp
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top reader bar
+                Surface(
+                    color = CslMidnight,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = CslOrange) {
+                            Text(
+                                text = "ХАБР",
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Чтение статьи",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        IconButton(
+                            onClick = onPrev,
+                            enabled = hasPrev,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ChevronLeft,
+                                contentDescription = "Предыдущая статья",
+                                tint = if (hasPrev) Color.White else Color.White.copy(alpha = 0.3f)
+                            )
+                        }
+                        IconButton(
+                            onClick = onNext,
+                            enabled = hasNext,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = "Следующая статья",
+                                tint = if (hasNext) Color.White else Color.White.copy(alpha = 0.3f)
+                            )
+                        }
+                        IconButton(
+                            onClick = { copyToClipboard("Ссылка", item.url) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Скопировать ссылку",
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Закрыть",
+                                tint = CslOrange
+                            )
+                        }
+                    }
+                }
+
+                when {
+                    isLoading && detail == null -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = CslOrange)
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "Загружаем полный текст публикации…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    errorMsg != null && detail == null -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = errorMsg ?: "Ошибка загрузки статьи",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                FilledTonalButton(onClick = { retryNonce++ }) {
+                                    Text("Повторить загрузку")
+                                }
+                            }
+                        }
+                    }
+
+                    detail != null -> {
+                        val art = detail!!
+                        SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                item(key = "header") {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            text = art.title,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onBackground
+                                        )
+                                        val metaParts = buildList {
+                                            if (art.publishedLabel.isNotBlank()) add(art.publishedLabel)
+                                            art.author?.takeIf { it.isNotBlank() }?.let { add(it) }
+                                            art.readingTimeMinutes?.let { add("⏱ $it мин") }
+                                            art.viewsCount?.let { add("👁 $it") }
+                                            art.score?.let { sc -> add(if (sc >= 0) "+$sc" else "$sc") }
+                                        }
+                                        if (metaParts.isNotEmpty()) {
+                                            Text(
+                                                text = metaParts.joinToString("  •  "),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = CslOrange,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                        if (art.hubs.isNotEmpty()) {
+                                            Text(
+                                                text = art.hubs.joinToString(" · "),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+
+                                items(
+                                    count = art.blocks.size,
+                                    key = { idx -> "blk_$idx" }
+                                ) { idx ->
+                                    when (val block = art.blocks[idx]) {
+                                        is HabrArticleBlock.Heading -> {
+                                            Text(
+                                                text = block.text,
+                                                style = if (block.level <= 2) {
+                                                    MaterialTheme.typography.titleMedium
+                                                } else {
+                                                    MaterialTheme.typography.titleSmall
+                                                },
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onBackground,
+                                                modifier = Modifier.padding(top = 6.dp)
+                                            )
+                                        }
+
+                                        is HabrArticleBlock.Paragraph -> {
+                                            Text(
+                                                text = block.text,
+                                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                                                color = MaterialTheme.colorScheme.onBackground
+                                            )
+                                        }
+
+                                        is HabrArticleBlock.Quote -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = CslOrange.copy(alpha = 0.08f),
+                                                border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.35f)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    text = block.text,
+                                                    modifier = Modifier.padding(12.dp),
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontStyle = FontStyle.Italic,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+
+                                        is HabrArticleBlock.BulletList -> {
+                                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                                block.items.forEachIndexed { i, li ->
+                                                    val bullet = if (block.ordered) "${i + 1}." else "•"
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                        Text(
+                                                            text = bullet,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = CslOrange,
+                                                            style = MaterialTheme.typography.bodyMedium
+                                                        )
+                                                        Text(
+                                                            text = li,
+                                                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
+                                                            color = MaterialTheme.colorScheme.onBackground,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        is HabrArticleBlock.CodeBlock -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = Color(0xFF0B1224),
+                                                border = BorderStroke(1.dp, Color(0xFF233253)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(10.dp)) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = block.language?.uppercase() ?: "CODE",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = CslOrange,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        TextButton(
+                                                            onClick = { copyToClipboard("Код", block.code) },
+                                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "📋 Копировать",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = Color.White
+                                                            )
+                                                        }
+                                                    }
+                                                    Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                                                        Text(
+                                                            text = block.code,
+                                                            fontFamily = FontFamily.Monospace,
+                                                            fontSize = 12.sp,
+                                                            lineHeight = 17.sp,
+                                                            color = Color(0xFFE2E8F0)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        is HabrArticleBlock.Image -> {
+                                            HabrInlineImageAndroid(
+                                                imageUrl = block.url,
+                                                caption = block.caption
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HabrInlineImageAndroid(
+    imageUrl: String,
+    caption: String?
+) {
+    var bitmap by remember(imageUrl) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(imageUrl) {
+        val bytes = HabrNewsRepository.loadImageBytes(imageUrl)
+        if (bytes != null) {
+            bitmap = withContext(Dispatchers.Default) {
+                runCatching {
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                }.getOrNull()
+            }
+        }
+    }
+    val bmp = bitmap ?: return
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Image(
+            bitmap = bmp,
+            contentDescription = caption,
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+        )
+        if (!caption.isNullOrBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = caption,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }

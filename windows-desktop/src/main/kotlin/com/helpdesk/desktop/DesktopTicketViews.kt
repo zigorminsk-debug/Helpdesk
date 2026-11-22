@@ -23,6 +23,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -39,7 +45,10 @@ import com.helpdesk.jiraagent.data.HabrNewsItem
 import com.helpdesk.jiraagent.data.HabrNewsRepository
 import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
+import com.helpdesk.jiraagent.domain.QuickReplyTemplates
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
@@ -80,12 +89,12 @@ private data class DesktopGifSpec(
 private val DESKTOP_ADMIN_GIFS = listOf(
     DesktopGifSpec(
         resourcePath = "/admin_gifs/admin_gif_01.gif",
-        quote = "«Вы пробовали выключить и снова включить?» — очередь чиста!",
+        quote = "«Вы пробовали выключить и снова включить?» — доброе утро, очередь чиста!",
         aspectRatio = 439f / 256f
     ),
     DesktopGifSpec(
         resourcePath = "/admin_gifs/admin_gif_07.gif",
-        quote = "В очереди чисто. Главное правило админа — не трогать то, что работает!",
+        quote = "Доброе утро! В очереди чисто. Главное правило админа — не трогать то, что работает!",
         aspectRatio = 440f / 248f
     )
 )
@@ -98,16 +107,43 @@ fun DesktopTicketsWorkspace(
     var queueTab by remember { mutableStateOf(TicketQueueTab.NEW) }
     var inWorkScope by remember { mutableStateOf(AssigneeScope.ALL) }
     var closedScope by remember { mutableStateOf(AssigneeScope.ALL) }
+    var filterOnlyStaleNew by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showSerialArchiveDialog by remember { mutableStateOf(false) }
     var showPostponedDialog by remember { mutableStateOf(false) }
     var showHabrPanel by remember { mutableStateOf(false) }
 
+    val nowTick by produceState(initialValue = Instant.now()) {
+        while (true) {
+            delay(20_000L)
+            value = Instant.now()
+        }
+    }
+
+    val isMorningGifTime = remember(state.settings, state.dismissedGifDateIso, nowTick) {
+        BelarusWorkCalendar.shouldShowMorningGif(
+            settings = state.settings,
+            dismissedDateIso = state.dismissedGifDateIso.takeIf { it.isNotBlank() },
+            sessionStartedEpochMs = controller.sessionStartedEpochMs,
+            maxSessionDisplayMinutes = 10L,
+            nowInstant = nowTick
+        )
+    }
+
     val clientTickets = remember(state.tickets) { state.tickets.filter { it.isClientTicket } }
     val serviceTickets = remember(state.tickets) { state.tickets.filter { !it.isClientTicket } }
 
     val newCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.NEW } }
+    val staleThresholdMin = state.settings.staleTicketReminderMinutes.coerceIn(5, 120)
+    val staleNewCount = remember(clientTickets, staleThresholdMin, nowTick) {
+        val nowMs = nowTick.toEpochMilli()
+        clientTickets.count { t ->
+            t.stage == TicketStage.NEW &&
+                t.createdEpochMillis > 0L &&
+                (nowMs - t.createdEpochMillis) >= staleThresholdMin * 60_000L
+        }
+    }
     val inWorkCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.IN_PROGRESS } }
     val closedCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.CLOSED } }
     val serviceCount = serviceTickets.size
@@ -117,12 +153,24 @@ fun DesktopTicketsWorkspace(
         queueTab,
         inWorkScope,
         closedScope,
+        filterOnlyStaleNew,
+        staleThresholdMin,
+        nowTick,
         searchQuery,
         state.connectedUserName,
         state.settings.usernameOrEmail
     ) {
         val base = when (queueTab) {
-            TicketQueueTab.NEW -> clientTickets.filter { it.stage == TicketStage.NEW }
+            TicketQueueTab.NEW -> {
+                val list = clientTickets.filter { it.stage == TicketStage.NEW }
+                if (filterOnlyStaleNew) {
+                    val nowMs = nowTick.toEpochMilli()
+                    list.filter { t ->
+                        t.createdEpochMillis > 0L &&
+                            (nowMs - t.createdEpochMillis) >= staleThresholdMin * 60_000L
+                    }
+                } else list
+            }
             TicketQueueTab.IN_PROGRESS -> {
                 val list = clientTickets.filter { it.stage == TicketStage.IN_PROGRESS }
                 if (inWorkScope == AssigneeScope.MINE) {
@@ -288,8 +336,27 @@ fun DesktopTicketsWorkspace(
                 }
             }
 
-            // Sub-tabs («Все» / «Мои») for В работе & Закрытые
-            if (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED) {
+            // Sub-tabs («Все» / «Мои») for В работе & Закрытые, or SLA filter for Новые
+            if (!showHabrPanel && queueTab == TicketQueueTab.NEW && (staleNewCount > 0 || filterOnlyStaleNew)) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = !filterOnlyStaleNew,
+                        onClick = { filterOnlyStaleNew = false },
+                        label = { Text("Все новые ($newCount)", fontSize = 11.sp, maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = filterOnlyStaleNew,
+                        onClick = { filterOnlyStaleNew = !filterOnlyStaleNew },
+                        label = { Text("🔥 Ждут >$staleThresholdMinм ($staleNewCount)", fontSize = 11.sp, maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else if (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED) {
                 val activeScope = if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope else closedScope
                 Spacer(Modifier.height(6.dp))
                 Row(
@@ -314,9 +381,12 @@ fun DesktopTicketsWorkspace(
 
             if (showHabrPanel || filteredList.isEmpty()) {
                 DesktopEmptyQueueWithHabr(
-                    showGifBanner = !showHabrPanel && filteredList.isEmpty(),
+                    showEmptyQueueHeader = !showHabrPanel && filteredList.isEmpty(),
+                    showMorningGif = !showHabrPanel && filteredList.isEmpty() && isMorningGifTime,
                     gifIndex = state.emptyGifIndex,
                     onCycleGif = { controller.cycleEmptyGif() },
+                    onDismissGifToday = { controller.dismissMorningGifToday() },
+                    onRefreshTickets = { controller.refreshTickets(silent = false) },
                     habrCategory = state.habrCategory,
                     habrItems = state.habrItems,
                     selectedHabrUrl = state.selectedHabrItem?.url,
@@ -569,9 +639,12 @@ private fun CompactDesktopTicketCard(
  */
 @Composable
 private fun DesktopEmptyQueueWithHabr(
-    showGifBanner: Boolean,
+    showEmptyQueueHeader: Boolean,
+    showMorningGif: Boolean,
     gifIndex: Int,
     onCycleGif: () -> Unit,
+    onDismissGifToday: () -> Unit,
+    onRefreshTickets: () -> Unit,
     habrCategory: HabrFeedCategory,
     habrItems: List<HabrNewsItem>,
     selectedHabrUrl: String?,
@@ -586,8 +659,8 @@ private fun DesktopEmptyQueueWithHabr(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        if (showGifBanner) {
-            item {
+        if (showMorningGif) {
+            item(key = "morning_gif_banner") {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -600,15 +673,34 @@ private fun DesktopEmptyQueueWithHabr(
                         modifier = Modifier.padding(10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "☀️ Начало рабочего дня",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = DesktopColors.CslOrange
+                            )
+                            TextButton(
+                                onClick = onDismissGifToday,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                modifier = Modifier.height(22.dp)
+                            ) {
+                                Text("✕ Скрыть", fontSize = 11.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
                         AnimatedResourceGifImage(
                             resourcePath = spec.resourcePath,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(175.dp)
+                                .height(165.dp)
                                 .clip(RoundedCornerShape(8.dp))
                         )
                         Spacer(Modifier.height(8.dp))
-                        // ONLY the quote — no title above it
                         Text(
                             text = spec.quote,
                             fontSize = 12.5.sp,
@@ -616,6 +708,37 @@ private fun DesktopEmptyQueueWithHabr(
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                    }
+                }
+            }
+        } else if (showEmptyQueueHeader) {
+            item(key = "compact_clean_queue_strip") {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "✓ В выбранной очереди заявок нет",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        TextButton(
+                            onClick = onRefreshTickets,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Text("🔄 Обновить (F5)", fontSize = 11.sp, color = DesktopColors.CslOrange)
+                        }
                     }
                 }
             }
@@ -1555,6 +1678,21 @@ private fun DesktopTicketInspector(
                                 rep.sslCertificate?.let { ssl ->
                                     Text("SSL сертификат: ${ssl.subjectCn}, истекает ${ssl.expiresFormatted} (${ssl.daysRemaining} дн.)", fontSize = 11.5.sp)
                                 }
+                                Spacer(Modifier.height(4.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        val formatted = QuickReplyTemplates.formatDiagnosticReportForComment(rep)
+                                        commentDraft = if (commentDraft.isBlank()) {
+                                            formatted
+                                        } else {
+                                            "${commentDraft.trimEnd()}\n\n$formatted"
+                                        }
+                                        internalComment = true
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("📋 Вставить отчёт в комментарий (внутр. заметка)", fontSize = 11.5.sp)
+                                }
                             }
                         }
                     }
@@ -1808,27 +1946,90 @@ private fun DesktopTicketInspector(
                     }
                 }
 
-                // Quick Reply Templates
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(
-                        "Принято в работу, подключаюсь.",
-                        "Уточните, пожалуйста, AnyDesk ID.",
-                        "Работы выполнены, проверьте, пожалуйста."
-                    ).forEach { tpl ->
-                        SuggestionChip(
-                            onClick = { commentDraft = if (commentDraft.isBlank()) tpl else "$commentDraft $tpl" },
-                            label = { Text(tpl.take(28) + "…", fontSize = 11.sp) }
-                        )
+                // Quick Reply Templates (editable + {клиент}/{заявка}/{инженер} placeholders)
+                var showTemplatesManager by remember { mutableStateOf(false) }
+                val resolvedEngineerName = remember(state.connectedUserName, state.settings.usernameOrEmail) {
+                    EngineerNameResolver.resolve(state.connectedUserName, state.settings.usernameOrEmail)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "⚡ Быстрые шаблоны ответа:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(
+                        onClick = { showTemplatesManager = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text("⚙ Настроить шаблоны", fontSize = 11.sp, color = DesktopColors.CslOrange)
+                    }
+                }
+
+                val templatesList = state.settings.quickReplyTemplates
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    templatesList.chunked(3).forEach { rowTemplates ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            rowTemplates.forEach { tpl ->
+                                val shortLabel = if (tpl.length > 34) tpl.take(33) + "…" else tpl
+                                SuggestionChip(
+                                    onClick = {
+                                        val expanded = QuickReplyTemplates.expand(
+                                            templateBody = tpl,
+                                            clientName = ticket.reporterName,
+                                            ticketKey = ticket.key,
+                                            engineerName = resolvedEngineerName
+                                        )
+                                        commentDraft = if (commentDraft.isBlank()) {
+                                            expanded
+                                        } else {
+                                            "${commentDraft.trimEnd()} $expanded"
+                                        }
+                                    },
+                                    label = { Text(shortLabel, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val sendCommentNow: () -> Unit = {
+                    val sendText = commentDraft.trim()
+                    if (sendText.isNotEmpty() && !state.isPerformingAction) {
+                        commentDraft = ""
+                        controller.postComment(ticket.key, sendText, internalComment)
                     }
                 }
 
                 OutlinedTextField(
                     value = commentDraft,
                     onValueChange = { commentDraft = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onPreviewKeyEvent { ev ->
+                            if (ev.type == KeyEventType.KeyDown &&
+                                ev.isCtrlPressed &&
+                                (ev.key == Key.Enter || ev.key == Key.NumPadEnter)
+                            ) {
+                                sendCommentNow()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                     minLines = 2,
-                    maxLines = 5,
-                    placeholder = { Text("Введите комментарий или инженерную заметку...") }
+                    maxLines = 6,
+                    placeholder = { Text("Введите комментарий или заметку (Ctrl+Enter — быстрая отправка)...") }
                 )
 
                 Row(
@@ -1841,16 +2042,22 @@ private fun DesktopTicketInspector(
                         Text("🔒 Только для инженеров (внутренняя заметка JSM)", fontSize = 12.sp)
                     }
                     Button(
-                        onClick = {
-                            val sendText = commentDraft
-                            commentDraft = ""
-                            controller.postComment(ticket.key, sendText, internalComment)
-                        },
+                        onClick = sendCommentNow,
                         enabled = commentDraft.isNotBlank() && !state.isPerformingAction,
                         colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
                     ) {
-                        Text("Отправить комментарий")
+                        Text("Отправить (Ctrl+Enter)")
                     }
+                }
+
+                if (showTemplatesManager) {
+                    DesktopQuickRepliesManagerDialog(
+                        templates = templatesList,
+                        onAdd = { controller.addQuickReplyTemplate(it) },
+                        onRemove = { controller.removeQuickReplyTemplate(it) },
+                        onResetDefaults = { controller.resetQuickReplyTemplates() },
+                        onDismiss = { showTemplatesManager = false }
+                    )
                 }
             }
         }
@@ -2393,6 +2600,134 @@ private fun ClientHistoryTicketRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
+        }
+    }
+}
+
+@Composable
+private fun DesktopQuickRepliesManagerDialog(
+    templates: List<String>,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onResetDefaults: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newTemplateDraft by remember { mutableStateOf("") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+            modifier = Modifier.width(600.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "⚡ Настройка быстрых шаблонов ответа",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(onClick = onResetDefaults) {
+                        Text("Сбросить по умолчанию", fontSize = 11.5.sp)
+                    }
+                }
+
+                Text(
+                    "Доступные автоподстановки (кликните для вставки в новый шаблон):",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("{клиент}", "{заявка}", "{инженер}").forEach { token ->
+                        AssistChip(
+                            onClick = {
+                                newTemplateDraft = if (newTemplateDraft.isBlank()) {
+                                    token
+                                } else {
+                                    "${newTemplateDraft.trimEnd()} $token"
+                                }
+                            },
+                            label = { Text("+ $token", fontSize = 11.5.sp) }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = newTemplateDraft,
+                        onValueChange = { newTemplateDraft = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("Например: Здравствуйте, {клиент}! Подключаюсь по {заявка}.") }
+                    )
+                    Button(
+                        onClick = {
+                            onAdd(newTemplateDraft)
+                            newTemplateDraft = ""
+                        },
+                        enabled = newTemplateDraft.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("➕ Добавить")
+                    }
+                }
+
+                HorizontalDivider()
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(templates) { tpl ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = tpl,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { onRemove(tpl) }) {
+                                    Text("✕ Удалить", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    FilledTonalButton(onClick = onDismiss) {
+                        Text("Готово")
+                    }
+                }
+            }
         }
     }
 }
