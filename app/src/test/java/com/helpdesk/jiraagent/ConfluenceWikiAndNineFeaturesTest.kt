@@ -32,7 +32,7 @@ class ConfluenceWikiAndNineFeaturesTest {
         val configured = AppSettings(
             serverUrl = "https://jira.csl.by",
             usernameOrEmail = "ziv@csl.by",
-            secretOrToken = "secret123"
+            passwordOrToken = "secret123"
         )
         assertTrue(configured.isConfluenceReady)
     }

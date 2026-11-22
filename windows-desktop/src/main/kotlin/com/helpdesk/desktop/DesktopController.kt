@@ -2292,7 +2292,7 @@ class DesktopController(
         scope.launch {
             wikiClient.searchPages(
                 rawQuery = clean,
-                spaceKey = cur.selectedWikiSpaceKey,
+                spaceKeyFilter = cur.selectedWikiSpaceKey,
                 settings = cur.settings
             ).onSuccess { found ->
                 _state.update { it.copy(isLoadingWikiList = false, wikiSearchResults = found, wikiError = null) }
