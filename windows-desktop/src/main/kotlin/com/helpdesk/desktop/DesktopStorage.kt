@@ -26,6 +26,7 @@ import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -57,6 +58,8 @@ data class DesktopPersistedState(
     val zabbixBaselineInitialized: Boolean = false,
     val seenZabbixAlertKeys: Set<String> = emptySet(),
     val deferredZabbixAlertKeys: Set<String> = emptySet(),
+    val dismissedZabbixAlertKeys: Set<String> = emptySet(),
+    val mutedZabbixRules: List<ZabbixMutedRule> = emptyList(),
     val cachedZabbixSnapshot: ZabbixDashboardSnapshot? = null,
     val clientDossierNotes: Map<String, String> = emptyMap(),
     val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
@@ -179,6 +182,8 @@ class DesktopStorage {
                     zabbixBaselineInitialized = raw.zabbixBaselineInitialized,
                     seenZabbixAlertKeys = raw.seenZabbixAlertKeys ?: emptySet(),
                     deferredZabbixAlertKeys = raw.deferredZabbixAlertKeys ?: emptySet(),
+                    dismissedZabbixAlertKeys = raw.dismissedZabbixAlertKeys ?: emptySet(),
+                    mutedZabbixRules = (raw.mutedZabbixRules ?: emptyList()).filter { !(it.ruleKey as String?).isNullOrBlank() },
                     cachedZabbixSnapshot = raw.cachedZabbixSnapshot,
                 clientDossierNotes = raw.clientDossierNotes ?: emptyMap(),
                 clientPassports = ClientTechPassportCodec.mergePassports(

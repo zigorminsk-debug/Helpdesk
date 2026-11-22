@@ -44,6 +44,7 @@ import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TtsReadoutMode
 import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -172,6 +173,8 @@ data class DesktopUiState(
 
     // Zabbix (z.csl.by) Monitoring
     val zabbixSnapshot: ZabbixDashboardSnapshot? = null,
+    val dismissedZabbixKeys: Set<String> = emptySet(),
+    val mutedZabbixRules: List<ZabbixMutedRule> = emptyList(),
     val zabbixError: String? = null,
     val isLoadingZabbix: Boolean = false,
 
@@ -224,7 +227,9 @@ class DesktopController(
             chatRoomKey = persisted.resolvedChatRoomKey,
             chatMessages = persisted.cachedChatMessages,
             chatPinnedNote = persisted.pinnedShiftNote,
-            zabbixSnapshot = persisted.cachedZabbixSnapshot
+            zabbixSnapshot = persisted.cachedZabbixSnapshot,
+            dismissedZabbixKeys = persisted.dismissedZabbixAlertKeys,
+            mutedZabbixRules = persisted.mutedZabbixRules
         )
     )
     val state: StateFlow<DesktopUiState> = _state.asStateFlow()
@@ -726,6 +731,8 @@ class DesktopController(
                     zabbixBaselineInitialized = zabbixBaselineInitialized,
                     seenZabbixAlertKeys = synchronized(notifiedZabbixKeys) { notifiedZabbixKeys.toSet() },
                     deferredZabbixAlertKeys = synchronized(notifiedZabbixKeys) { deferredZabbixKeys.toSet() },
+                    dismissedZabbixAlertKeys = cur.dismissedZabbixKeys,
+                    mutedZabbixRules = cur.mutedZabbixRules,
                     cachedZabbixSnapshot = cur.zabbixSnapshot,
                     clientPassports = cur.clientPassports,
                     watchlistHosts = cur.watchlistHosts,
@@ -1062,6 +1069,8 @@ class DesktopController(
     private fun handleIncomingZabbixSnapshot(snapshot: ZabbixDashboardSnapshot) {
         val cur = _state.value
         val minSev = cur.settings.normalizedZabbixMinSeverity
+        val dismissedKeys = cur.dismissedZabbixKeys
+        val mutedKeySet = cur.mutedZabbixRules.flatMap { it.allMatchKeys() }.toSet()
         val allowAlertsNow = isDesktopAlertAllowedNow(cur.settings, cur.respectWorkScheduleOnDesktop)
         val newAlerts = mutableListOf<ZabbixProblem>()
 
@@ -1069,7 +1078,9 @@ class DesktopController(
             if (!zabbixBaselineInitialized) {
                 val nowSec = System.currentTimeMillis() / 1000L
                 for (prob in snapshot.problems) {
-                    if (!prob.acknowledged &&
+                    val suppressed = prob.isHiddenFromActiveFeed(dismissedKeys, mutedKeySet)
+                    if (!suppressed &&
+                        !prob.acknowledged &&
                         prob.shouldTriggerBanner(minSev) &&
                         prob.clockEpochSeconds > 0L &&
                         (nowSec - prob.clockEpochSeconds) <= 1800L
@@ -1092,7 +1103,11 @@ class DesktopController(
                     while (iter.hasNext()) {
                         val dKey = iter.next()
                         val p = byKey[dKey]
-                        if (p != null && !p.acknowledged && p.shouldTriggerBanner(minSev)) {
+                        if (p != null &&
+                            !p.acknowledged &&
+                            !p.isHiddenFromActiveFeed(dismissedKeys, mutedKeySet) &&
+                            p.shouldTriggerBanner(minSev)
+                        ) {
                             newAlerts.add(p)
                         }
                         iter.remove()
@@ -1100,7 +1115,11 @@ class DesktopController(
                 }
                 for (prob in snapshot.problems) {
                     val isUnseen = notifiedZabbixKeys.add(prob.alertKey)
-                    if (isUnseen && !prob.acknowledged && prob.shouldTriggerBanner(minSev)) {
+                    if (isUnseen &&
+                        !prob.acknowledged &&
+                        !prob.isHiddenFromActiveFeed(dismissedKeys, mutedKeySet) &&
+                        prob.shouldTriggerBanner(minSev)
+                    ) {
                         if (allowAlertsNow) {
                             newAlerts.add(prob)
                         } else {
@@ -1232,6 +1251,95 @@ class DesktopController(
                     }
                 }
         }
+    }
+
+    fun dismissZabbixProblem(problem: ZabbixProblem) {
+        synchronized(notifiedZabbixKeys) {
+            notifiedZabbixKeys.add(problem.alertKey)
+            deferredZabbixKeys.remove(problem.alertKey)
+        }
+        _state.update { st ->
+            st.copy(
+                dismissedZabbixKeys = st.dismissedZabbixKeys + problem.alertKey + problem.fallbackOccurrenceKey,
+                statusBanner = "Карточка скрыта — будут показаны только новые события"
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun dismissAllCurrentZabbixProblems(problems: List<ZabbixProblem>) {
+        if (problems.isEmpty()) return
+        val extraKeys = problems.flatMap { listOf(it.alertKey, it.fallbackOccurrenceKey) }.toSet()
+        synchronized(notifiedZabbixKeys) {
+            problems.forEach {
+                notifiedZabbixKeys.add(it.alertKey)
+                deferredZabbixKeys.remove(it.alertKey)
+            }
+        }
+        _state.update { st ->
+            st.copy(
+                dismissedZabbixKeys = st.dismissedZabbixKeys + extraKeys,
+                statusBanner = "Закрыто текущих карточек: ${problems.size}. Будут показаны только новые."
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun restoreDismissedZabbixProblem(problem: ZabbixProblem) {
+        _state.update { st ->
+            st.copy(
+                dismissedZabbixKeys = st.dismissedZabbixKeys - problem.alertKey - problem.fallbackOccurrenceKey
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun restoreAllDismissedZabbixProblems() {
+        _state.update { st ->
+            st.copy(
+                dismissedZabbixKeys = emptySet(),
+                statusBanner = "Скрытые текущие карточки возвращены в список"
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun muteZabbixProblemForever(problem: ZabbixProblem) {
+        val rule = problem.toMutedRule()
+        synchronized(notifiedZabbixKeys) {
+            notifiedZabbixKeys.add(problem.alertKey)
+            deferredZabbixKeys.remove(problem.alertKey)
+        }
+        _state.update { st ->
+            val updatedRules = listOf(rule) + st.mutedZabbixRules.filterNot {
+                it.ruleKey == rule.ruleKey || (rule.signatureKey.isNotBlank() && it.signatureKey == rule.signatureKey)
+            }
+            st.copy(
+                mutedZabbixRules = updatedRules,
+                statusBanner = "🔕 Проблема отмечена как нерешаемая — уведомления отключены"
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun unmuteZabbixRule(ruleKey: String) {
+        _state.update { st ->
+            st.copy(
+                mutedZabbixRules = st.mutedZabbixRules.filterNot { it.ruleKey == ruleKey },
+                statusBanner = "Уведомления по триггеру включены снова"
+            )
+        }
+        persistCurrentState()
+    }
+
+    fun clearAllMutedZabbixRules() {
+        _state.update { st ->
+            st.copy(
+                mutedZabbixRules = emptyList(),
+                statusBanner = "Список нерешаемых триггеров очищен"
+            )
+        }
+        persistCurrentState()
     }
 
     fun triggerTestZabbixBanner() {

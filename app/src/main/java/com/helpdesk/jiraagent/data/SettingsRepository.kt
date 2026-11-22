@@ -33,6 +33,7 @@ import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TtsReadoutMode
 import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.widget.HelpCslAppWidgetProvider
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -146,6 +147,12 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _zabbixLastError = MutableStateFlow<String?>(null)
     val zabbixLastError: StateFlow<String?> = _zabbixLastError.asStateFlow()
+
+    private val _dismissedZabbixKeys = MutableStateFlow<Set<String>>(loadDismissedZabbixKeys())
+    val dismissedZabbixKeys: StateFlow<Set<String>> = _dismissedZabbixKeys.asStateFlow()
+
+    private val _mutedZabbixRules = MutableStateFlow<List<ZabbixMutedRule>>(loadMutedZabbixRules())
+    val mutedZabbixRules: StateFlow<List<ZabbixMutedRule>> = _mutedZabbixRules.asStateFlow()
 
     val wikiClient: ConfluenceWikiClient = ConfluenceWikiClient().apply {
         externalCookieProvider = { url ->
@@ -1013,9 +1020,118 @@ class SettingsRepository private constructor(context: Context) {
         cachePrefs.edit().putString(KEY_CACHED_ZABBIX_SNAPSHOT_JSON, gson.toJson(updated)).apply()
     }
 
+    fun currentMutedZabbixKeySet(): Set<String> {
+        return _mutedZabbixRules.value.flatMap { it.allMatchKeys() }.toSet()
+    }
+
+    @Synchronized
+    fun dismissZabbixProblem(problem: ZabbixProblem) {
+        val next = LinkedHashSet(_dismissedZabbixKeys.value).apply {
+            add(problem.alertKey)
+            add(problem.fallbackOccurrenceKey)
+        }
+        _dismissedZabbixKeys.value = next
+        val seenKeys = cachePrefs.getStringSet(KEY_SEEN_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        seenKeys.add(problem.alertKey)
+        deferredKeys.remove(problem.alertKey)
+        cachePrefs.edit()
+            .putStringSet(KEY_DISMISSED_ZABBIX_KEYS, next)
+            .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys)
+            .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
+            .apply()
+
+        if (_latestInAppBanner.value?.zabbixProblem?.alertKey == problem.alertKey) {
+            _latestInAppBanner.value = null
+        }
+    }
+
+    @Synchronized
+    fun dismissAllCurrentZabbixProblems(problems: Collection<ZabbixProblem>) {
+        if (problems.isEmpty()) return
+        val next = LinkedHashSet(_dismissedZabbixKeys.value)
+        val seenKeys = cachePrefs.getStringSet(KEY_SEEN_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        for (p in problems) {
+            next.add(p.alertKey)
+            next.add(p.fallbackOccurrenceKey)
+            seenKeys.add(p.alertKey)
+            deferredKeys.remove(p.alertKey)
+        }
+        _dismissedZabbixKeys.value = next
+        cachePrefs.edit()
+            .putStringSet(KEY_DISMISSED_ZABBIX_KEYS, next)
+            .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys)
+            .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
+            .apply()
+
+        if (_latestInAppBanner.value?.isZabbixAlert == true) {
+            _latestInAppBanner.value = null
+        }
+    }
+
+    @Synchronized
+    fun restoreDismissedZabbixProblem(problem: ZabbixProblem) {
+        val next = LinkedHashSet(_dismissedZabbixKeys.value).apply {
+            remove(problem.alertKey)
+            remove(problem.fallbackOccurrenceKey)
+        }
+        _dismissedZabbixKeys.value = next
+        cachePrefs.edit().putStringSet(KEY_DISMISSED_ZABBIX_KEYS, next).apply()
+    }
+
+    @Synchronized
+    fun restoreAllDismissedZabbixProblems() {
+        _dismissedZabbixKeys.value = emptySet()
+        cachePrefs.edit().remove(KEY_DISMISSED_ZABBIX_KEYS).apply()
+    }
+
+    @Synchronized
+    fun muteZabbixProblemForever(problem: ZabbixProblem) {
+        upsertMutedZabbixRule(problem.toMutedRule(), problem.alertKey)
+    }
+
+    @Synchronized
+    fun upsertMutedZabbixRule(rule: ZabbixMutedRule, currentAlertKey: String? = null) {
+        if (rule.ruleKey.isBlank()) return
+        val updated = listOf(rule) + _mutedZabbixRules.value.filterNot {
+            it.ruleKey == rule.ruleKey || (rule.signatureKey.isNotBlank() && it.signatureKey == rule.signatureKey)
+        }
+        _mutedZabbixRules.value = updated
+        val seenKeys = cachePrefs.getStringSet(KEY_SEEN_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!currentAlertKey.isNullOrBlank()) {
+            seenKeys.add(currentAlertKey)
+            deferredKeys.remove(currentAlertKey)
+        }
+        cachePrefs.edit()
+            .putString(KEY_MUTED_ZABBIX_RULES_JSON, gson.toJson(updated))
+            .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys)
+            .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
+            .apply()
+
+        val activeBannerProb = _latestInAppBanner.value?.zabbixProblem
+        if (activeBannerProb != null && activeBannerProb.isMutedBy(rule.allMatchKeys())) {
+            _latestInAppBanner.value = null
+        }
+    }
+
+    @Synchronized
+    fun unmuteZabbixRule(ruleKey: String) {
+        val updated = _mutedZabbixRules.value.filterNot { it.ruleKey == ruleKey }
+        _mutedZabbixRules.value = updated
+        cachePrefs.edit().putString(KEY_MUTED_ZABBIX_RULES_JSON, gson.toJson(updated)).apply()
+    }
+
+    @Synchronized
+    fun clearAllMutedZabbixRules() {
+        _mutedZabbixRules.value = emptyList()
+        cachePrefs.edit().remove(KEY_MUTED_ZABBIX_RULES_JSON).apply()
+    }
+
     /**
      * Records polled Zabbix problems and returns ONLY brand-new Error / Critical Warning problems
-     * that should trigger a client-ticket-style Urgent Banner.
+     * that should trigger a client-ticket-style Urgent Banner (excluding dismissed cards & permanently muted triggers).
      */
     @Synchronized
     fun processPolledZabbixSnapshotAndFindNewAlerts(
@@ -1030,6 +1146,8 @@ class SettingsRepository private constructor(context: Context) {
         }
 
         val minSeverity = _appSettings.value.normalizedZabbixMinSeverity
+        val mutedKeys = currentMutedZabbixKeySet()
+        val dismissedKeys = _dismissedZabbixKeys.value
         val seenKeys = cachePrefs.getStringSet(KEY_SEEN_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
         val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
         val baselineInitialized = cachePrefs.getBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, false)
@@ -1038,7 +1156,9 @@ class SettingsRepository private constructor(context: Context) {
             val nowSec = System.currentTimeMillis() / 1000L
             val recentAlerts = mutableListOf<ZabbixProblem>()
             for (prob in snapshot.problems) {
-                if (!prob.acknowledged &&
+                val suppressedByUser = prob.isHiddenFromActiveFeed(dismissedKeys, mutedKeys)
+                if (!suppressedByUser &&
+                    !prob.acknowledged &&
                     prob.shouldTriggerBanner(minSeverity) &&
                     prob.clockEpochSeconds > 0L &&
                     (nowSec - prob.clockEpochSeconds) <= 1800L
@@ -1055,7 +1175,7 @@ class SettingsRepository private constructor(context: Context) {
                 }
             }
             cachePrefs.edit()
-                .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys.toList().takeLast(800).toSet())
+                .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys.toList().takeLast(1000).toSet())
                 .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
                 .putBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, true)
                 .apply()
@@ -1071,7 +1191,11 @@ class SettingsRepository private constructor(context: Context) {
             while (iter.hasNext()) {
                 val defKey = iter.next()
                 val activeProb = problemsByKey[defKey]
-                if (activeProb != null && !activeProb.acknowledged && activeProb.shouldTriggerBanner(minSeverity)) {
+                if (activeProb != null &&
+                    !activeProb.acknowledged &&
+                    !activeProb.isHiddenFromActiveFeed(dismissedKeys, mutedKeys) &&
+                    activeProb.shouldTriggerBanner(minSeverity)
+                ) {
                     alertsToBanner.add(activeProb)
                 }
                 iter.remove()
@@ -1081,7 +1205,11 @@ class SettingsRepository private constructor(context: Context) {
         // 2. Check newly arrived problems
         for (prob in snapshot.problems) {
             val isUnseen = seenKeys.add(prob.alertKey)
-            if (isUnseen && !prob.acknowledged && prob.shouldTriggerBanner(minSeverity)) {
+            if (isUnseen &&
+                !prob.acknowledged &&
+                !prob.isHiddenFromActiveFeed(dismissedKeys, mutedKeys) &&
+                prob.shouldTriggerBanner(minSeverity)
+            ) {
                 if (isNotificationWindowOpen) {
                     alertsToBanner.add(prob)
                 } else {
@@ -1090,7 +1218,24 @@ class SettingsRepository private constructor(context: Context) {
             }
         }
 
-        val boundedSeen = if (seenKeys.size > 800) seenKeys.toList().takeLast(800).toSet() else seenKeys
+        // Bound dismissed keys while ALWAYS retaining any keys of problems still active on Zabbix
+        if (dismissedKeys.size > 1500) {
+            val activeKeys = snapshot.problems.flatMap { listOf(it.alertKey, it.fallbackOccurrenceKey) }.toSet()
+            val stillActiveDismissed = dismissedKeys.filter { it in activeKeys }
+            val olderDismissed = dismissedKeys.filter { it !in activeKeys }.takeLast(800)
+            val prunedDismissed = (stillActiveDismissed + olderDismissed).toSet()
+            _dismissedZabbixKeys.value = prunedDismissed
+            cachePrefs.edit().putStringSet(KEY_DISMISSED_ZABBIX_KEYS, prunedDismissed).apply()
+        }
+
+        val activeAlertKeys = snapshot.problems.map { it.alertKey }.toSet()
+        val boundedSeen = if (seenKeys.size > 1200) {
+            val keepActive = seenKeys.filter { it in activeAlertKeys }
+            val keepRecent = seenKeys.filter { it !in activeAlertKeys }.takeLast(600)
+            (keepActive + keepRecent).toSet()
+        } else {
+            seenKeys
+        }
         cachePrefs.edit()
             .putStringSet(KEY_SEEN_ZABBIX_KEYS, boundedSeen)
             .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
@@ -1102,12 +1247,26 @@ class SettingsRepository private constructor(context: Context) {
     fun resetZabbixBaseline() {
         _zabbixSnapshot.value = null
         _zabbixLastError.value = null
+        _dismissedZabbixKeys.value = emptySet()
         cachePrefs.edit()
             .remove(KEY_CACHED_ZABBIX_SNAPSHOT_JSON)
             .remove(KEY_SEEN_ZABBIX_KEYS)
             .remove(KEY_DEFERRED_ZABBIX_KEYS)
+            .remove(KEY_DISMISSED_ZABBIX_KEYS)
             .putBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, false)
             .apply()
+    }
+
+    private fun loadDismissedZabbixKeys(): Set<String> {
+        return cachePrefs.getStringSet(KEY_DISMISSED_ZABBIX_KEYS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    private fun loadMutedZabbixRules(): List<ZabbixMutedRule> {
+        val raw = cachePrefs.getString(KEY_MUTED_ZABBIX_RULES_JSON, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<ZabbixMutedRule>>() {}.type
+            gson.fromJson<List<ZabbixMutedRule>>(raw, type) ?: emptyList()
+        }.getOrDefault(emptyList())
     }
 
     private fun loadCachedZabbixSnapshot(): ZabbixDashboardSnapshot? {
@@ -1177,6 +1336,8 @@ class SettingsRepository private constructor(context: Context) {
         _clientDirectory.value = emptyList()
         _zabbixSnapshot.value = null
         _zabbixLastError.value = null
+        _dismissedZabbixKeys.value = emptySet()
+        _mutedZabbixRules.value = emptyList()
         _appSettings.value = loadAppSettings()
         _filterSettings.value = loadFilterSettings()
         _syncStatus.value = SyncStatus(
@@ -1452,6 +1613,8 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_ZABBIX_MIN_SEVERITY = "zabbix_min_alert_severity"
         private const val KEY_SEEN_ZABBIX_KEYS = "seen_zabbix_alert_keys"
         private const val KEY_DEFERRED_ZABBIX_KEYS = "deferred_zabbix_alert_keys"
+        private const val KEY_DISMISSED_ZABBIX_KEYS = "dismissed_zabbix_alert_keys"
+        private const val KEY_MUTED_ZABBIX_RULES_JSON = "muted_zabbix_rules_json"
         private const val KEY_ZABBIX_BASELINE_INITIALIZED = "zabbix_baseline_initialized"
         private const val KEY_CACHED_ZABBIX_SNAPSHOT_JSON = "cached_zabbix_snapshot_json"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"

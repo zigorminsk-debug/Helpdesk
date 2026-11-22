@@ -358,9 +358,19 @@ private fun DesktopTopNavigationHeader(
     val activeRepairsCount = remember(state.repairItems) {
         state.repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
     }
-    val activeZabbixAlertsCount = remember(state.zabbixSnapshot, state.settings.zabbixMinAlertSeverity) {
+    val activeZabbixAlertsCount = remember(
+        state.zabbixSnapshot,
+        state.settings.zabbixMinAlertSeverity,
+        state.dismissedZabbixKeys,
+        state.mutedZabbixRules
+    ) {
         val minSev = state.settings.normalizedZabbixMinSeverity
-        state.zabbixSnapshot?.problems?.count { !it.acknowledged && it.shouldTriggerBanner(minSev) } ?: 0
+        val mutedKeySet = state.mutedZabbixRules.flatMap { it.allMatchKeys() }.toSet()
+        state.zabbixSnapshot?.problems?.count {
+            !it.acknowledged &&
+                !it.isHiddenFromActiveFeed(state.dismissedZabbixKeys, mutedKeySet) &&
+                it.shouldTriggerBanner(minSev)
+        } ?: 0
     }
 
     Surface(

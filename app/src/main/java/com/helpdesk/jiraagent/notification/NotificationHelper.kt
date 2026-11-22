@@ -580,6 +580,11 @@ object NotificationHelper {
         if (!bypassWorkSchedule && !BelarusWorkCalendar.isWorkingTimeNow(appSettings)) {
             return false
         }
+        if (!bypassWorkSchedule &&
+            problem.isHiddenFromActiveFeed(repo.dismissedZabbixKeys.value, repo.currentMutedZabbixKeySet())
+        ) {
+            return false
+        }
 
         val titleSuffix = problem.severity.bannerSuffix
 
@@ -664,13 +669,41 @@ object NotificationHelper {
                 ackIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            builder.addAction(0, "Подтвердить (Ack)", ackPendingIntent)
+            builder.addAction(0, "Подтвердить", ackPendingIntent)
         }
 
-        builder.addAction(0, "Открыть Zabbix", openPendingIntent)
+        if (!problem.eventId.startsWith("DEMO")) {
+            val muteIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_MUTE_ZABBIX_PROBLEM
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_MUTE_RULE_KEY, problem.muteRuleKey)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_SIGNATURE_KEY, problem.signatureMuteKey)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_TRIGGER_ID, problem.triggerId)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_HOST_LABEL, problem.hostWithIpLabel)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_PROBLEM_NAME, problem.name)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_SEVERITY_LEVEL, problem.severityLevel)
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_ALERT_KEY, problem.alertKey)
+                putExtra(NotificationActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val mutePendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode + 4,
+                muteIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(0, "Не решаема", mutePendingIntent)
+        }
+
+        builder.addAction(0, "Открыть", openPendingIntent)
 
         NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         return true
+    }
+
+    fun cancelZabbixAlertNotification(context: Context, problem: ZabbixProblem) {
+        val notificationId = 140_000 + (problem.alertKey.hashCode() and 0x7FFFFFFF) % 40_000
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(notificationId)
+        }
     }
 
     @SuppressLint("MissingPermission")

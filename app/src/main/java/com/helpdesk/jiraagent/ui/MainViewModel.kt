@@ -61,6 +61,7 @@ import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketAttachment
 import com.helpdesk.jiraagent.model.TicketComment
 import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
@@ -202,6 +203,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val zabbixSnapshot: StateFlow<ZabbixDashboardSnapshot?> = repository.zabbixSnapshot
     val zabbixLastError: StateFlow<String?> = repository.zabbixLastError
+    val dismissedZabbixKeys: StateFlow<Set<String>> = repository.dismissedZabbixKeys
+    val mutedZabbixRules: StateFlow<List<ZabbixMutedRule>> = repository.mutedZabbixRules
 
     private val _isLoadingZabbix = MutableStateFlow(false)
     val isLoadingZabbix: StateFlow<Boolean> = _isLoadingZabbix.asStateFlow()
@@ -1165,6 +1168,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearZabbixFeedback() {
         _zabbixStatusFeedback.value = null
+    }
+
+    fun dismissZabbixProblem(problem: ZabbixProblem) {
+        NotificationHelper.cancelZabbixAlertNotification(appContext, problem)
+        repository.dismissZabbixProblem(problem)
+        Toast.makeText(
+            appContext,
+            "Карточка закрыта — появятся только новые события",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    fun dismissAllCurrentZabbixProblems(problems: List<ZabbixProblem>) {
+        if (problems.isEmpty()) return
+        problems.forEach { NotificationHelper.cancelZabbixAlertNotification(appContext, it) }
+        repository.dismissAllCurrentZabbixProblems(problems)
+        Toast.makeText(
+            appContext,
+            "Закрыто текущих карточек: ${problems.size}. Будут показаны только новые.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    fun restoreDismissedZabbixProblem(problem: ZabbixProblem) {
+        repository.restoreDismissedZabbixProblem(problem)
+    }
+
+    fun restoreAllDismissedZabbixProblems() {
+        repository.restoreAllDismissedZabbixProblems()
+        Toast.makeText(appContext, "Скрытые карточки возвращены в список", Toast.LENGTH_SHORT).show()
+    }
+
+    fun muteZabbixProblemForever(problem: ZabbixProblem) {
+        NotificationHelper.cancelZabbixAlertNotification(appContext, problem)
+        repository.muteZabbixProblemForever(problem)
+        Toast.makeText(
+            appContext,
+            "🔕 Проблема отмечена как нерешаемая — уведомления отключены",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    fun unmuteZabbixRule(ruleKey: String) {
+        repository.unmuteZabbixRule(ruleKey)
+        Toast.makeText(appContext, "Уведомления по триггеру включены снова", Toast.LENGTH_SHORT).show()
+    }
+
+    fun clearAllMutedZabbixRules() {
+        repository.clearAllMutedZabbixRules()
+        Toast.makeText(appContext, "Список нерешаемых триггеров очищен", Toast.LENGTH_SHORT).show()
     }
 
     fun triggerTestZabbixBanner() {

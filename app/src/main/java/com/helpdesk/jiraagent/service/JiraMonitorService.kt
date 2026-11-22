@@ -405,7 +405,11 @@ class JiraMonitorService : Service() {
                         val timeStr = DateTimeFormatter.ofPattern("HH:mm")
                             .withZone(ZoneId.systemDefault())
                             .format(Instant.now())
-                        val critCount = snapshot.criticalAndErrorCount
+                        val dismissed = repository.dismissedZabbixKeys.value
+                        val muted = repository.currentMutedZabbixKeySet()
+                        val critCount = snapshot.problems.count {
+                            it.severityLevel >= 3 && !it.isHiddenFromActiveFeed(dismissed, muted)
+                        }
                         updateForegroundText(
                             statusText = "Zabbix активен · ошибок/аварий: $critCount · $timeStr",
                             coreStateKey = "zbx_only_$critCount"

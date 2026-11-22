@@ -86,6 +86,53 @@ class ZabbixIntegrationTest {
         assertTrue(ticket.isClientTicket)
     }
 
+    @Test
+    fun dismissesExistingProblemsAndMutesUnsolvableTriggersForever() {
+        val oldStanding = ZabbixProblem(
+            eventId = "500",
+            triggerId = "77",
+            name = "SPAMLIST mail.technograd.by is listed on zen.spamhaus.org",
+            severityLevel = 4,
+            hostDisplayName = "SPAMLIST mail.technograd.by",
+            clockEpochSeconds = 1_763_600_000L
+        )
+        val newEventSameTrigger = oldStanding.copy(
+            eventId = "501",
+            clockEpochSeconds = 1_763_900_000L
+        )
+
+        // 1. Closing a current card hides ONLY that active occurrence; a brand-new occurrence appears!
+        val dismissedKeys = setOf(oldStanding.alertKey, oldStanding.fallbackOccurrenceKey)
+        assertTrue(oldStanding.isHiddenFromActiveFeed(dismissedKeys, emptySet()))
+        assertFalse(newEventSameTrigger.isHiddenFromActiveFeed(dismissedKeys, emptySet()))
+
+        // 2. Marking a problem as "Не решаема" mutes the trigger permanently, even for future new eventIds!
+        val unsolvableIlo = ZabbixProblem(
+            eventId = "600",
+            triggerId = "88",
+            name = "HP iLO: System status is in critical state",
+            severityLevel = 4,
+            hostDisplayName = "CSL.HP DL 380",
+            clockEpochSeconds = 1_763_500_000L
+        )
+        val mutedRule = unsolvableIlo.toMutedRule()
+        val mutedKeySet = mutedRule.allMatchKeys()
+
+        val futureIloEvent = unsolvableIlo.copy(
+            eventId = "999",
+            clockEpochSeconds = 1_764_000_000L
+        )
+        val recreatedTriggerSameSignature = unsolvableIlo.copy(
+            eventId = "1000",
+            triggerId = "9999",
+            clockEpochSeconds = 1_764_100_000L
+        )
+
+        assertTrue(unsolvableIlo.isHiddenFromActiveFeed(emptySet(), mutedKeySet))
+        assertTrue(futureIloEvent.isHiddenFromActiveFeed(emptySet(), mutedKeySet))
+        assertTrue(recreatedTriggerSameSignature.isHiddenFromActiveFeed(emptySet(), mutedKeySet))
+    }
+
     private fun readHttpPacket(ins: InputStream): Triple<String, Map<String, String>, String>? {
         val headerBuf = ByteArrayOutputStream()
         var state = 0 // 0, 1=\r, 2=\r\n, 3=\r\n\r, 4=\r\n\r\n

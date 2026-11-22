@@ -100,6 +100,46 @@ data class ZabbixProblem(
             "zbx_tr_${triggerId}_$clockEpochSeconds"
         }
 
+    val fallbackOccurrenceKey: String
+        get() = "zbx_tr_${triggerId}_$clockEpochSeconds"
+
+    val signatureMuteKey: String
+        get() = "sig:${effectiveHostLabel.trim().lowercase()}::${name.trim().lowercase()}"
+
+    val muteRuleKey: String
+        get() = if (triggerId.isNotBlank() && triggerId != "0") {
+            "tr:${triggerId.trim()}"
+        } else {
+            signatureMuteKey
+        }
+
+    fun isDismissedBy(dismissedKeys: Set<String>): Boolean {
+        if (dismissedKeys.isEmpty()) return false
+        return alertKey in dismissedKeys || fallbackOccurrenceKey in dismissedKeys
+    }
+
+    fun isMutedBy(mutedRuleKeys: Set<String>): Boolean {
+        if (mutedRuleKeys.isEmpty()) return false
+        return muteRuleKey in mutedRuleKeys || signatureMuteKey in mutedRuleKeys
+    }
+
+    fun isHiddenFromActiveFeed(
+        dismissedKeys: Set<String>,
+        mutedRuleKeys: Set<String>
+    ): Boolean = isDismissedBy(dismissedKeys) || isMutedBy(mutedRuleKeys)
+
+    fun toMutedRule(nowMillis: Long = System.currentTimeMillis()): ZabbixMutedRule {
+        return ZabbixMutedRule(
+            ruleKey = muteRuleKey,
+            signatureKey = signatureMuteKey,
+            triggerId = triggerId.trim(),
+            hostLabel = hostWithIpLabel,
+            problemName = name,
+            severityLevel = severityLevel,
+            mutedAtMillis = nowMillis
+        )
+    }
+
     fun shouldTriggerBanner(minSeverityLevel: Int): Boolean {
         val threshold = minSeverityLevel.coerceIn(1, 5)
         if (severityLevel >= threshold) return true
@@ -210,4 +250,21 @@ data class ZabbixDashboardSnapshot(
     val averageCount: Int get() = problems.count { it.severityLevel == 3 }
     val warningCount: Int get() = problems.count { it.severityLevel == 2 }
     val criticalAndErrorCount: Int get() = problems.count { it.severityLevel >= 3 }
+}
+
+data class ZabbixMutedRule(
+    val ruleKey: String,
+    val signatureKey: String = "",
+    val triggerId: String = "",
+    val hostLabel: String = "",
+    val problemName: String = "",
+    val severityLevel: Int = 3,
+    val mutedAtMillis: Long = System.currentTimeMillis()
+) {
+    fun allMatchKeys(): Set<String> {
+        return buildSet {
+            if (ruleKey.isNotBlank()) add(ruleKey)
+            if (signatureKey.isNotBlank()) add(signatureKey)
+        }
+    }
 }

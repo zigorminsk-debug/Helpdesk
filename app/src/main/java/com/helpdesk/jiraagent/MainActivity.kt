@@ -28,6 +28,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.LibraryBooks
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -243,6 +245,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val openZabbixTabStamp by viewModel.openZabbixTabStamp.collectAsStateWithLifecycle()
     val zabbixSnapshot by viewModel.zabbixSnapshot.collectAsStateWithLifecycle()
     val zabbixLastError by viewModel.zabbixLastError.collectAsStateWithLifecycle()
+    val dismissedZabbixKeys by viewModel.dismissedZabbixKeys.collectAsStateWithLifecycle()
+    val mutedZabbixRules by viewModel.mutedZabbixRules.collectAsStateWithLifecycle()
     val isLoadingZabbix by viewModel.isLoadingZabbix.collectAsStateWithLifecycle()
     val zabbixStatusFeedback by viewModel.zabbixStatusFeedback.collectAsStateWithLifecycle()
     val clientPassports by viewModel.clientPassports.collectAsStateWithLifecycle()
@@ -259,9 +263,21 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val activeWorkshopCount = remember(repairItems) {
         repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
     }
-    val activeZabbixAlertsCount = remember(zabbixSnapshot, appSettings.zabbixMinAlertSeverity) {
+    val mutedZabbixKeySet = remember(mutedZabbixRules) {
+        mutedZabbixRules.flatMap { it.allMatchKeys() }.toSet()
+    }
+    val activeZabbixAlertsCount = remember(
+        zabbixSnapshot,
+        appSettings.zabbixMinAlertSeverity,
+        dismissedZabbixKeys,
+        mutedZabbixKeySet
+    ) {
         val minSev = appSettings.normalizedZabbixMinSeverity
-        zabbixSnapshot?.problems?.count { !it.acknowledged && it.shouldTriggerBanner(minSev) } ?: 0
+        zabbixSnapshot?.problems?.count {
+            !it.acknowledged &&
+                !it.isHiddenFromActiveFeed(dismissedZabbixKeys, mutedZabbixKeySet) &&
+                it.shouldTriggerBanner(minSev)
+        } ?: 0
     }
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
@@ -641,6 +657,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     AlertSoundPlayer.stopCurrent()
                     viewModel.acknowledgeZabbixProblem(prob)
                 },
+                onMuteZabbix = { prob ->
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.muteZabbixProblemForever(prob)
+                },
                 onDismiss = {
                     AlertSoundPlayer.stopCurrent()
                     viewModel.dismissInAppBanner()
@@ -982,6 +1002,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 BottomDestination.ZABBIX -> ZabbixMonitorScreen(
                     settings = appSettings,
                     snapshot = zabbixSnapshot,
+                    dismissedKeys = dismissedZabbixKeys,
+                    mutedRules = mutedZabbixRules,
                     lastError = zabbixLastError,
                     statusFeedback = zabbixStatusFeedback,
                     isLoading = isLoadingZabbix,
@@ -991,6 +1013,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     },
                     onRefresh = { viewModel.refreshZabbix(manual = true) },
                     onAcknowledge = { prob, comment -> viewModel.acknowledgeZabbixProblem(prob, comment) },
+                    onDismissProblem = { prob -> viewModel.dismissZabbixProblem(prob) },
+                    onDismissAllCurrent = { list -> viewModel.dismissAllCurrentZabbixProblems(list) },
+                    onRestoreProblem = { prob -> viewModel.restoreDismissedZabbixProblem(prob) },
+                    onRestoreAllDismissed = { viewModel.restoreAllDismissedZabbixProblems() },
+                    onMuteForever = { prob -> viewModel.muteZabbixProblemForever(prob) },
+                    onUnmuteRule = { key -> viewModel.unmuteZabbixRule(key) },
+                    onClearAllMuted = { viewModel.clearAllMutedZabbixRules() },
                     onTestZabbixBanner = {
                         hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
                         viewModel.triggerTestZabbixBanner()
@@ -1156,6 +1185,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             AlertSoundPlayer.stopCurrent()
             viewModel.acknowledgeZabbixProblem(prob)
         },
+        onMuteZabbix = { prob ->
+            AlertSoundPlayer.stopCurrent()
+            viewModel.muteZabbixProblemForever(prob)
+        },
         onDismiss = {
             AlertSoundPlayer.stopCurrent()
             viewModel.dismissInAppBanner()
@@ -1171,6 +1204,7 @@ private fun InAppFloatingBannerOverlay(
     onTakeInWork: (String) -> Unit,
     onOpenZabbix: () -> Unit,
     onAckZabbix: (ZabbixProblem) -> Unit,
+    onMuteZabbix: (ZabbixProblem) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1269,23 +1303,39 @@ private fun InAppFloatingBannerOverlay(
                             Button(
                                 onClick = { onAckZabbix(zbxProblem) },
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.TaskAlt,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(15.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Подтвердить", maxLines = 1, softWrap = false)
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Подтв.", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                             }
+                        }
+                        Button(
+                            onClick = { onMuteZabbix(zbxProblem) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NotificationsOff,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("Не решаема", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                         }
                         Button(
                             onClick = onOpenZabbix,
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = accentBorder)
                         ) {
-                            Text("Открыть Zabbix", maxLines = 1, softWrap = false)
+                            Text("Открыть", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                         }
                     } else {
                         Button(

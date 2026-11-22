@@ -11,6 +11,7 @@ import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.QueuedActionType
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,6 +23,43 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
+        if (action == ACTION_MUTE_ZABBIX_PROBLEM) {
+            val ruleKey = intent.getStringExtra(EXTRA_ZABBIX_MUTE_RULE_KEY)?.trim().orEmpty()
+            if (ruleKey.isEmpty()) return
+            val signatureKey = intent.getStringExtra(EXTRA_ZABBIX_SIGNATURE_KEY).orEmpty()
+            val triggerId = intent.getStringExtra(EXTRA_ZABBIX_TRIGGER_ID).orEmpty()
+            val hostLabel = intent.getStringExtra(EXTRA_ZABBIX_HOST_LABEL).orEmpty()
+            val problemName = intent.getStringExtra(EXTRA_ZABBIX_PROBLEM_NAME).orEmpty()
+            val severityLevel = intent.getIntExtra(EXTRA_ZABBIX_SEVERITY_LEVEL, 3)
+            val alertKey = intent.getStringExtra(EXTRA_ZABBIX_ALERT_KEY).orEmpty()
+            val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
+
+            AlertSoundPlayer.stopCurrent()
+            if (notifId != -1) {
+                NotificationManagerCompat.from(context).cancel(notifId)
+            }
+            val appCtx = context.applicationContext
+            val repo = SettingsRepository.getInstance(appCtx)
+            repo.dismissInAppBanner()
+            repo.upsertMutedZabbixRule(
+                rule = ZabbixMutedRule(
+                    ruleKey = ruleKey,
+                    signatureKey = signatureKey,
+                    triggerId = triggerId,
+                    hostLabel = hostLabel,
+                    problemName = problemName,
+                    severityLevel = severityLevel
+                ),
+                currentAlertKey = alertKey
+            )
+            Toast.makeText(
+                appCtx,
+                "🔕 Проблема отмечена как нерешаемая — уведомления отключены",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
         if (action == ACTION_ACK_ZABBIX_PROBLEM) {
             val eventId = intent.getStringExtra(EXTRA_ZABBIX_EVENT_ID)?.trim().orEmpty()
             if (eventId.isEmpty()) return
@@ -155,8 +193,16 @@ class NotificationActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_TAKE_TICKET_IN_WORK = "com.helpdesk.jiraagent.action.TAKE_TICKET_IN_WORK"
         const val ACTION_ACK_ZABBIX_PROBLEM = "com.helpdesk.jiraagent.action.ACK_ZABBIX_PROBLEM"
+        const val ACTION_MUTE_ZABBIX_PROBLEM = "com.helpdesk.jiraagent.action.MUTE_ZABBIX_PROBLEM"
         const val EXTRA_TICKET_KEY = "extra_ticket_key"
         const val EXTRA_ZABBIX_EVENT_ID = "extra_zabbix_event_id"
+        const val EXTRA_ZABBIX_MUTE_RULE_KEY = "extra_zabbix_mute_rule_key"
+        const val EXTRA_ZABBIX_SIGNATURE_KEY = "extra_zabbix_signature_key"
+        const val EXTRA_ZABBIX_TRIGGER_ID = "extra_zabbix_trigger_id"
+        const val EXTRA_ZABBIX_HOST_LABEL = "extra_zabbix_host_label"
+        const val EXTRA_ZABBIX_PROBLEM_NAME = "extra_zabbix_problem_name"
+        const val EXTRA_ZABBIX_SEVERITY_LEVEL = "extra_zabbix_severity_level"
+        const val EXTRA_ZABBIX_ALERT_KEY = "extra_zabbix_alert_key"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
     }
 }

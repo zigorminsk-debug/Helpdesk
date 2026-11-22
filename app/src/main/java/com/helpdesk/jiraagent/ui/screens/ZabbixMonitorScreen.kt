@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,14 +37,17 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TaskAlt
@@ -98,6 +100,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.helpdesk.jiraagent.data.ZabbixApiClient
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixMutedRule
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.model.ZabbixSeverity
 import com.helpdesk.jiraagent.ui.HostDiagnosticUiState
@@ -126,6 +129,8 @@ private val ZABBIX_ALERT_THRESHOLD_OPTIONS = listOf(
 fun ZabbixMonitorScreen(
     settings: AppSettings,
     snapshot: ZabbixDashboardSnapshot?,
+    dismissedKeys: Set<String>,
+    mutedRules: List<ZabbixMutedRule>,
     lastError: String?,
     statusFeedback: String?,
     isLoading: Boolean,
@@ -133,6 +138,13 @@ fun ZabbixMonitorScreen(
     onSaveAndConnect: (url: String, login: String, password: String, enabled: Boolean, minSeverity: Int) -> Unit,
     onRefresh: () -> Unit,
     onAcknowledge: (ZabbixProblem, String?) -> Unit,
+    onDismissProblem: (ZabbixProblem) -> Unit,
+    onDismissAllCurrent: (List<ZabbixProblem>) -> Unit,
+    onRestoreProblem: (ZabbixProblem) -> Unit,
+    onRestoreAllDismissed: () -> Unit,
+    onMuteForever: (ZabbixProblem) -> Unit,
+    onUnmuteRule: (String) -> Unit,
+    onClearAllMuted: () -> Unit,
     onTestZabbixBanner: () -> Unit,
     onRunHostDiagnostics: (String) -> Unit,
     onDismissHostDiagnostics: () -> Unit,
@@ -155,7 +167,7 @@ fun ZabbixMonitorScreen(
     var showPassword by rememberSaveable { mutableStateOf(false) }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    // 0 = Все активные, 1 = Ошибки и критические (3..5), 2 = Неподтверждённые
+    // 0 = Новые / активные, 1 = Ошибки и критические (3..5), 2 = Неподтверждённые, 3 = Скрытые и нерешаемые
     var listFilterMode by rememberSaveable { mutableIntStateOf(0) }
 
     var ackDialogTarget by remember { mutableStateOf<ZabbixProblem?>(null) }
@@ -281,12 +293,12 @@ fun ZabbixMonitorScreen(
                 FilterChip(
                     selected = viewMode == ZabbixViewMode.PROBLEMS_API,
                     onClick = { viewMode = ZabbixViewMode.PROBLEMS_API },
-                    label = { Text("📊 Проблемы", maxLines = 1) }
+                    label = { Text("📊 Проблемы", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = viewMode == ZabbixViewMode.WEB_PORTAL,
                     onClick = { viewMode = ZabbixViewMode.WEB_PORTAL },
-                    label = { Text("🌐 Веб z.csl.by", maxLines = 1) }
+                    label = { Text("🌐 Веб z.csl.by", maxLines = 1, softWrap = false) }
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 IconButton(
@@ -332,10 +344,21 @@ fun ZabbixMonitorScreen(
             return@Column
         }
 
-        val problems = snapshot?.problems.orEmpty()
-        val filteredProblems = remember(problems, searchQuery, listFilterMode) {
+        val mutedKeySet = remember(mutedRules) {
+            mutedRules.flatMap { it.allMatchKeys() }.toSet()
+        }
+        val allServerProblems = snapshot?.problems.orEmpty()
+        val activeProblems = remember(allServerProblems, dismissedKeys, mutedKeySet) {
+            allServerProblems.filterNot { it.isHiddenFromActiveFeed(dismissedKeys, mutedKeySet) }
+        }
+        val dismissedActiveProblems = remember(allServerProblems, dismissedKeys, mutedKeySet) {
+            allServerProblems.filter { !it.isMutedBy(mutedKeySet) && it.isDismissedBy(dismissedKeys) }
+        }
+        val hiddenTotalCount = dismissedActiveProblems.size + mutedRules.size
+
+        val filteredActiveProblems = remember(activeProblems, searchQuery, listFilterMode) {
             val q = searchQuery.trim().lowercase()
-            problems.filter { p ->
+            activeProblems.filter { p ->
                 val matchesFilter = when (listFilterMode) {
                     1 -> p.severityLevel >= 3
                     2 -> !p.acknowledged
@@ -350,6 +373,13 @@ fun ZabbixMonitorScreen(
                 matchesFilter && matchesQuery
             }
         }
+
+        val activeDisasterCount = remember(activeProblems) { activeProblems.count { it.severityLevel >= 5 } }
+        val activeHighCount = remember(activeProblems) { activeProblems.count { it.severityLevel == 4 } }
+        val activeAverageCount = remember(activeProblems) { activeProblems.count { it.severityLevel == 3 } }
+        val activeWarningCount = remember(activeProblems) { activeProblems.count { it.severityLevel == 2 } }
+        val activeCritAndErrorCount = remember(activeProblems) { activeProblems.count { it.severityLevel >= 3 } }
+        val activeUnackedCount = remember(activeProblems) { activeProblems.count { !it.acknowledged } }
 
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -508,15 +538,17 @@ fun ZabbixMonitorScreen(
                                     },
                                     enabled = !isLoading,
                                     modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                                 ) {
                                     Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Войти и сохранить", maxLines = 1)
+                                    Text("Войти и сохранить", maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
 
                                 OutlinedButton(
-                                    onClick = onTestZabbixBanner
+                                    onClick = onTestZabbixBanner,
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.NotificationsActive,
@@ -525,7 +557,7 @@ fun ZabbixMonitorScreen(
                                         tint = CslOrange
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Тест баннера", maxLines = 1)
+                                    Text("Тест", maxLines = 1)
                                 }
                             }
                         }
@@ -645,10 +677,18 @@ fun ZabbixMonitorScreen(
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                ZabbixCountPill("Аварии (5)", snapshot.disasterCount, Color(0xFFD93025))
-                                ZabbixCountPill("Критич. (4)", snapshot.highCount, Color(0xFFE65100))
-                                ZabbixCountPill("Ошибки (3)", snapshot.averageCount, CslOrange)
-                                ZabbixCountPill("Предупр. (2)", snapshot.warningCount, Color(0xFFD97706))
+                                ZabbixCountPill("Аварии (5)", activeDisasterCount, Color(0xFFD93025))
+                                ZabbixCountPill("Критич. (4)", activeHighCount, Color(0xFFE65100))
+                                ZabbixCountPill("Ошибки (3)", activeAverageCount, CslOrange)
+                                ZabbixCountPill("Предупр. (2)", activeWarningCount, Color(0xFFD97706))
+                            }
+
+                            if (allServerProblems.size > activeProblems.size) {
+                                Text(
+                                    text = "Скрыто старых / нерешаемых: ${allServerProblems.size - activeProblems.size} (показываются только новые)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -681,24 +721,212 @@ fun ZabbixMonitorScreen(
                             FilterChip(
                                 selected = listFilterMode == 0,
                                 onClick = { listFilterMode = 0 },
-                                label = { Text("Все активные (${problems.size})") }
+                                label = { Text("Новые / активные (${activeProblems.size})", maxLines = 1, softWrap = false) }
                             )
                             FilterChip(
                                 selected = listFilterMode == 1,
                                 onClick = { listFilterMode = 1 },
-                                label = { Text("Ошибки и критич. (${snapshot.criticalAndErrorCount})") }
+                                label = { Text("Ошибки и критич. ($activeCritAndErrorCount)", maxLines = 1, softWrap = false) }
                             )
-                            val unackedCount = problems.count { !it.acknowledged }
                             FilterChip(
                                 selected = listFilterMode == 2,
                                 onClick = { listFilterMode = 2 },
-                                label = { Text("Неподтверждённые ($unackedCount)") }
+                                label = { Text("Неподтв. ($activeUnackedCount)", maxLines = 1, softWrap = false) }
                             )
+                            FilterChip(
+                                selected = listFilterMode == 3,
+                                onClick = { listFilterMode = 3 },
+                                label = { Text("🔕 Скрытые ($hiddenTotalCount)", maxLines = 1, softWrap = false) }
+                            )
+                        }
+
+                        if (listFilterMode != 3 && filteredActiveProblems.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { onDismissAllCurrent(filteredActiveProblems) },
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.65f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(17.dp),
+                                    tint = CslOrange
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Закрыть все текущие (${filteredActiveProblems.size}) — только новые",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
 
-                if (filteredProblems.isEmpty()) {
+                if (listFilterMode == 3) {
+                    // Hidden & Permanently Muted Management Tab
+                    item(key = "zabbix_muted_rules_header") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.NotificationsOff,
+                                        contentDescription = null,
+                                        tint = CslOrange,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Нерешаемые задачи (${mutedRules.size})",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "По этим триггерам уведомления и баннеры отключены навсегда",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (mutedRules.isNotEmpty()) {
+                                        TextButton(onClick = onClearAllMuted) {
+                                            Text("Очистить")
+                                        }
+                                    }
+                                }
+
+                                if (mutedRules.isEmpty()) {
+                                    Text(
+                                        text = "Список пуст. Нажмите «Не решаема» на любой карточке, чтобы больше не получать по ней уведомления.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    val q = searchQuery.trim().lowercase()
+                                    mutedRules.filter { r ->
+                                        q.isEmpty() ||
+                                            r.hostLabel.lowercase().contains(q) ||
+                                            r.problemName.lowercase().contains(q)
+                                    }.forEach { rule ->
+                                        Surface(
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = MaterialTheme.colorScheme.surface,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Surface(
+                                                    color = zabbixSeverityColor(rule.severityLevel),
+                                                    shape = RoundedCornerShape(5.dp)
+                                                ) {
+                                                    Text(
+                                                        text = ZabbixSeverity.fromLevel(rule.severityLevel).shortBadge,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.White,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = rule.hostLabel.ifBlank { "Триггер Zabbix" },
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = rule.problemName,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                OutlinedButton(
+                                                    onClick = { onUnmuteRule(rule.ruleKey) },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                                ) {
+                                                    Text("Вернуть", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item(key = "zabbix_dismissed_header") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Закрытые текущие карточки (${dismissedActiveProblems.size})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (dismissedActiveProblems.isNotEmpty()) {
+                                TextButton(onClick = onRestoreAllDismissed) {
+                                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Вернуть все")
+                                }
+                            }
+                        }
+                    }
+
+                    if (dismissedActiveProblems.isEmpty()) {
+                        item(key = "zabbix_no_dismissed") {
+                            Text(
+                                text = "Нет закрытых текущих карточек.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+                    } else {
+                        val q = searchQuery.trim().lowercase()
+                        val shownDismissed = dismissedActiveProblems.filter { p ->
+                            q.isEmpty() ||
+                                p.name.lowercase().contains(q) ||
+                                p.effectiveHostLabel.lowercase().contains(q) ||
+                                p.hostIp.lowercase().contains(q)
+                        }
+                        items(
+                            items = shownDismissed,
+                            key = { "dismissed_" + it.alertKey }
+                        ) { problem ->
+                            ZabbixDismissedCard(
+                                problem = problem,
+                                onRestore = { onRestoreProblem(problem) },
+                                onMuteForever = { onMuteForever(problem) }
+                            )
+                        }
+                    }
+                } else if (filteredActiveProblems.isEmpty()) {
                     item(key = "zabbix_all_ok") {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -706,39 +934,51 @@ fun ZabbixMonitorScreen(
                             colors = CardDefaults.cardColors(containerColor = CslSuccessGreen.copy(alpha = 0.1f)),
                             border = BorderStroke(1.dp, CslSuccessGreen.copy(alpha = 0.4f))
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = CslSuccessGreen,
-                                    modifier = Modifier.size(32.dp)
-                                )
-                                Column {
-                                    Text(
-                                        text = if (problems.isEmpty()) {
-                                            "Все контролируемые узлы в норме"
-                                        } else {
-                                            "По выбранному фильтру проблем нет"
-                                        },
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = CslSuccessGreen,
+                                        modifier = Modifier.size(30.dp)
                                     )
-                                    Text(
-                                        text = "При появлении новой ошибки или критического предупреждения программа автоматически покажет срочный баннер со звуком.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = when {
+                                                allServerProblems.isEmpty() -> "Все контролируемые узлы в норме"
+                                                activeProblems.isEmpty() -> "Новых проблем нет (старые скрыты)"
+                                                else -> "По выбранному фильтру проблем нет"
+                                            },
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "При появлении новой ошибки или аварии она появится здесь и вызовет срочный баннер со звуком.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (hiddenTotalCount > 0) {
+                                    TextButton(
+                                        onClick = { listFilterMode = 3 },
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("Посмотреть скрытые и нерешаемые ($hiddenTotalCount)")
+                                    }
                                 }
                             }
                         }
                     }
                 } else {
                     items(
-                        items = filteredProblems,
+                        items = filteredActiveProblems,
                         key = { it.alertKey }
                     ) { problem ->
                         ZabbixProblemCard(
@@ -754,9 +994,85 @@ fun ZabbixMonitorScreen(
                             onDiagnoseHost = {
                                 val target = problem.hostIp.ifBlank { problem.hostTechnicalName }.ifBlank { problem.effectiveHostLabel }
                                 onRunHostDiagnostics(target)
-                            }
+                            },
+                            onCloseCard = { onDismissProblem(problem) },
+                            onMuteForever = { onMuteForever(problem) }
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZabbixDismissedCard(
+    problem: ZabbixProblem,
+    onRestore: () -> Unit,
+    onMuteForever: () -> Unit
+) {
+    val sevColor = zabbixSeverityColor(problem.severityLevel)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(color = sevColor, shape = RoundedCornerShape(5.dp)) {
+                    Text(
+                        text = problem.severity.shortBadge,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    text = problem.hostWithIpLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Text(
+                text = problem.name,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onRestore,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Вернуть", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = onMuteForever,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.NotificationsOff, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Не решаема", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 }
             }
         }
@@ -778,24 +1094,31 @@ private fun ZabbixCountPill(label: String, count: Int, accent: Color) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false
             )
             Text(
                 text = count.toString(),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.ExtraBold,
-                color = if (count > 0) accent else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (count > 0) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ZabbixProblemCard(
     problem: ZabbixProblem,
     onCopyHost: (String) -> Unit,
     onAcknowledgeClick: () -> Unit,
-    onDiagnoseHost: () -> Unit
+    onDiagnoseHost: () -> Unit,
+    onCloseCard: () -> Unit,
+    onMuteForever: () -> Unit
 ) {
     val sevColor = zabbixSeverityColor(problem.severityLevel)
 
@@ -810,13 +1133,13 @@ private fun ZabbixProblemCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(
-            modifier = Modifier.padding(13.dp),
+            modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Surface(
                     color = sevColor,
@@ -827,6 +1150,8 @@ private fun ZabbixProblemCard(
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color.White,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                     )
                 }
@@ -848,12 +1173,24 @@ private fun ZabbixProblemCard(
                     onClick = {
                         onCopyHost(problem.hostIp.ifBlank { problem.hostTechnicalName.ifBlank { problem.effectiveHostLabel } })
                     },
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
                         contentDescription = "Скопировать адрес узла",
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onCloseCard,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Закрыть карточку",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -879,10 +1216,10 @@ private fun ZabbixProblemCard(
                 }
             }
 
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
                     text = "Начало: ${problem.formattedStartTime()} · Длится: ${problem.formattedDuration()}",
@@ -891,12 +1228,20 @@ private fun ZabbixProblemCard(
                 )
 
                 if (problem.acknowledged) {
-                    Text(
-                        text = "✓ Подтверждено",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = CslSuccessGreen
-                    )
+                    Surface(
+                        color = CslSuccessGreen.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(5.dp)
+                    ) {
+                        Text(
+                            text = "✓ Подтверждено",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = CslSuccessGreen,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
@@ -910,6 +1255,7 @@ private fun ZabbixProblemCard(
 
             HorizontalDivider(modifier = Modifier.padding(top = 2.dp))
 
+            // Row 1: Acknowledge & Host Diagnostics (compact padding prevents clipping on large fonts)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -917,31 +1263,89 @@ private fun ZabbixProblemCard(
                 if (problem.eventId.isNotBlank() && problem.eventId != "0") {
                     OutlinedButton(
                         onClick = onAcknowledgeClick,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.TaskAlt,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(15.dp),
                             tint = CslSuccessGreen
                         )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text(if (problem.acknowledged) "Комментарий" else "Подтвердить", maxLines = 1)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (problem.acknowledged) "Комментарий" else "Подтвердить",
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
 
                 OutlinedButton(
                     onClick = onDiagnoseHost,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.NetworkCheck,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(15.dp),
                         tint = CslOrange
                     )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text("Пинг / Порты", maxLines = 1)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Пинг",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Row 2: Close current card (only new ones appear) & Mark unsolvable (mute forever)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCloseCard,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteSweep,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Скрыть",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onMuteForever,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.NotificationsOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = Color(0xFFD93025)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Не решаема",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
