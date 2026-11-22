@@ -358,8 +358,14 @@ class DesktopController(
     fun exportRepairsToExcelCsv() {
         scope.launch(Dispatchers.IO) {
             runCatching {
-                val file = DesktopRepairCsvExporter.exportToCsv(_state.value.repairItems)
-                DesktopPdfGenerator.openFile(file)
+                val cur = _state.value
+                val file = DesktopRepairCsvExporter.exportToCsv(
+                    items = cur.repairItems,
+                    connectedUserName = cur.connectedUserName,
+                    currentUsernameOrEmail = cur.settings.usernameOrEmail,
+                    knownTickets = cur.tickets
+                )
+                WindowsExternalLaunchers.openFile(file)
                 file
             }.onSuccess { file ->
                 _state.update {

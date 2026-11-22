@@ -352,7 +352,7 @@ fun DesktopTicketsWorkspace(
                     FilterChip(
                         selected = filterOnlyStaleNew,
                         onClick = { filterOnlyStaleNew = !filterOnlyStaleNew },
-                        label = { Text("🔥 Ждут >$staleThresholdMinм ($staleNewCount)", fontSize = 11.sp, maxLines = 1) },
+                        label = { Text("🔥 Ждут >${staleThresholdMin}м ($staleNewCount)", fontSize = 11.sp, maxLines = 1) },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1948,8 +1948,13 @@ private fun DesktopTicketInspector(
 
                 // Quick Reply Templates (editable + {клиент}/{заявка}/{инженер} placeholders)
                 var showTemplatesManager by remember { mutableStateOf(false) }
-                val resolvedEngineerName = remember(state.connectedUserName, state.settings.usernameOrEmail) {
-                    EngineerNameResolver.resolve(state.connectedUserName, state.settings.usernameOrEmail)
+                val resolvedEngineerName = remember(state.connectedUserName, state.settings.usernameOrEmail, state.tickets) {
+                    EngineerNameResolver.resolve(
+                        rawEngineer = state.connectedUserName,
+                        connectedUserDisplayName = state.connectedUserName,
+                        currentUsernameOrEmail = state.settings.usernameOrEmail,
+                        knownTickets = state.tickets
+                    )
                 }
 
                 Row(

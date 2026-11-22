@@ -1132,7 +1132,10 @@ object DesktopRepairCsvExporter {
 
     fun exportToCsv(
         items: List<RepairEquipmentItem>,
-        outFile: File? = null
+        outFile: File? = null,
+        connectedUserName: String? = null,
+        currentUsernameOrEmail: String = "",
+        knownTickets: List<HelpdeskTicket> = emptyList()
     ): File {
         val activeItems = items
             .filter { !it.isDeleted }
@@ -1170,8 +1173,10 @@ object DesktopRepairCsvExporter {
 
         for (item in activeItems) {
             val humanEngineer = EngineerNameResolver.resolve(
-                displayOrLogin = item.assignedEngineer,
-                fallbackLoginOrEmail = null
+                rawEngineer = item.assignedEngineer,
+                connectedUserDisplayName = connectedUserName,
+                currentUsernameOrEmail = currentUsernameOrEmail,
+                knownTickets = knownTickets
             )
             val row = listOf(
                 item.intakeNumber.ifBlank { item.id.take(8).uppercase() },

@@ -154,7 +154,9 @@ class DesktopPdfGeneratorTest {
                         assignedEngineer = "ziv@csl.by"
                     )
                 ),
-                outFile = tempCsv
+                outFile = tempCsv,
+                connectedUserName = "Захаревич Игорь",
+                currentUsernameOrEmail = "ziv@csl.by"
             )
             val rawBytes = exported.readBytes()
             // Verify UTF-8 BOM (EF BB BF) for Russian Excel
