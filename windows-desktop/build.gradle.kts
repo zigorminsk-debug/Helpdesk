@@ -70,13 +70,12 @@ compose.desktop {
             packageName = "Help-CSL"
             packageVersion = cleanWindowsVersion
             vendor = "CSL Support"
-            description = "Help-CSL — агент технической поддержки Jira Helpdesk для Windows"
+            description = "Help-CSL Jira Helpdesk Agent for Windows"
+            copyright = "Copyright 2026 CSL Support"
             includeAllModules = true
 
             windows {
                 iconFile.set(project.file("src/main/resources/help-csl.ico"))
-                menuGroup = "Help-CSL"
-                shortcut = true
             }
         }
     }

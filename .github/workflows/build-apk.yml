@@ -118,8 +118,12 @@ jobs:
             "-PversionName=$versionName" `
             --no-daemon 2>&1 | Tee-Object -FilePath windows-build.log
           if ($LASTEXITCODE -ne 0) {
-            Select-String -Path windows-build.log -Pattern "^e: |FAILED|Exception:|What went wrong:" -Context 0,4 | Select-Object -First 40 | ForEach-Object {
-              Write-Host "::error::$($_.Line)"
+            $matches = Select-String -Path windows-build.log -Pattern "^e: |External tool execution failed:|Command:|Exit code:" -Context 0,8 | Select-Object -First 6
+            foreach ($m in $matches) {
+              Write-Host "::error::$($m.Line)"
+              foreach ($post in $m.Context.PostContext) {
+                if ($post.Trim().Length -gt 0) { Write-Host "::error::  $post" }
+              }
             }
             exit 1
           }
