@@ -560,7 +560,8 @@ class ZabbixApiClient {
                 reqBuilder.header("Authorization", "Bearer $bearerTokenHeader")
             }
 
-            client.newCall(reqBuilder.build()).execute().use { response ->
+            val response = client.newCall(reqBuilder.build()).execute()
+            try {
                 val code = response.code
                 if (code in listOf(301, 302, 303, 307, 308)) {
                     val location = response.header("Location")?.trim().orEmpty()
@@ -613,6 +614,8 @@ class ZabbixApiClient {
                 val resultEl = root.get("result")
                     ?: throw ZabbixApiException("В ответе Zabbix отсутствует поле result")
                 return resultEl to currentUrl
+            } finally {
+                response.close()
             }
         }
 
@@ -622,36 +625,28 @@ class ZabbixApiClient {
     companion object {
         private val JSON_RPC_MEDIA_TYPE = "application/json".toMediaType()
 
-        @Volatile
-        private var cachedNoRedirectStandard: OkHttpClient? = null
+        private val noRedirectStandardClient: OkHttpClient by lazy {
+            JiraApiClient.sharedClient(trustAllSsl = false)
+                .newBuilder()
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
 
-        @Volatile
-        private var cachedNoRedirectTrustAll: OkHttpClient? = null
+        private val noRedirectTrustAllClient: OkHttpClient by lazy {
+            JiraApiClient.sharedClient(trustAllSsl = true)
+                .newBuilder()
+                .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
 
         private fun noRedirectClient(trustAllSsl: Boolean): OkHttpClient {
-            return if (trustAllSsl) {
-                cachedNoRedirectTrustAll ?: synchronized(this) {
-                    cachedNoRedirectTrustAll ?: JiraApiClient.sharedClient(trustAllSsl = true)
-                        .newBuilder()
-                        .connectTimeout(12, TimeUnit.SECONDS)
-                        .readTimeout(20, TimeUnit.SECONDS)
-                        .followRedirects(false)
-                        .followSslRedirects(false)
-                        .build()
-                        .also { cachedNoRedirectTrustAll = it }
-                }
-            } else {
-                cachedNoRedirectStandard ?: synchronized(this) {
-                    cachedNoRedirectStandard ?: JiraApiClient.sharedClient(trustAllSsl = false)
-                        .newBuilder()
-                        .connectTimeout(12, TimeUnit.SECONDS)
-                        .readTimeout(20, TimeUnit.SECONDS)
-                        .followRedirects(false)
-                        .followSslRedirects(false)
-                        .build()
-                        .also { cachedNoRedirectStandard = it }
-                }
-            }
+            return if (trustAllSsl) noRedirectTrustAllClient else noRedirectStandardClient
         }
 
         fun normalizeWebBaseUrl(rawUrl: String): String {
