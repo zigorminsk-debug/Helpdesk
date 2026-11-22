@@ -2419,7 +2419,7 @@ class DesktopController(
 
     fun saveConfluencePatToken(token: String) {
         val updated = _state.value.settings.copy(confluenceToken = token.trim())
-        saveSettings(updated, _state.value.filterSettings)
+        saveSettings(updated)
         wikiClient.clearSessionCache()
         refreshWikiSpacesAndPages()
     }
