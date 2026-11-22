@@ -2514,10 +2514,10 @@ class DesktopController(
                             isLoadingWikiList = false,
                             wikiSyncProgressText = null,
                             wikiSyncProgressFraction = 1f,
-                            wikiError = null
+                            wikiError = null,
+                            statusBanner = "✅ Офлайн-база w.csl.by загружена (${outcome.snapshot.totalPagesCount} стр.)"
                         )
                     }
-                    showTransientNotice("✅ Офлайн-база w.csl.by загружена (${outcome.snapshot.totalPagesCount} стр.)")
                 }
                 is ConfluenceSyncOutcome.OfflineUsingCache -> {
                     outcome.snapshot?.let { applyOfflineWikiSnapshotToUi(it) }

@@ -497,7 +497,7 @@ class ConfluenceWikiAndNineFeaturesTest {
             val store = ConfluenceOfflineStore(tempDir)
             val recordedProgress = mutableListOf<ConfluenceSyncProgress>()
             val settings = AppSettings(
-                baseUrl = "https://jira.csl.by",
+                serverUrl = "https://jira.csl.by",
                 confluenceUrl = "http://127.0.0.1:9",
                 usernameOrEmail = "ziv@csl.by",
                 passwordOrToken = "secret"
