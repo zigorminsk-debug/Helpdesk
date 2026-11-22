@@ -1676,7 +1676,7 @@ private fun PostponedTicketsDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("${item.reporterName} (исх. ${item.originalKey})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("${item.reporterDisplayName.ifBlank { "Клиент" }} (исх. ${item.originalKey})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Text(item.summary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("Возврат: ${item.scheduledDisplay}", fontSize = 11.sp, color = DesktopColors.CslOrange)
                             }
