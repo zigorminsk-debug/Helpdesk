@@ -3,13 +3,16 @@ package com.helpdesk.desktop
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.text.PDFTextStripper
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class DesktopPdfGeneratorTest {
 
     @Test
-    fun `generateTicketServiceActPdf handles checkmarks emojis and Cyrillic without moveTo text block error`() {
+    fun `generateTicketServiceActPdf embeds csl by contacts and handles checkmarks without text block error`() {
         val ticket = HelpdeskTicket(
             id = "37221",
             key = "CSL-37221",
@@ -38,7 +41,7 @@ class DesktopPdfGeneratorTest {
 
         val pdfFile = DesktopPdfGenerator.generateTicketServiceActPdf(
             ticket = ticket,
-            engineerName = "Захаревич Игорь",
+            engineerName = "ziv@csl.by",
             performedWorks = listOf(
                 "✓ Настроен удалённый рабочий стол RDP и профиль пользователя Сотниковой Марии",
                 "Материалы/комплектующие: не требовались — программная настройка 🔧",
@@ -50,26 +53,33 @@ class DesktopPdfGeneratorTest {
 
         assertTrue(pdfFile.exists(), "PDF file must exist")
         assertTrue(pdfFile.length() > 800L, "PDF file must be non-empty (${pdfFile.length()} bytes)")
+
+        val text = PDDocument.load(pdfFile).use { PDFTextStripper().getText(it) }
+        assertTrue(text.contains("Фабрициуса, 9"), "Header must include csl.by street address: $text")
+        assertTrue(text.contains("info@csl.by"), "Header must include info@csl.by: $text")
+        assertTrue(text.contains("Захаревич Игорь"), "Act must print full human name: $text")
+        assertFalse(text.contains("ziv@csl.by"), "Act must not print raw login/email: $text")
+
         pdfFile.delete()
     }
 
     @Test
-    fun `generateRepairReceiptPdf handles special Unicode symbols cleanly`() {
+    fun `generateRepairReceiptPdf replaces saved email login ziv at csl by with engineer full name and csl contacts`() {
         val item = RepairEquipmentItem(
-            id = "rem-1",
-            intakeNumber = "REM-1005",
-            clientName = "ООО «Сейлзмодерн»",
+            id = "rem-1001",
+            intakeNumber = "REM-1001",
+            clientName = "ООО Белинвестторг",
             clientPhone = "+375291234567",
             linkedTicketKey = "CSL-37312",
-            deviceCategory = "Ноутбук 💻",
-            deviceModel = "HP ProBook 450 G9",
-            serialNumber = "5CD2211XYZ",
-            accessories = "Блок питания ✓, сумка",
-            externalCondition = "Потёртости на крышке — без трещин",
-            reportedDefect = "Не включается после обновления BIOS ⚡",
-            repairNotes = "✓ Восстановлен дамп BIOS, заменена термопаста MX-4",
-            status = RepairStatus.READY,
-            assignedEngineer = "Захаревич Игорь"
+            deviceCategory = "Монитор",
+            deviceModel = "BenQ",
+            serialNumber = "ETG9M03224SL0",
+            accessories = "Без комплекта",
+            externalCondition = "Б/У, следы эксплуатации",
+            reportedDefect = "Включается через раз",
+            repairNotes = "Диагностика и обслуживание выполнены, оборудование исправно.",
+            status = RepairStatus.ISSUED,
+            assignedEngineer = "ziv@csl.by"
         )
 
         val pdfFile = DesktopPdfGenerator.generateRepairReceiptPdf(
@@ -79,6 +89,14 @@ class DesktopPdfGeneratorTest {
 
         assertTrue(pdfFile.exists(), "Repair PDF file must exist")
         assertTrue(pdfFile.length() > 800L, "Repair PDF file must be non-empty (${pdfFile.length()} bytes)")
+
+        val text = PDDocument.load(pdfFile).use { PDFTextStripper().getText(it) }
+        assertTrue(text.contains("Фабрициуса, 9"), "Header must include csl.by address: $text")
+        assertTrue(text.contains("337-14-12"), "Header must include csl.by phone: $text")
+        assertTrue(text.contains("info@csl.by"), "Header must include info@csl.by: $text")
+        assertTrue(text.contains("Захаревич Игорь"), "Receipt must display human full name: $text")
+        assertFalse(text.contains("ziv@csl.by"), "Receipt must NOT display raw email ziv@csl.by: $text")
+
         pdfFile.delete()
     }
 }

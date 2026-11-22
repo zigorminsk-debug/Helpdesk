@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDone
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
@@ -961,8 +962,13 @@ fun RepairEquipmentEditorDialog(
     var reportedDefect by remember(initial) { mutableStateOf(initial.reportedDefect) }
     var repairNotes by remember(initial) { mutableStateOf(initial.repairNotes) }
     var shelfLocation by remember(initial) { mutableStateOf(initial.shelfLocation) }
-    var assignedEngineer by remember(initial) {
-        mutableStateOf(initial.assignedEngineer.ifBlank { defaultEngineer })
+    var assignedEngineer by remember(initial, defaultEngineer) {
+        mutableStateOf(
+            EngineerNameResolver.resolve(
+                rawEngineer = initial.assignedEngineer,
+                connectedUserDisplayName = defaultEngineer
+            )
+        )
     }
     var status by remember(initial) { mutableStateOf(initial.status) }
     var postNoteToTicket by remember(initial, isNewIntake) {

@@ -192,10 +192,12 @@ fun DesktopRepairWorkspace(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(visibleItems, key = { it.id }) { item ->
+                    val resolvedEngineer = controller.formatEngineerName(item.assignedEngineer)
                     RepairItemDesktopCard(
                         item = item,
+                        engineerDisplayName = resolvedEngineer,
                         onEdit = {
-                            editingItem = item
+                            editingItem = item.copy(assignedEngineer = resolvedEngineer)
                             showEditor = true
                         },
                         onAdvanceStatus = { next ->
@@ -250,6 +252,7 @@ fun DesktopRepairWorkspace(
 @Composable
 private fun RepairItemDesktopCard(
     item: RepairEquipmentItem,
+    engineerDisplayName: String,
     onEdit: () -> Unit,
     onAdvanceStatus: (RepairStatus) -> Unit,
     onPrintPdf: (Boolean) -> Unit,
@@ -370,7 +373,7 @@ private fun RepairItemDesktopCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Принял: ${item.assignedEngineer.ifBlank { "—" }} · ${REPAIR_TS_FMT.format(Instant.ofEpochMilli(item.createdAtEpochMs))}",
+                    text = "Принял: ${engineerDisplayName.ifBlank { "—" }} · ${REPAIR_TS_FMT.format(Instant.ofEpochMilli(item.createdAtEpochMs))}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

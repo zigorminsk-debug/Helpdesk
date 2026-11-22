@@ -1,5 +1,7 @@
 package com.helpdesk.desktop
 
+import com.helpdesk.jiraagent.domain.CslCompanyContacts
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.RemoteDesktopKind
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.HelpdeskTicket
@@ -322,6 +324,37 @@ object DesktopPdfGenerator {
         return if (bold) PDType1Font.HELVETICA_BOLD else PDType1Font.HELVETICA
     }
 
+    private fun drawCorporateCslHeader(
+        cs: PDPageContentStream,
+        pw: Float,
+        ph: Float,
+        fontBold: PDFont,
+        fontRegular: PDFont,
+        docTitle: String
+    ) {
+        // Corporate csl.by Header (#04091E + #F7631B) with official contacts from csl.by/contacts
+        cs.setNonStrokingColor(Color(4, 9, 30))
+        cs.addRect(0f, ph - 112f, pw, 112f)
+        cs.fill()
+
+        cs.setNonStrokingColor(Color(247, 99, 27))
+        cs.addRect(0f, ph - 117f, pw, 5f)
+        cs.fill()
+
+        drawTextSafe(cs, fontBold, 15.5f, Color.WHITE, 36f, ph - 26f, CslCompanyContacts.BRAND_TITLE)
+        drawTextSafe(cs, fontRegular, 9.2f, Color(203, 213, 225), 36f, ph - 43f, CslCompanyContacts.ADDRESS_AND_HOURS)
+        drawTextSafe(cs, fontRegular, 9.2f, Color(203, 213, 225), 36f, ph - 57f, CslCompanyContacts.PHONES_AND_WEB)
+
+        cs.setStrokingColor(Color(51, 65, 85))
+        cs.setLineWidth(0.75f)
+        cs.moveTo(36f, ph - 68f)
+        cs.lineTo(pw - 36f, ph - 68f)
+        cs.stroke()
+        cs.setLineWidth(1f)
+
+        drawTextSafe(cs, fontBold, 11.2f, Color(255, 210, 184), 36f, ph - 91f, docTitle)
+    }
+
     fun generateRepairReceiptPdf(
         item: RepairEquipmentItem,
         engineerName: String
@@ -332,6 +365,12 @@ object DesktopPdfGenerator {
         val prefix = if (isIssueAct) "Act_Issue" else "Receipt_Intake"
         val outFile = File(outDir, "${prefix}_${safeIntake}_${System.currentTimeMillis() / 1000}.pdf")
 
+        val cleanEngineer = EngineerNameResolver.resolve(
+            rawEngineer = item.assignedEngineer,
+            connectedUserDisplayName = engineerName,
+            fallbackLabel = "Сервисный инженер"
+        )
+
         PDDocument().use { doc ->
             val page = PDPage(PDRectangle.A4)
             doc.addPage(page)
@@ -341,25 +380,15 @@ object DesktopPdfGenerator {
             val ph = page.mediaBox.height
 
             PDPageContentStream(doc, page).use { cs ->
-                // Corporate csl.by Header (#04091E + #F7631B)
-                cs.setNonStrokingColor(Color(4, 9, 30))
-                cs.addRect(0f, ph - 82f, pw, 82f)
-                cs.fill()
-
-                cs.setNonStrokingColor(Color(247, 99, 27))
-                cs.addRect(0f, ph - 87f, pw, 5f)
-                cs.fill()
-
-                drawTextSafe(cs, fontBold, 17f, Color.WHITE, 36f, ph - 36f, "Help-CSL · Сервис и техническая поддержка")
                 val nowStr = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
                 val docTitle = if (isIssueAct) {
                     "АКТ ВЫДАЧИ ТЕХНИКИ ИЗ РЕМОНТА № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
                 } else {
                     "КВИТАНЦИЯ О ПРИЁМЕ ТЕХНИКИ В РЕМОНТ № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
                 }
-                drawTextSafe(cs, fontRegular, 11f, Color(255, 210, 184), 36f, ph - 60f, docTitle)
+                drawCorporateCslHeader(cs, pw, ph, fontBold, fontRegular, docTitle)
 
-                var y = ph - 118f
+                var y = ph - 144f
                 val rows = listOf(
                     "Клиент / Организация:" to item.clientName.ifBlank { "Не указан" },
                     "Контакт / Заявка Jira:" to listOf(item.clientPhone, item.linkedTicketKey).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "—" },
@@ -367,7 +396,7 @@ object DesktopPdfGenerator {
                     "Серийный / Инв. №:" to item.serialNumber.ifBlank { "Б/Н" },
                     "Комплектность:" to item.accessories.ifBlank { "Без комплекта" },
                     "Внешний вид / Полка:" to listOf(item.externalCondition.ifBlank { "Б/У, следы эксплуатации" }, item.shelfLocation).filter { it.isNotBlank() }.joinToString(" · "),
-                    "Статус / Инженер:" to "${item.status.title} (${item.assignedEngineer.ifBlank { engineerName }.ifBlank { "Инженер Help-CSL" }})"
+                    "Статус / Инженер:" to "${item.status.title} ($cleanEngineer)"
                 )
 
                 for ((label, value) in rows) {
@@ -402,7 +431,7 @@ object DesktopPdfGenerator {
                 cs.stroke()
 
                 drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 36f, sigY + 22f, "Сервисный инженер:")
-                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 36f, sigY + 6f, item.assignedEngineer.ifBlank { engineerName }.ifBlank { "Инженер Help-CSL" })
+                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 36f, sigY + 6f, cleanEngineer.take(38))
                 cs.moveTo(36f, sigY - 22f)
                 cs.lineTo(240f, sigY - 22f)
                 cs.stroke()
@@ -429,6 +458,12 @@ object DesktopPdfGenerator {
         val safeKey = ticket.key.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val outFile = File(outDir, "ServiceAct_${safeKey}_${System.currentTimeMillis() / 1000}.pdf")
 
+        val cleanEngineer = EngineerNameResolver.resolve(
+            rawEngineer = engineerName,
+            connectedUserDisplayName = ticket.assigneeName,
+            fallbackLabel = "Сервисный инженер"
+        )
+
         PDDocument().use { doc ->
             val page = PDPage(PDRectangle.A4)
             doc.addPage(page)
@@ -438,19 +473,17 @@ object DesktopPdfGenerator {
             val ph = page.mediaBox.height
 
             PDPageContentStream(doc, page).use { cs ->
-                cs.setNonStrokingColor(Color(4, 9, 30))
-                cs.addRect(0f, ph - 82f, pw, 82f)
-                cs.fill()
-
-                cs.setNonStrokingColor(Color(247, 99, 27))
-                cs.addRect(0f, ph - 87f, pw, 5f)
-                cs.fill()
-
-                drawTextSafe(cs, fontBold, 17f, Color.WHITE, 36f, ph - 36f, "Help-CSL · Служба технической поддержки")
                 val nowStr = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
-                drawTextSafe(cs, fontRegular, 11f, Color(255, 210, 184), 36f, ph - 60f, "АКТ ВЫПОЛНЕННЫХ РАБОТ ПО ЗАЯВКЕ № ${ticket.key}  от  $nowStr")
+                drawCorporateCslHeader(
+                    cs = cs,
+                    pw = pw,
+                    ph = ph,
+                    fontBold = fontBold,
+                    fontRegular = fontRegular,
+                    docTitle = "АКТ ВЫПОЛНЕННЫХ РАБОТ ПО ЗАЯВКЕ № ${ticket.key}  от  $nowStr"
+                )
 
-                var y = ph - 118f
+                var y = ph - 144f
                 drawTextSafe(cs, fontBold, 10.5f, Color(71, 85, 105), 36f, y, "Заказчик (Клиент):")
                 drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, ticket.reporterName.ifBlank { "Не указан" }.take(66))
                 y -= 20f
@@ -506,7 +539,7 @@ object DesktopPdfGenerator {
                 cs.stroke()
 
                 drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 36f, sigY + 22f, "Сервисный инженер:")
-                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 36f, sigY + 6f, engineerName.ifBlank { "Инженер Help-CSL" }.take(38))
+                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 36f, sigY + 6f, cleanEngineer.take(38))
                 cs.moveTo(36f, sigY - 22f)
                 cs.lineTo(240f, sigY - 22f)
                 cs.stroke()

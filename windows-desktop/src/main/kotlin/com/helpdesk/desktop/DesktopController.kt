@@ -1,5 +1,6 @@
 package com.helpdesk.desktop
 
+import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
 import com.helpdesk.jiraagent.data.HabrNewsItem
 import com.helpdesk.jiraagent.data.HabrNewsRepository
@@ -8,6 +9,7 @@ import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.model.AdminChatMessage
@@ -87,11 +89,15 @@ data class DesktopUiState(
     val diagnosticReport: HostDiagnosticReport? = null,
     val isRunningDiagnostics: Boolean = false,
 
-    // Empty state GIF (#1 Roy & #7 Moss) + Habr.com RSS
+    // Empty state GIF (#1 Roy & #7 Moss) + Habr.com RSS & built-in article reader
     val emptyGifIndex: Int = 0,
     val habrCategory: HabrFeedCategory = HabrFeedCategory.SYSADMIN,
     val habrItems: List<HabrNewsItem> = emptyList(),
     val isLoadingHabr: Boolean = false,
+    val selectedHabrItem: HabrNewsItem? = null,
+    val habrArticleDetail: HabrArticleDetail? = null,
+    val isLoadingHabrArticle: Boolean = false,
+    val habrArticleError: String? = null,
 
     // Workshop «В ремонт» + Helpdesk client directory
     val repairItems: List<RepairEquipmentItem> = emptyList(),
@@ -133,6 +139,7 @@ class DesktopController(
             settings = persisted.appSettings,
             filterSettings = persisted.filterSettings,
             minimizeToTray = persisted.minimizeToTray,
+            connectedUserName = persisted.connectedUserName,
             tickets = persisted.cachedTickets,
             postponedTickets = persisted.postponedTickets,
             repairItems = persisted.repairItems,
@@ -220,6 +227,10 @@ class DesktopController(
             st.copy(
                 tickets = nextTickets,
                 selectedTicketKey = ticketKey,
+                selectedHabrItem = if (ticketKey != null) null else st.selectedHabrItem,
+                habrArticleDetail = if (ticketKey != null) null else st.habrArticleDetail,
+                isLoadingHabrArticle = if (ticketKey != null) false else st.isLoadingHabrArticle,
+                habrArticleError = if (ticketKey != null) null else st.habrArticleError,
                 diagnosticReport = null,
                 clientHistoryForKey = ticketKey,
                 clientHistoryTickets = localMatches,
@@ -298,6 +309,56 @@ class DesktopController(
         }
     }
 
+    fun selectHabrNews(item: HabrNewsItem, forceRefresh: Boolean = false) {
+        val cached = if (forceRefresh) null else HabrNewsRepository.peekCachedArticle(item.url)
+        _state.update {
+            it.copy(
+                selectedTicketKey = null,
+                selectedHabrItem = item,
+                habrArticleDetail = cached,
+                isLoadingHabrArticle = cached == null,
+                habrArticleError = null
+            )
+        }
+        if (cached != null) return
+
+        scope.launch {
+            HabrNewsRepository.loadArticle(item, forceRefresh = forceRefresh)
+                .onSuccess { detail ->
+                    _state.update { st ->
+                        if (st.selectedHabrItem?.url == item.url) {
+                            st.copy(
+                                habrArticleDetail = detail,
+                                isLoadingHabrArticle = false,
+                                habrArticleError = null
+                            )
+                        } else st
+                    }
+                }
+                .onFailure { err ->
+                    _state.update { st ->
+                        if (st.selectedHabrItem?.url == item.url) {
+                            st.copy(
+                                isLoadingHabrArticle = false,
+                                habrArticleError = err.message ?: "Не удалось загрузить полный текст статьи"
+                            )
+                        } else st
+                    }
+                }
+        }
+    }
+
+    fun closeHabrArticle() {
+        _state.update {
+            it.copy(
+                selectedHabrItem = null,
+                habrArticleDetail = null,
+                isLoadingHabrArticle = false,
+                habrArticleError = null
+            )
+        }
+    }
+
     fun dismissBanners() {
         _state.update { it.copy(statusBanner = null, errorBanner = null) }
     }
@@ -314,6 +375,7 @@ class DesktopController(
                     appSettings = cur.settings,
                     filterSettings = cur.filterSettings,
                     minimizeToTray = cur.minimizeToTray,
+                    connectedUserName = cur.connectedUserName,
                     resolvedChatRoomKey = cur.chatRoomKey,
                     resolvedRepairRoomKey = cur.repairRoomKey,
                     pinnedShiftNote = cur.chatPinnedNote,
@@ -370,6 +432,7 @@ class DesktopController(
                             statusBanner = "Подключение успешно: $displayName"
                         )
                     }
+                    persistCurrentState()
                 }
                 .onFailure { err ->
                     _state.update {
@@ -408,9 +471,10 @@ class DesktopController(
         }
         _state.update { it.copy(isRefreshing = true, errorBanner = if (silent) it.errorBanner else null) }
         scope.launch {
-            if (cur.connectedUserName == null) {
+            if (cur.connectedUserName == null || EngineerNameResolver.looksLikeLoginOrEmail(cur.connectedUserName)) {
                 apiClient.testConnection(cur.settings).onSuccess { name ->
                     _state.update { it.copy(connectedUserName = name) }
+                    persistCurrentState()
                 }
             }
             apiClient.fetchRecentTickets(cur.settings, cur.filterSettings, maxResults = 65)
@@ -871,9 +935,61 @@ class DesktopController(
 
     fun currentEngineerDisplayName(): String {
         val cur = _state.value
-        return cur.connectedUserName?.takeIf { it.isNotBlank() }
-            ?: cur.settings.usernameOrEmail.takeIf { it.isNotBlank() }
-            ?: System.getProperty("user.name").orEmpty().ifBlank { "Инженер" }
+        return EngineerNameResolver.resolve(
+            rawEngineer = null,
+            connectedUserDisplayName = cur.connectedUserName,
+            currentUsernameOrEmail = cur.settings.usernameOrEmail,
+            knownTickets = cur.tickets,
+            fallbackLabel = "Сервисный инженер"
+        )
+    }
+
+    fun formatEngineerName(rawEngineer: String): String {
+        val cur = _state.value
+        return EngineerNameResolver.resolve(
+            rawEngineer = rawEngineer,
+            connectedUserDisplayName = cur.connectedUserName,
+            currentUsernameOrEmail = cur.settings.usernameOrEmail,
+            knownTickets = cur.tickets,
+            fallbackLabel = "Сервисный инженер"
+        )
+    }
+
+    private suspend fun ensureEngineerHumanName(rawCandidate: String? = null): String {
+        val initial = _state.value
+        val quick = EngineerNameResolver.resolve(
+            rawEngineer = rawCandidate,
+            connectedUserDisplayName = initial.connectedUserName,
+            currentUsernameOrEmail = initial.settings.usernameOrEmail,
+            knownTickets = initial.tickets,
+            fallbackLabel = ""
+        )
+        if (quick.isNotBlank() && !EngineerNameResolver.looksLikeLoginOrEmail(quick)) {
+            return quick
+        }
+        if (initial.settings.isConfigured) {
+            if (initial.connectedUserName == null || EngineerNameResolver.looksLikeLoginOrEmail(initial.connectedUserName)) {
+                apiClient.testConnection(initial.settings).onSuccess { name ->
+                    if (!EngineerNameResolver.looksLikeLoginOrEmail(name)) {
+                        _state.update { it.copy(connectedUserName = name) }
+                        persistCurrentState()
+                    }
+                }
+            }
+            val lookupQuery = rawCandidate?.takeIf { it.isNotBlank() } ?: initial.settings.usernameOrEmail
+            val remoteDisplay = apiClient.resolveUserDisplayName(lookupQuery, initial.settings)
+            if (!remoteDisplay.isNullOrBlank() && !EngineerNameResolver.looksLikeLoginOrEmail(remoteDisplay)) {
+                return remoteDisplay
+            }
+        }
+        val cur = _state.value
+        return EngineerNameResolver.resolve(
+            rawEngineer = rawCandidate,
+            connectedUserDisplayName = cur.connectedUserName,
+            currentUsernameOrEmail = cur.settings.usernameOrEmail,
+            knownTickets = cur.tickets,
+            fallbackLabel = "Сервисный инженер"
+        )
     }
 
     fun openRepairIntakeFromTicket(ticket: HelpdeskTicket) {
@@ -891,12 +1007,12 @@ class DesktopController(
 
     fun saveRepairItem(draft: RepairEquipmentItem) {
         val now = System.currentTimeMillis()
-        val engineer = currentEngineerDisplayName()
+        val engineer = formatEngineerName(draft.assignedEngineer)
         val cur = _state.value
         val number = draft.intakeNumber.ifBlank { RepairEquipmentCodec.generateNextIntakeNumber(cur.repairItems) }
         val saved = draft.copy(
             intakeNumber = number,
-            assignedEngineer = draft.assignedEngineer.ifBlank { engineer },
+            assignedEngineer = engineer,
             updatedAtEpochMs = now,
             issuedAtEpochMs = if (draft.status == RepairStatus.ISSUED && draft.issuedAtEpochMs == null) now else draft.issuedAtEpochMs,
             pendingRemoteSync = true
@@ -1080,10 +1196,15 @@ class DesktopController(
     }
 
     fun printOrOpenRepairReceiptPdf(item: RepairEquipmentItem, attachToTicket: Boolean = false) {
-        val engineer = currentEngineerDisplayName()
         scope.launch(Dispatchers.IO) {
             runCatching {
-                val pdf = DesktopPdfGenerator.generateRepairReceiptPdf(item, engineer)
+                val resolvedEngineer = ensureEngineerHumanName(item.assignedEngineer)
+                val cleanItem = if (item.assignedEngineer != resolvedEngineer) {
+                    item.copy(assignedEngineer = resolvedEngineer)
+                } else {
+                    item
+                }
+                val pdf = DesktopPdfGenerator.generateRepairReceiptPdf(cleanItem, resolvedEngineer)
                 WindowsExternalLaunchers.openFile(pdf)
                 if (attachToTicket && item.linkedTicketKey.isNotBlank() && _state.value.settings.isConfigured) {
                     val cur = _state.value
@@ -1114,9 +1235,9 @@ class DesktopController(
         timeSpentLabel: String,
         attachToJira: Boolean
     ) {
-        val engineer = currentEngineerDisplayName()
         scope.launch(Dispatchers.IO) {
             runCatching {
+                val engineer = ensureEngineerHumanName(ticket.assigneeName ?: ticket.assigneeLogin)
                 val pdf = DesktopPdfGenerator.generateTicketServiceActPdf(
                     ticket = ticket,
                     engineerName = engineer,

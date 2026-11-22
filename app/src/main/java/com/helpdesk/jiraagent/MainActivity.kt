@@ -96,6 +96,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.helpdesk.jiraagent.data.InAppBannerAlert
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.ui.AppUpdateUiState
@@ -428,7 +429,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         val clientDossier = activeTicket?.let {
             clientDossierNotes[it.reporterName.trim().lowercase()] ?: ""
         }.orEmpty()
-        val engineerName = syncStatus.connectedUser ?: appSettings.usernameOrEmail
+        val engineerName = EngineerNameResolver.resolve(
+            rawEngineer = null,
+            connectedUserDisplayName = syncStatus.connectedUser,
+            currentUsernameOrEmail = appSettings.usernameOrEmail,
+            knownTickets = tickets
+        )
         Box(modifier = Modifier.fillMaxSize()) {
             TicketDetailScreen(
                 ticket = activeTicket,
@@ -786,7 +792,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 )
 
                 BottomDestination.REPAIR -> {
-                    val engineerName = syncStatus.connectedUser ?: appSettings.usernameOrEmail
+                    val engineerName = EngineerNameResolver.resolve(
+                        rawEngineer = null,
+                        connectedUserDisplayName = syncStatus.connectedUser,
+                        currentUsernameOrEmail = appSettings.usernameOrEmail,
+                        knownTickets = tickets
+                    )
                     Box(modifier = Modifier.weight(1f)) {
                         RepairRegistryScreen(
                             items = repairItems,

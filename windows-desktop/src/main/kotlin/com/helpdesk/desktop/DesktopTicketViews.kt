@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,13 +25,18 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.helpdesk.jiraagent.data.HabrArticleBlock
+import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
+import com.helpdesk.jiraagent.data.HabrNewsItem
+import com.helpdesk.jiraagent.data.HabrNewsRepository
 import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
@@ -96,6 +102,7 @@ fun DesktopTicketsWorkspace(
     var showCreateDialog by remember { mutableStateOf(false) }
     var showSerialArchiveDialog by remember { mutableStateOf(false) }
     var showPostponedDialog by remember { mutableStateOf(false) }
+    var showHabrPanel by remember { mutableStateOf(false) }
 
     val clientTickets = remember(state.tickets) { state.tickets.filter { it.isClientTicket } }
     val serviceTickets = remember(state.tickets) { state.tickets.filter { !it.isClientTicket } }
@@ -186,6 +193,27 @@ fun DesktopTicketsWorkspace(
                 ) {
                     Text("🔎 S/N", fontSize = 12.sp, maxLines = 1)
                 }
+                if (showHabrPanel) {
+                    Button(
+                        onClick = { showHabrPanel = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
+                    ) {
+                        Text("📰 Habr", fontSize = 12.sp, maxLines = 1)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            showHabrPanel = true
+                            if (state.habrItems.isEmpty() && !state.isLoadingHabr) {
+                                controller.loadHabrFeed(state.habrCategory, force = false)
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
+                    ) {
+                        Text("📰 Habr", fontSize = 12.sp, maxLines = 1)
+                    }
+                }
             }
 
             if (state.postponedTickets.isNotEmpty()) {
@@ -226,14 +254,17 @@ fun DesktopTicketsWorkspace(
                     TicketQueueTab.CLOSED to closedCount,
                     TicketQueueTab.SERVICE to serviceCount
                 ).forEach { (tab, count) ->
-                    val selected = queueTab == tab
+                    val selected = !showHabrPanel && queueTab == tab
                     Surface(
                         color = if (selected) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { queueTab = tab }
+                            .clickable {
+                                showHabrPanel = false
+                                queueTab = tab
+                            }
                     ) {
                         Column(
                             modifier = Modifier.padding(vertical = 6.dp, horizontal = 3.dp),
@@ -281,15 +312,18 @@ fun DesktopTicketsWorkspace(
 
             Spacer(Modifier.height(8.dp))
 
-            if (filteredList.isEmpty()) {
+            if (showHabrPanel || filteredList.isEmpty()) {
                 DesktopEmptyQueueWithHabr(
+                    showGifBanner = !showHabrPanel && filteredList.isEmpty(),
                     gifIndex = state.emptyGifIndex,
                     onCycleGif = { controller.cycleEmptyGif() },
                     habrCategory = state.habrCategory,
                     habrItems = state.habrItems,
+                    selectedHabrUrl = state.selectedHabrItem?.url,
                     isLoadingHabr = state.isLoadingHabr,
                     onSelectHabrCategory = { controller.loadHabrFeed(it, force = false) },
-                    onRefreshHabr = { controller.loadHabrFeed(state.habrCategory, force = true) }
+                    onRefreshHabr = { controller.loadHabrFeed(state.habrCategory, force = true) },
+                    onSelectHabrNews = { controller.selectHabrNews(it) }
                 )
             } else {
                 LazyColumn(
@@ -310,42 +344,59 @@ fun DesktopTicketsWorkspace(
 
         VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
 
-        // ================= RIGHT PANE: TICKET INSPECTOR =================
+        // ================= RIGHT PANE: TICKET INSPECTOR OR IN-APP HABR READER =================
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            if (selectedTicket == null) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        "Выберите заявку слева для работы",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Здесь отображаются все данные клиента, звонки через SIP-софтфон, 1-клик подключение AnyDesk/RustDesk/RDP/SSH, вставка скриншотов Win+Shift+S, печать PDF-актов и переходы Jira.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.widthIn(max = 560.dp)
+            val activeHabr = state.selectedHabrItem
+            when {
+                activeHabr != null -> {
+                    DesktopHabrArticleReader(
+                        item = activeHabr,
+                        detail = state.habrArticleDetail,
+                        isLoading = state.isLoadingHabrArticle,
+                        errorMessage = state.habrArticleError,
+                        allItems = state.habrItems,
+                        onSelectAdjacent = { controller.selectHabrNews(it) },
+                        onRetry = { controller.selectHabrNews(activeHabr, forceRefresh = true) },
+                        onCopyLink = { WindowsExternalLaunchers.copyToClipboard(activeHabr.url) },
+                        onClose = { controller.closeHabrArticle() }
                     )
                 }
-            } else {
-                DesktopTicketInspector(
-                    ticket = selectedTicket,
-                    state = state,
-                    controller = controller
-                )
+                selectedTicket != null -> {
+                    DesktopTicketInspector(
+                        ticket = selectedTicket,
+                        state = state,
+                        controller = controller
+                    )
+                }
+                else -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "Выберите заявку или новость Habr слева",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "В правом окне открываются карточки заявок (SIP-звонок, 1-клик AnyDesk/RustDesk/RDP/SSH, вставка скриншотов Win+Shift+S, PDF-акты) и полный текст новостей с Habr.com без запуска стороннего браузера.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.widthIn(max = 580.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -518,13 +569,16 @@ private fun CompactDesktopTicketCard(
  */
 @Composable
 private fun DesktopEmptyQueueWithHabr(
+    showGifBanner: Boolean,
     gifIndex: Int,
     onCycleGif: () -> Unit,
     habrCategory: HabrFeedCategory,
-    habrItems: List<com.helpdesk.jiraagent.data.HabrNewsItem>,
+    habrItems: List<HabrNewsItem>,
+    selectedHabrUrl: String?,
     isLoadingHabr: Boolean,
     onSelectHabrCategory: (HabrFeedCategory) -> Unit,
-    onRefreshHabr: () -> Unit
+    onRefreshHabr: () -> Unit,
+    onSelectHabrNews: (HabrNewsItem) -> Unit
 ) {
     val spec = DESKTOP_ADMIN_GIFS[gifIndex.mod(DESKTOP_ADMIN_GIFS.size)]
 
@@ -532,35 +586,37 @@ private fun DesktopEmptyQueueWithHabr(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        item {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onCycleGif)
-            ) {
-                Column(
-                    modifier = Modifier.padding(10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+        if (showGifBanner) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onCycleGif)
                 ) {
-                    AnimatedResourceGifImage(
-                        resourcePath = spec.resourcePath,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(175.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    // ONLY the quote — no title above it
-                    Text(
-                        text = spec.quote,
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        AnimatedResourceGifImage(
+                            resourcePath = spec.resourcePath,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(175.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        // ONLY the quote — no title above it
+                        Text(
+                            text = spec.quote,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -602,18 +658,27 @@ private fun DesktopEmptyQueueWithHabr(
         }
 
         items(habrItems, key = { it.url }) { news ->
+            val isSelected = news.url == selectedHabrUrl
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                color = if (isSelected) {
+                    DesktopColors.CslOrange.copy(alpha = 0.12f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                },
+                border = BorderStroke(
+                    width = if (isSelected) 1.5.dp else 1.dp,
+                    color = if (isSelected) DesktopColors.CslOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { WindowsExternalLaunchers.openBrowser(news.url) }
+                    .clickable { onSelectHabrNews(news) }
             ) {
                 Column(modifier = Modifier.padding(9.dp)) {
                     Text(
                         text = news.title,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
@@ -630,11 +695,461 @@ private fun DesktopEmptyQueueWithHabr(
                     }
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        text = "${news.publishedLabel} · Открыть статью ↗",
+                        text = if (isSelected) "${news.publishedLabel} · Открыто справа →" else "${news.publishedLabel} · Читать справа →",
                         fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                         color = DesktopColors.CslOrange
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Built-in Habr.com Article Reader displayed directly in the Windows right pane
+ * without launching any external browser.
+ */
+@Composable
+private fun DesktopHabrArticleReader(
+    item: HabrNewsItem,
+    detail: HabrArticleDetail?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    allItems: List<HabrNewsItem>,
+    onSelectAdjacent: (HabrNewsItem) -> Unit,
+    onRetry: () -> Unit,
+    onCopyLink: () -> Unit,
+    onClose: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+    var linkCopied by remember(item.url) { mutableStateOf(false) }
+
+    LaunchedEffect(item.url) {
+        scrollState.scrollTo(0)
+    }
+
+    val currentIndex = remember(allItems, item.url) {
+        allItems.indexOfFirst { it.url == item.url }
+    }
+    val prevItem = if (currentIndex > 0) allItems[currentIndex - 1] else null
+    val nextItem = if (currentIndex >= 0 && currentIndex < allItems.lastIndex) allItems[currentIndex + 1] else null
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Top Header Bar inside Right Pane
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        color = DesktopColors.CslOrange.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = "📰 Habr.com · Чтение в Help-CSL",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = DesktopColors.CslOrange,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { prevItem?.let(onSelectAdjacent) },
+                        enabled = prevItem != null,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text("← Предыдущая", fontSize = 11.5.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { nextItem?.let(onSelectAdjacent) },
+                        enabled = nextItem != null,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text("Следующая →", fontSize = 11.5.sp)
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            onCopyLink()
+                            linkCopied = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(if (linkCopied) "✓ Ссылка скопирована" else "📋 Копировать ссылку", fontSize = 11.5.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onRetry,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text("🔄 Обновить", fontSize = 11.5.sp)
+                    }
+                    FilledTonalButton(
+                        onClick = onClose,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)
+                    ) {
+                        Text("✕ Закрыть", fontSize = 11.5.sp)
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            SelectionContainer {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = 28.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    val displayTitle = detail?.title ?: item.title
+                    val displayAuthor = detail?.author ?: item.author
+                    val displayDate = detail?.publishedLabel?.ifBlank { item.publishedLabel } ?: item.publishedLabel
+                    val displayHubs = (detail?.hubs?.takeIf { it.isNotEmpty() } ?: item.tags)
+
+                    // Article Title
+                    Text(
+                        text = displayTitle,
+                        fontSize = 21.sp,
+                        lineHeight = 27.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    // Author / Date / Reading Time / Views Row
+                    val metaParts = buildList {
+                        if (!displayAuthor.isNullOrBlank()) add("👤 $displayAuthor")
+                        if (displayDate.isNotBlank()) add("🕒 $displayDate")
+                        detail?.readingTimeMinutes?.takeIf { it > 0 }?.let { add("⏱ ~$it мин чтения") }
+                        detail?.viewsCount?.takeIf { it > 0 }?.let { add("👁 $it") }
+                        detail?.score?.let { sc ->
+                            val sign = if (sc > 0) "+" else ""
+                            add("★ $sign$sc")
+                        }
+                    }
+                    if (metaParts.isNotEmpty()) {
+                        Text(
+                            text = metaParts.joinToString("   ·   "),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Hubs / Tags
+                    if (displayHubs.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            displayHubs.take(5).forEach { hub ->
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = hub,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    if (isLoading && detail == null) {
+                        if (item.summary.isNotBlank()) {
+                            Text(
+                                text = item.summary,
+                                fontSize = 14.sp,
+                                lineHeight = 21.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = DesktopColors.CslOrange
+                                )
+                                Text(
+                                    text = "Загружаем полный текст статьи с Habr.com...",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else if (detail != null) {
+                        detail.blocks.forEach { block ->
+                            when (block) {
+                                is HabrArticleBlock.Heading -> {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = block.text,
+                                        fontSize = when (block.level) {
+                                            1, 2 -> 18.sp
+                                            3 -> 16.sp
+                                            else -> 14.5.sp
+                                        },
+                                        lineHeight = 24.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                is HabrArticleBlock.Paragraph -> {
+                                    Text(
+                                        text = block.text,
+                                        fontSize = 14.sp,
+                                        lineHeight = 22.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                is HabrArticleBlock.Quote -> {
+                                    Surface(
+                                        color = DesktopColors.CslOrange.copy(alpha = 0.08f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(4.dp)
+                                                    .fillMaxHeight()
+                                                    .background(DesktopColors.CslOrange)
+                                            )
+                                            Text(
+                                                text = block.text,
+                                                fontSize = 13.5.sp,
+                                                lineHeight = 20.5.sp,
+                                                fontStyle = FontStyle.Italic,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                is HabrArticleBlock.BulletList -> {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        block.items.forEachIndexed { idx, li ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (block.ordered) "${idx + 1}." else "•",
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = DesktopColors.CslOrange
+                                                )
+                                                Text(
+                                                    text = li,
+                                                    fontSize = 14.sp,
+                                                    lineHeight = 21.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                is HabrArticleBlock.CodeBlock -> {
+                                    var codeCopied by remember(block.code) { mutableStateOf(false) }
+                                    Surface(
+                                        color = DesktopColors.CslNavy,
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.35f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = block.language?.uppercase() ?: "КОД",
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = DesktopColors.CslOrange
+                                                )
+                                                TextButton(
+                                                    onClick = {
+                                                        WindowsExternalLaunchers.copyToClipboard(block.code)
+                                                        codeCopied = true
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (codeCopied) "✓ Скопировано" else "📋 Копировать",
+                                                        fontSize = 11.sp,
+                                                        color = Color.White
+                                                    )
+                                                }
+                                            }
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(
+                                                text = block.code,
+                                                fontSize = 12.5.sp,
+                                                lineHeight = 18.5.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = Color(0xFFE8ECF4)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                is HabrArticleBlock.Image -> {
+                                    HabrInlineImage(url = block.url, caption = block.caption)
+                                }
+                            }
+                        }
+                    } else {
+                        if (item.summary.isNotBlank()) {
+                            Text(
+                                text = item.summary,
+                                fontSize = 14.sp,
+                                lineHeight = 21.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        if (!errorMessage.isNullOrBlank()) {
+                            Surface(
+                                color = DesktopColors.StatusRed.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, DesktopColors.StatusRed.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Не удалось загрузить полный текст: $errorMessage",
+                                        fontSize = 12.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Button(
+                                        onClick = onRetry,
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                    ) {
+                                        Text("🔄 Повторить", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
+
+            VerticalScrollbar(
+                adapter = rememberScrollbarAdapter(scrollState),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 3.dp, top = 4.dp, bottom = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HabrInlineImage(
+    url: String,
+    caption: String?
+) {
+    var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(url) {
+        val loaded = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = HabrNewsRepository.loadImageBytes(url) ?: return@runCatching null
+                ByteArrayInputStream(bytes).use { bais ->
+                    ImageIO.read(bais)?.toComposeImageBitmap()
+                }
+            }.getOrNull()
+        }
+        bitmap = loaded
+    }
+
+    val bmp = bitmap
+    if (bmp != null) {
+        val aspect = remember(bmp) {
+            val h = bmp.height.coerceAtLeast(1)
+            (bmp.width.toFloat() / h.toFloat()).coerceIn(0.6f, 3.2f)
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                modifier = Modifier
+                    .widthIn(max = 720.dp)
+                    .fillMaxWidth()
+            ) {
+                Image(
+                    bitmap = bmp,
+                    contentDescription = caption,
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(aspect)
+                        .heightIn(max = 420.dp)
+                )
+            }
+            if (!caption.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = caption,
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
             }
         }
     }

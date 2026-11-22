@@ -1,6 +1,9 @@
 package com.helpdesk.jiraagent
 
+import com.helpdesk.jiraagent.data.HabrArticleBlock
+import com.helpdesk.jiraagent.data.HabrArticleHtmlParser
 import com.helpdesk.jiraagent.data.JiraJsonParser
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.RemoteDesktopKind
 import com.helpdesk.jiraagent.domain.SettingsTransferCodec
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
@@ -391,5 +394,90 @@ class SysadminImprovementsTest {
         val newMatch = ClientDirectoryCodec.filterSuggestions(grownDir, "ковал")
         assertEquals(1, newMatch.size)
         assertEquals("ИП Ковалёв А.С.", newMatch.first().name)
+    }
+
+    @Test
+    fun `engineer name resolver replaces login or email with human full name`() {
+        assertTrue(EngineerNameResolver.looksLikeLoginOrEmail("ziv@csl.by"))
+        assertTrue(EngineerNameResolver.looksLikeLoginOrEmail("ziv"))
+        assertFalse(EngineerNameResolver.looksLikeLoginOrEmail("Захаревич Игорь"))
+
+        assertEquals(
+            "Захаревич Игорь",
+            EngineerNameResolver.resolve(
+                rawEngineer = "ziv@csl.by",
+                connectedUserDisplayName = "Захаревич Игорь",
+                currentUsernameOrEmail = "ziv@csl.by"
+            )
+        )
+
+        val colleagueTicket = HelpdeskTicket(
+            id = "1",
+            key = "CSL-100",
+            summary = "Настройка VPN",
+            description = "",
+            issueType = "Task",
+            isSubtask = false,
+            customerRequestType = null,
+            hasCustomerPortalInfo = true,
+            status = "В работе",
+            statusCategoryKey = "indeterminate",
+            priority = "Normal",
+            projectKey = "CSL",
+            projectName = "CSL",
+            reporterName = "Клиент",
+            reporterLoginOrEmail = "client",
+            assigneeName = "Петров Алексей",
+            assigneeLogin = "petrov|petrov@csl.by",
+            createdIso = "",
+            createdEpochMillis = 1000L,
+            updatedIso = "",
+            labels = emptyList(),
+            phoneNumbers = emptyList(),
+            comments = emptyList(),
+            webUrl = ""
+        )
+
+        assertEquals(
+            "Петров Алексей",
+            EngineerNameResolver.resolve(
+                rawEngineer = "petrov@csl.by",
+                connectedUserDisplayName = "Захаревич Игорь",
+                currentUsernameOrEmail = "ziv@csl.by",
+                knownTickets = listOf(colleagueTicket)
+            )
+        )
+    }
+
+    @Test
+    fun `habr article html parser extracts id and structured reader blocks`() {
+        assertEquals(
+            "1110746",
+            HabrArticleHtmlParser.extractArticleId("https://habr.com/ru/articles/1110746/")
+        )
+        assertEquals(
+            "1110384",
+            HabrArticleHtmlParser.extractArticleId("https://habr.com/ru/companies/selectel/articles/1110384/")
+        )
+
+        val sampleHtml = """
+            <h2>Обновление Debian 13.8</h2>
+            <p>Вышел релиз <b>Debian 13.8</b> на базе ядра <code>Linux 6.12 LTS</code>.</p>
+            <pre><code class="bash">sudo apt update &amp;&amp; sudo apt full-upgrade</code></pre>
+            <blockquote>Рекомендуется установить обновления безопасности.</blockquote>
+            <ul><li>Исправлено 122 ошибки</li><li>Добавлено 150 патчей безопасности</li></ul>
+        """.trimIndent()
+
+        val blocks = HabrArticleHtmlParser.parseBlocks(
+            rawHtml = sampleHtml,
+            leadImageUrl = "//habrastorage.org/extt/cover.png"
+        )
+
+        assertTrue(blocks.any { it is HabrArticleBlock.Image && it.url == "https://habrastorage.org/extt/cover.png" })
+        assertTrue(blocks.any { it is HabrArticleBlock.Heading && it.text.contains("Debian 13.8") })
+        assertTrue(blocks.any { it is HabrArticleBlock.Paragraph && it.text.contains("`Linux 6.12 LTS`") })
+        assertTrue(blocks.any { it is HabrArticleBlock.CodeBlock && it.code.contains("sudo apt update && sudo apt full-upgrade") })
+        assertTrue(blocks.any { it is HabrArticleBlock.Quote && it.text.contains("обновления безопасности") })
+        assertTrue(blocks.any { it is HabrArticleBlock.BulletList && it.items.size == 2 })
     }
 }

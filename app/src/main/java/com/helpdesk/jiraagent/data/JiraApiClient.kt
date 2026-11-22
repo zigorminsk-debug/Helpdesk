@@ -3,6 +3,7 @@ package com.helpdesk.jiraagent.data
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
@@ -632,6 +633,83 @@ class JiraApiClient {
             }
             emptyList()
         }
+    }
+
+    /**
+     * Resolves a Jira account login/email (e.g. `ziv@csl.by` or `ziv`) to the user's
+     * full human displayName (`Захаревич Игорь`) via `/myself` or `/user/search`.
+     */
+    suspend fun resolveUserDisplayName(
+        loginOrEmail: String,
+        settings: AppSettings
+    ): String? = withContext(Dispatchers.IO) {
+        val raw = loginOrEmail.trim()
+        if (!EngineerNameResolver.looksLikeLoginOrEmail(raw)) return@withContext raw
+        if (!settings.isConfigured) return@withContext null
+
+        val baseUrl = runCatching { normalizeBaseUrl(settings.serverUrl) }.getOrNull() ?: return@withContext null
+        val preferCloud = isCloudTarget(settings, baseUrl)
+
+        val myClean = settings.usernameOrEmail.trim().lowercase(Locale.ROOT)
+        val rawLow = raw.lowercase(Locale.ROOT)
+        val rawPrefix = rawLow.substringBefore('@').trim()
+        val myPrefix = myClean.substringBefore('@').trim()
+
+        if (rawLow.isEmpty() || rawLow == myClean || (rawPrefix.length >= 2 && rawPrefix == myPrefix)) {
+            val me = runCatching { fetchAuthenticatedUser(baseUrl, preferCloud, settings) }.getOrNull()
+            if (me != null && !EngineerNameResolver.looksLikeLoginOrEmail(me.displayName)) {
+                return@withContext me.displayName.trim()
+            }
+        }
+
+        val queries = listOf(raw, rawPrefix).map { it.trim() }.filter { it.length >= 2 }.distinct()
+        for (q in queries) {
+            val encoded = URLEncoder.encode(q, "UTF-8")
+            val urls = if (preferCloud) {
+                listOf(
+                    "$baseUrl/rest/api/3/user/search?query=$encoded&maxResults=10",
+                    "$baseUrl/rest/api/2/user/search?username=$encoded&maxResults=10",
+                    "$baseUrl/rest/api/2/user?username=$encoded"
+                )
+            } else {
+                listOf(
+                    "$baseUrl/rest/api/2/user/search?username=$encoded&maxResults=10",
+                    "$baseUrl/rest/api/2/user?username=$encoded",
+                    "$baseUrl/rest/api/3/user/search?query=$encoded&maxResults=10"
+                )
+            }
+            for (url in urls) {
+                val found = runCatching {
+                    val req = Request.Builder().url(url).get().applyAuth(settings).build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use null
+                        val bodyStr = resp.body?.string().orEmpty()
+                        val el = JsonParser.parseString(bodyStr)
+                        val candidates = if (el.isJsonArray) {
+                            el.asJsonArray.mapNotNull { if (it.isJsonObject) it.asJsonObject else null }
+                        } else if (el.isJsonObject) {
+                            listOf(el.asJsonObject)
+                        } else emptyList()
+
+                        for (obj in candidates) {
+                            val disp = obj.takeString("displayName")?.trim().orEmpty()
+                            if (EngineerNameResolver.looksLikeLoginOrEmail(disp)) continue
+                            val uName = obj.takeString("name")?.lowercase(Locale.ROOT).orEmpty()
+                            val uEmail = obj.takeString("emailAddress")?.lowercase(Locale.ROOT).orEmpty()
+                            if (uEmail == rawLow || uName == rawLow || uName == rawPrefix || uEmail.substringBefore('@') == rawPrefix) {
+                                return@use disp
+                            }
+                        }
+                        candidates.firstOrNull()
+                            ?.takeString("displayName")
+                            ?.trim()
+                            ?.takeIf { !EngineerNameResolver.looksLikeLoginOrEmail(it) }
+                    }
+                }.getOrNull()
+                if (!found.isNullOrBlank()) return@withContext found
+            }
+        }
+        null
     }
 
     /**

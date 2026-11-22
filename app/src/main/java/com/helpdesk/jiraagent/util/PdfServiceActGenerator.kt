@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
+import com.helpdesk.jiraagent.domain.CslCompanyContacts
+import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
@@ -39,6 +41,43 @@ object PdfServiceActGenerator {
         "Совместная проверка работоспособности (замечаний нет)"
     )
 
+    private fun drawCorporateCslHeader(
+        canvas: Canvas,
+        pageWidth: Int,
+        docTitle: String
+    ) {
+        val navy = Color.parseColor("#04091E")
+        val orange = Color.parseColor("#F7631B")
+        val contactLight = Color.parseColor("#CBD5E1")
+        val dividerNavy = Color.parseColor("#334155")
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        paint.color = navy
+        canvas.drawRect(0f, 0f, pageWidth.toFloat(), 110f, paint)
+        paint.color = orange
+        canvas.drawRect(0f, 106f, pageWidth.toFloat(), 111f, paint)
+
+        paint.color = Color.WHITE
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 15.5f
+        canvas.drawText(CslCompanyContacts.BRAND_TITLE, 36f, 26f, paint)
+
+        paint.color = contactLight
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        paint.textSize = 9.2f
+        canvas.drawText(CslCompanyContacts.ADDRESS_AND_HOURS, 36f, 44f, paint)
+        canvas.drawText(CslCompanyContacts.PHONES_AND_WEB, 36f, 58f, paint)
+
+        paint.color = dividerNavy
+        paint.strokeWidth = 0.8f
+        canvas.drawLine(36f, 69f, (pageWidth - 36).toFloat(), 69f, paint)
+
+        paint.color = Color.parseColor("#FFD2B8")
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 11.2f
+        canvas.drawText(docTitle, 36f, 92f, paint)
+    }
+
     fun generatePdfFile(context: Context, input: ServiceActInput): File {
         val pageWidth = 595 // A4 72dpi
         val pageHeight = 842
@@ -54,26 +93,23 @@ object PdfServiceActGenerator {
         val lightBg = Color.parseColor("#F4F6FA")
         val borderGray = Color.parseColor("#CBD5E1")
 
+        val cleanEngineer = EngineerNameResolver.resolve(
+            rawEngineer = input.engineerName,
+            connectedUserDisplayName = input.ticket.assigneeName,
+            fallbackLabel = "Сервисный инженер"
+        )
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // 1. Corporate csl.by Header Bar
-        paint.color = navy
-        canvas.drawRect(0f, 0f, pageWidth.toFloat(), 86f, paint)
-        paint.color = orange
-        canvas.drawRect(0f, 82f, pageWidth.toFloat(), 88f, paint)
-
-        paint.color = Color.WHITE
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        paint.textSize = 20f
-        canvas.drawText("Help-CSL · Служба технической поддержки", 36f, 38f, paint)
-
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-        paint.textSize = 11.5f
-        paint.color = Color.parseColor("#FFD2B8")
+        // 1. Corporate csl.by Header Bar with Official Contacts
         val nowStr = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
-        canvas.drawText("АКТ ВЫПОЛНЕННЫХ РАБОТ ПО ЗАЯВКЕ № ${input.ticket.key}  от  $nowStr", 36f, 62f, paint)
+        drawCorporateCslHeader(
+            canvas = canvas,
+            pageWidth = pageWidth,
+            docTitle = "АКТ ВЫПОЛНЕННЫХ РАБОТ ПО ЗАЯВКЕ № ${input.ticket.key}  от  $nowStr"
+        )
 
-        var y = 114f
+        var y = 128f
 
         // 2. Ticket & Client Summary Card
         paint.color = lightBg
@@ -90,7 +126,7 @@ object PdfServiceActGenerator {
         infoY += 21f
         drawKeyValue(canvas, "Заявка / Тема:", "${input.ticket.key} — ${input.ticket.summary.take(64)}", 50f, infoY, darkText, mutedText)
         infoY += 21f
-        drawKeyValue(canvas, "Инженер Help-CSL:", input.engineerName.ifBlank { "Дежурный инженер" }, 50f, infoY, darkText, mutedText)
+        drawKeyValue(canvas, "Инженер Help-CSL:", cleanEngineer, 50f, infoY, darkText, mutedText)
         infoY += 21f
         val snLine = input.equipmentSerial.trim().ifBlank { "не указан" }
         drawKeyValue(canvas, "Оборудование (S/N / ИНВ):", snLine, 50f, infoY, darkText, mutedText)
@@ -172,7 +208,7 @@ object PdfServiceActGenerator {
         paint.color = mutedText
         paint.textSize = 10f
         canvas.drawText("Дата подписания: $nowStr", 50f, boxTop + 66f, paint)
-        canvas.drawText("Инженер: ${input.engineerName.ifBlank { "Служба Help-CSL" }}", 50f, boxTop + 86f, paint)
+        canvas.drawText("Инженер: $cleanEngineer", 50f, boxTop + 86f, paint)
 
         // Signature Pad box on right side
         val padRect = RectF(320f, boxTop + 14f, (pageWidth - 50).toFloat(), boxTop + 112f)
@@ -232,31 +268,24 @@ object PdfServiceActGenerator {
         val lightBg = Color.parseColor("#F4F6FA")
         val borderGray = Color.parseColor("#CBD5E1")
 
+        val cleanEngineer = EngineerNameResolver.resolve(
+            rawEngineer = item.assignedEngineer,
+            connectedUserDisplayName = engineerName,
+            fallbackLabel = "Сервисный инженер"
+        )
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // Header
-        paint.color = navy
-        canvas.drawRect(0f, 0f, pageWidth.toFloat(), 86f, paint)
-        paint.color = orange
-        canvas.drawRect(0f, 82f, pageWidth.toFloat(), 88f, paint)
-
-        paint.color = Color.WHITE
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        paint.textSize = 19f
-        canvas.drawText("Help-CSL · Сервис и техническая поддержка", 36f, 38f, paint)
-
-        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-        paint.textSize = 11.5f
-        paint.color = Color.parseColor("#FFD2B8")
+        // Header with Official csl.by Contacts
         val nowStr = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
         val docTitle = if (isIssueAct) {
             "АКТ ВЫДАЧИ ТЕХНИКИ ИЗ РЕМОНТА № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
         } else {
             "КВИТАНЦИЯ О ПРИЁМЕ ТЕХНИКИ В РЕМОНТ № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
         }
-        canvas.drawText(docTitle, 36f, 62f, paint)
+        drawCorporateCslHeader(canvas, pageWidth, docTitle)
 
-        var y = 110f
+        var y = 126f
 
         // Equipment & Client Card
         paint.color = lightBg
@@ -298,7 +327,7 @@ object PdfServiceActGenerator {
         infoY += 20f
         drawKeyValue(canvas, "Внешний вид / Полка:", listOf(item.externalCondition.ifBlank { "Б/У, следы эксплуатации" }, item.shelfLocation).filter { it.isNotBlank() }.joinToString(" · ").take(54), 50f, infoY, darkText, mutedText)
         infoY += 20f
-        drawKeyValue(canvas, "Текущий статус:", "${item.status.title}  (Инженер: ${item.assignedEngineer.ifBlank { engineerName }.take(28)})", 50f, infoY, darkText, mutedText)
+        drawKeyValue(canvas, "Текущий статус:", "${item.status.title}  (Инженер: ${cleanEngineer.take(28)})", 50f, infoY, darkText, mutedText)
 
         y += cardHeight + 22f
 
@@ -362,7 +391,7 @@ object PdfServiceActGenerator {
         paint.textSize = 11f
         canvas.drawText("Сервисный инженер:", 36f, sigTop + 24f, paint)
         paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-        canvas.drawText(item.assignedEngineer.ifBlank { engineerName }.ifBlank { "Инженер Help-CSL" }, 36f, sigTop + 42f, paint)
+        canvas.drawText(cleanEngineer, 36f, sigTop + 42f, paint)
         canvas.drawLine(36f, sigTop + 76f, 240f, sigTop + 76f, paint)
 
         paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
