@@ -25,11 +25,27 @@ object TicketSpeechAnnouncer {
     private var ttsReady = false
     private var pendingUtterance: String? = null
     private var announceJob: Job? = null
+    private var idleShutdownJob: Job? = null
 
     fun stopSpeaking() {
         announceJob?.cancel()
         announceJob = null
+        idleShutdownJob?.cancel()
+        idleShutdownJob = null
         runCatching { tts?.stop() }
+        scheduleIdleShutdown()
+    }
+
+    private fun scheduleIdleShutdown() {
+        idleShutdownJob?.cancel()
+        idleShutdownJob = scope.launch {
+            delay(60_000L)
+            val inst = tts
+            tts = null
+            ttsReady = false
+            runCatching { inst?.stop() }
+            runCatching { inst?.shutdown() }
+        }
     }
 
     fun isExternalHeadsetConnected(context: Context): Boolean {
@@ -138,5 +154,6 @@ object TicketSpeechAnnouncer {
         runCatching {
             engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "helpcsl_tts_${System.currentTimeMillis()}")
         }
+        scheduleIdleShutdown()
     }
 }

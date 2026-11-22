@@ -97,6 +97,7 @@ object SettingsTransferCodec {
                     confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                         ?: AppSettings.DEFAULT_CONFLUENCE_URL,
                     confluenceToken = (parsed.appSettings.confluenceToken as String?).orEmpty(),
+                    offHoursPollIntervalMinutes = parsed.appSettings.normalizedOffHoursPollMinutes,
                     quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )

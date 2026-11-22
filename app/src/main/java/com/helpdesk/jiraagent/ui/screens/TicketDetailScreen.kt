@@ -95,6 +95,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -204,11 +207,16 @@ fun TicketDetailScreen(
     var scannedSerialForActOrChoice by rememberSaveable { mutableStateOf("") }
     var showScannedSerialChoiceDialog by rememberSaveable { mutableStateOf(false) }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
     var stopwatchNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(ticketKey, stopwatchEntry?.isRunning) {
-        while (stopwatchEntry?.isRunning == true) {
-            stopwatchNowMs = System.currentTimeMillis()
-            delay(1_000L)
+    LaunchedEffect(ticketKey, stopwatchEntry?.isRunning, lifecycleOwner) {
+        if (stopwatchEntry?.isRunning == true) {
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    stopwatchNowMs = System.currentTimeMillis()
+                    delay(1_000L)
+                }
+            }
         }
         stopwatchNowMs = System.currentTimeMillis()
     }

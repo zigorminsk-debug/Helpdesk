@@ -91,6 +91,7 @@ data class AppSettings(
     val trustSelfSignedSsl: Boolean = false,
     val pollingEnabled: Boolean = true,
     val pollIntervalSeconds: Int = 30,
+    val offHoursPollIntervalMinutes: Int = DEFAULT_OFF_HOURS_POLL_MINUTES,
     val startOnBoot: Boolean = true,
     val autoCheckUpdates: Boolean = true,
     val workScheduleEnabled: Boolean = true,
@@ -124,8 +125,38 @@ data class AppSettings(
             (passwordOrToken.isNotBlank() &&
                 (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank()))
 
+    val normalizedOffHoursPollMinutes: Int
+        get() = when {
+            offHoursPollIntervalMinutes == OFF_HOURS_POLL_SAME_AS_WORK -> OFF_HOURS_POLL_SAME_AS_WORK
+            offHoursPollIntervalMinutes < 0 -> OFF_HOURS_POLL_DISABLED
+            offHoursPollIntervalMinutes == 0 -> DEFAULT_OFF_HOURS_POLL_MINUTES
+            else -> offHoursPollIntervalMinutes.coerceIn(5, 720)
+        }
+
     companion object {
         const val DEFAULT_CONFLUENCE_URL = "https://w.csl.by"
+        const val DEFAULT_OFF_HOURS_POLL_MINUTES = 120
+        const val OFF_HOURS_POLL_DISABLED = -1
+        const val OFF_HOURS_POLL_SAME_AS_WORK = -2
+
+        fun formatOffHoursIntervalLabel(rawMinutes: Int): String {
+            return when {
+                rawMinutes == OFF_HOURS_POLL_SAME_AS_WORK -> "Как в рабочее время"
+                rawMinutes < 0 -> "Пауза до начала смены"
+                rawMinutes == 0 || rawMinutes == 120 -> "Раз в 2 часа"
+                rawMinutes % 60 == 0 -> {
+                    val h = rawMinutes / 60
+                    val suffix = when {
+                        h % 10 == 1 && h % 100 != 11 -> "час"
+                        h % 10 in 2..4 && h % 100 !in 12..14 -> "часа"
+                        else -> "часов"
+                    }
+                    "Раз в $h $suffix"
+                }
+                else -> "Раз в $rawMinutes мин"
+            }
+        }
+
         val DEFAULT_QUICK_REPLY_TEMPLATES = listOf(
             "Здравствуйте, {клиент}! Заявка {заявка} принята в работу инженером {инженер}.",
             "Пришлите, пожалуйста, ID и временный пароль AnyDesk / RustDesk для подключения.",

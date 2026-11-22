@@ -97,8 +97,8 @@ private data class AuthenticatedJiraUser(
 
 class JiraApiClient {
 
-    private val standardClient: OkHttpClient = buildClient(trustAllSsl = false)
-    private val selfSignedClient: OkHttpClient = buildClient(trustAllSsl = true)
+    private val standardClient: OkHttpClient = buildBaseClient()
+    private val selfSignedClient: OkHttpClient = buildTrustAllOverlay(standardClient)
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -3376,26 +3376,28 @@ class JiraApiClient {
             "phone", "телефон", "тел.", "тел ", "мобил", "контакт", "номер связи", "mobile", "callback"
         )
 
-        private fun buildClient(trustAllSsl: Boolean): OkHttpClient {
-            val builder = OkHttpClient.Builder()
+        private fun buildBaseClient(): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .build()
+        }
 
-            if (trustAllSsl) {
-                val trustManager = object : X509TrustManager {
-                    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-                }
-                val sslContext = SSLContext.getInstance("TLS")
-                sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
-                builder.sslSocketFactory(sslContext.socketFactory, trustManager)
-                builder.hostnameVerifier { _, _ -> true }
+        private fun buildTrustAllOverlay(base: OkHttpClient): OkHttpClient {
+            val builder = base.newBuilder()
+            val trustManager = object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
             }
-
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
+            builder.sslSocketFactory(sslContext.socketFactory, trustManager)
+            builder.hostnameVerifier { _, _ -> true }
             return builder.build()
         }
     }

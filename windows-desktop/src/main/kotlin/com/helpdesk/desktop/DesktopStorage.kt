@@ -111,6 +111,7 @@ class DesktopStorage {
                 s.copy(
                     confluenceUrl = safeWikiUrl,
                     confluenceToken = (s.confluenceToken as String?).orEmpty(),
+                    offHoursPollIntervalMinutes = s.normalizedOffHoursPollMinutes,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )

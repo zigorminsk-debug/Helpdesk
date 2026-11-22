@@ -169,7 +169,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
     private val repository = SettingsRepository.getInstance(appContext)
-    private val apiClient = JiraApiClient()
+    private val apiClient = repository.jiraApiClient
     val wikiClient: ConfluenceWikiClient = repository.wikiClient
     private val wikiOfflineStore = repository.wikiOfflineStore
 
@@ -260,6 +260,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestOpenWatchlistMonitor() {
         _openWatchlistStamp.value = System.currentTimeMillis()
+    }
+
+    fun consumeReturnToMainScreenStamp() {
+        _returnToMainScreenStamp.value = 0L
+    }
+
+    fun consumeOpenChatTabStamp() {
+        _openChatTabStamp.value = 0L
+    }
+
+    fun consumeOpenRepairTabStamp() {
+        _openRepairTabStamp.value = 0L
+    }
+
+    fun consumeOpenWikiTabStamp() {
+        _openWikiTabStamp.value = 0L
+    }
+
+    fun consumeOpenWatchlistStamp() {
+        _openWatchlistStamp.value = 0L
     }
 
     private val _isCreatingTicket = MutableStateFlow(false)
@@ -1416,7 +1436,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshAdminChatInternal(showSpinner = firstPass && chatMessages.value.isEmpty())
                 }
                 firstPass = false
-                delay(4_500L)
+                delay(8_000L)
             }
         }
     }

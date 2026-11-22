@@ -200,4 +200,57 @@ class BelarusWorkCalendarTest {
         assertTrue(note.contains("93.84.112.10"))
         assertTrue(note.contains("443/HTTPS"))
     }
+
+    @Test
+    fun defaultsOffHoursSyncToTwoHoursAndWakesExactlyAtShiftStart() {
+        val defaults = AppSettings()
+        assertEquals(120, defaults.offHoursPollIntervalMinutes)
+        assertEquals(120, defaults.copy(offHoursPollIntervalMinutes = 0).normalizedOffHoursPollMinutes)
+        assertEquals("Раз в 2 часа", AppSettings.formatOffHoursIntervalLabel(defaults.normalizedOffHoursPollMinutes))
+
+        fun minsk(year: Int, month: Int, day: Int, hour: Int, minute: Int) =
+            LocalDateTime.of(year, month, day, hour, minute).atZone(BelarusWorkCalendar.MINSK_ZONE).toInstant()
+
+        // 1. Working hours (Monday 23.11.2026 at 11:00) -> 30s active interval
+        val (workDelay, workPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = defaults,
+            nowInstant = minsk(2026, 11, 23, 11, 0)
+        )
+        assertEquals(30_000L, workDelay)
+        assertFalse(workPaused)
+
+        // 2. Evening off-hours (Monday 23.11.2026 at 20:00) -> 2 hours (7,200,000 ms)
+        val (eveningDelay, eveningPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = defaults,
+            nowInstant = minsk(2026, 11, 23, 20, 0)
+        )
+        assertEquals(120L * 60_000L, eveningDelay)
+        assertFalse(eveningPaused)
+
+        // 3. Morning 25 min before shift start (Tuesday 24.11.2026 at 08:35, shift starts 09:00) -> capped to 25 min!
+        val (preShiftDelay, preShiftPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = defaults,
+            nowInstant = minsk(2026, 11, 24, 8, 35)
+        )
+        assertEquals(25L * 60_000L, preShiftDelay)
+        assertFalse(preShiftPaused)
+
+        // 4. Custom user setting (45 min in off-hours)
+        val custom45 = defaults.copy(offHoursPollIntervalMinutes = 45)
+        val (customDelay, _) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = custom45,
+            nowInstant = minsk(2026, 11, 23, 21, 0)
+        )
+        assertEquals(45L * 60_000L, customDelay)
+
+        // 5. Off-hours sync paused until shift start (OFF_HOURS_POLL_DISABLED)
+        val pausedSettings = defaults.copy(offHoursPollIntervalMinutes = AppSettings.OFF_HOURS_POLL_DISABLED)
+        val (pausedDelay, isPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = pausedSettings,
+            nowInstant = minsk(2026, 11, 24, 7, 0)
+        )
+        assertTrue(isPaused)
+        assertEquals(120L * 60_000L, pausedDelay)
+    }
 }
+

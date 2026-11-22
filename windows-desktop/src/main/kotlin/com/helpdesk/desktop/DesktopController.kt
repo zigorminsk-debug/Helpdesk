@@ -250,6 +250,7 @@ class DesktopController(
     private fun startWatchlistBackgroundLoop() {
         watchlistBackgroundJob?.cancel()
         watchlistBackgroundJob = scope.launch {
+            val notifiedOfflineHostKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             delay(8_000L)
             while (true) {
                 runCatching {
@@ -257,11 +258,25 @@ class DesktopController(
                     val hosts = cur.watchlistHosts
                     if (hosts.isNotEmpty()) {
                         val labels = cur.watchlistLabels
-                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(hosts)
+                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(
+                            hosts = hosts,
+                            lightweightBackground = true
+                        )
                         _state.update { it.copy(watchlistStatuses = statuses) }
-                        val offlineStatuses = statuses.filter { !it.isAlive }
-                        if (offlineStatuses.isNotEmpty()) {
-                            for (off in offlineStatuses) {
+                        val activeKeys = statuses.map { SysadminToolboxEngine.normalizeHostKey(it.host) }.toSet()
+                        notifiedOfflineHostKeys.retainAll(activeKeys)
+
+                        for (st in statuses) {
+                            if (st.isAlive) {
+                                notifiedOfflineHostKeys.remove(SysadminToolboxEngine.normalizeHostKey(st.host))
+                            }
+                        }
+
+                        val newlyOfflineStatuses = statuses.filter {
+                            !it.isAlive && notifiedOfflineHostKeys.add(SysadminToolboxEngine.normalizeHostKey(it.host))
+                        }
+                        if (newlyOfflineStatuses.isNotEmpty()) {
+                            for (off in newlyOfflineStatuses) {
                                 val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(off.host, labels)
                                 val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(off.host, labels)
                                 onSystemTrayNotify?.invoke(
@@ -269,21 +284,21 @@ class DesktopController(
                                     "Узел «$fullName» не доступен (офлайн)."
                                 )
                             }
-                            val firstOff = offlineStatuses.first()
+                            val firstOff = newlyOfflineStatuses.first()
                             val firstShort = SysadminToolboxEngine.resolveWatchlistShortTitle(firstOff.host, labels)
-                            val popupSubtitle = if (offlineStatuses.size == 1) {
+                            val popupSubtitle = if (newlyOfflineStatuses.size == 1) {
                                 val full = SysadminToolboxEngine.resolveWatchlistDisplayName(firstOff.host, labels)
                                 "Узел «$full» не доступен (офлайн — нет ответа на фоновую проверку)."
                             } else {
-                                val allNames = offlineStatuses.joinToString(", ") {
+                                val allNames = newlyOfflineStatuses.joinToString(", ") {
                                     SysadminToolboxEngine.resolveWatchlistDisplayName(it.host, labels)
                                 }
-                                "Недоступны узлы (${offlineStatuses.size}): $allNames"
+                                "Недоступны узлы (${newlyOfflineStatuses.size}): $allNames"
                             }
-                            val popupTitle = if (offlineStatuses.size == 1) {
+                            val popupTitle = if (newlyOfflineStatuses.size == 1) {
                                 "🔴 Узел недоступен: $firstShort"
                             } else {
-                                "🔴 Узлы недоступны (${offlineStatuses.size})"
+                                "🔴 Узлы недоступны (${newlyOfflineStatuses.size})"
                             }
                             val toast = DesktopToastAlert(
                                 id = "host_offline_${System.currentTimeMillis()}",
@@ -757,17 +772,36 @@ class DesktopController(
         }
     }
 
+    private var lastRepairSilentSyncMs: Long = 0L
+    private var lastChatSilentSyncMs: Long = 0L
+
     private fun restartPollingLoop() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
             while (isActive) {
-                val intervalSec = _state.value.settings.pollIntervalSeconds.coerceIn(15, 900)
-                delay(intervalSec * 1_000L)
-                if (_state.value.settings.isConfigured && _state.value.settings.pollingEnabled) {
+                val curSettings = _state.value.settings
+                val (waitMs, _) = BelarusWorkCalendar.computeEffectivePollSchedule(
+                    settings = curSettings,
+                    nowInstant = java.time.Instant.now()
+                )
+                delay(waitMs)
+                val latest = _state.value
+                val (_, isOffHoursPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+                    settings = latest.settings,
+                    nowInstant = java.time.Instant.now()
+                )
+                if (latest.settings.isConfigured && latest.settings.pollingEnabled && !isOffHoursPaused) {
                     processDuePostponedTickets()
                     refreshTickets(silent = true, isInitialBoot = false)
-                    syncRepairRegistry(silent = true)
-                    refreshChat(silent = true)
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastRepairSilentSyncMs >= 180_000L) {
+                        lastRepairSilentSyncMs = nowMs
+                        syncRepairRegistry(silent = true)
+                    }
+                    if (nowMs - lastChatSilentSyncMs >= 60_000L) {
+                        lastChatSilentSyncMs = nowMs
+                        refreshChat(silent = true)
+                    }
                 }
             }
         }

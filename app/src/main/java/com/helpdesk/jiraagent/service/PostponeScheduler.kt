@@ -11,11 +11,26 @@ import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 object PostponeScheduler {
 
     private const val ALARM_REQUEST_CODE = 4901
     private val processingMutex = Mutex()
+    private val retryBackoffById = ConcurrentHashMap<String, Pair<Int, Long>>()
+
+    fun clearRetryBackoff() {
+        retryBackoffById.clear()
+    }
+
+    fun nextEffectiveTriggerMillis(context: Context, nowMillis: Long = System.currentTimeMillis()): Long? {
+        val items = SettingsRepository.getInstance(context.applicationContext).postponedTickets.value
+        if (items.isEmpty()) return null
+        return items.minOfOrNull { item ->
+            val backoffUntil = retryBackoffById[item.id]?.second ?: 0L
+            maxOf(item.scheduledAtMillis, backoffUntil)
+        }?.coerceAtLeast(nowMillis + 5_000L)
+    }
 
     @SuppressLint("ScheduleExactAlarm", "MissingPermission")
     fun scheduleNextAlarm(context: Context) {
@@ -23,17 +38,13 @@ object PostponeScheduler {
         val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val pendingIntent = buildAlarmPendingIntent(appContext)
 
-        val nextDue = SettingsRepository.getInstance(appContext)
-            .postponedTickets
-            .value
-            .minByOrNull { it.scheduledAtMillis }
-
-        if (nextDue == null) {
+        val now = System.currentTimeMillis()
+        val triggerAt = nextEffectiveTriggerMillis(appContext, now)
+        if (triggerAt == null) {
             runCatching { alarmManager.cancel(pendingIntent) }
             return
         }
 
-        val triggerAt = nextDue.scheduledAtMillis.coerceAtLeast(System.currentTimeMillis() + 1_000L)
         runCatching {
             val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
                 alarmManager.canScheduleExactAlarms()
@@ -73,8 +84,12 @@ object PostponeScheduler {
         val repo = SettingsRepository.getInstance(appContext)
         val now = System.currentTimeMillis()
 
-        // Allow 1.5s tolerance so exact wake-up alarms firing milliseconds early execute immediately
-        val dueItems = repo.postponedTickets.value.filter { it.scheduledAtMillis <= now + 1_500L }
+        // Allow 1.5s tolerance so exact wake-up alarms firing milliseconds early execute immediately,
+        // while respecting exponential retry backoff for items that failed when offline
+        val dueItems = repo.postponedTickets.value.filter { item ->
+            val backoffUntil = retryBackoffById[item.id]?.second ?: 0L
+            item.scheduledAtMillis <= now + 1_500L && now >= backoffUntil
+        }
         if (dueItems.isEmpty()) {
             scheduleNextAlarm(appContext)
             return@withLock 0
@@ -87,6 +102,7 @@ object PostponeScheduler {
         for (item in dueItems) {
             val res = apiClient.recreatePostponedTicket(item, settings, filter)
             res.onSuccess { recreatedTicket ->
+                retryBackoffById.remove(item.id)
                 repo.registerRecreatedPostponedTicket(recreatedTicket)
                 repo.removePostponedTicket(item.id)
                 NotificationHelper.showClientTicketBanner(
@@ -97,9 +113,17 @@ object PostponeScheduler {
                 )
                 recreatedCount++
             }.onFailure { err ->
+                val attempts = (retryBackoffById[item.id]?.first ?: 0) + 1
+                val delayMs = when (attempts) {
+                    1 -> 60_000L
+                    2 -> 180_000L
+                    3 -> 600_000L
+                    else -> 1_800_000L
+                }
+                retryBackoffById[item.id] = attempts to (System.currentTimeMillis() + delayMs)
                 repo.updatePostponedTicketError(
                     item.id,
-                    err.message ?: "Ошибка пересоздания в Jira (повтор при следующем опросе)"
+                    err.message ?: "Ошибка пересоздания в Jira (повтор при восстановлении связи)"
                 )
             }
         }

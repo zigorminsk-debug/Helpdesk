@@ -176,8 +176,8 @@ class ConfluenceWikiClient {
     }
 
     private val cookieJar = SessionCookieJar()
-    private val standardClient: OkHttpClient = buildClientWithCookieJar(trustAllSsl = false, jar = cookieJar)
-    private val trustAllClient: OkHttpClient = buildClientWithCookieJar(trustAllSsl = true, jar = cookieJar)
+    private val standardClient: OkHttpClient = buildBaseClientWithCookieJar(jar = cookieJar)
+    private val trustAllClient: OkHttpClient = buildTrustAllWikiOverlay(standardClient)
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val twoFactorHosts = ConcurrentHashMap.newKeySet<String>()
 
@@ -1564,33 +1564,32 @@ class ConfluenceWikiClient {
             return if (e.isJsonArray) e.asJsonArray else null
         }
 
-        private fun buildClient(trustAllSsl: Boolean): OkHttpClient {
-            return buildClientWithCookieJar(trustAllSsl, CookieJar.NO_COOKIES)
-        }
-
-        private fun buildClientWithCookieJar(trustAllSsl: Boolean, jar: CookieJar): OkHttpClient {
-            val builder = OkHttpClient.Builder()
+        private fun buildBaseClientWithCookieJar(jar: CookieJar): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
                 .cookieJar(jar)
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(35, TimeUnit.SECONDS)
                 .writeTimeout(25, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .build()
+        }
 
-            if (trustAllSsl) {
-                runCatching {
-                    val trustAll = arrayOf<TrustManager>(
-                        object : X509TrustManager {
-                            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-                        }
-                    )
-                    val ctx = SSLContext.getInstance("TLS")
-                    ctx.init(null, trustAll, SecureRandom())
-                    builder.sslSocketFactory(ctx.socketFactory, trustAll[0] as X509TrustManager)
-                    builder.hostnameVerifier { _, _ -> true }
-                }
+        private fun buildTrustAllWikiOverlay(base: OkHttpClient): OkHttpClient {
+            val builder = base.newBuilder()
+            runCatching {
+                val trustAll = arrayOf<TrustManager>(
+                    object : X509TrustManager {
+                        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                    }
+                )
+                val ctx = SSLContext.getInstance("TLS")
+                ctx.init(null, trustAll, SecureRandom())
+                builder.sslSocketFactory(ctx.socketFactory, trustAll[0] as X509TrustManager)
+                builder.hostnameVerifier { _, _ -> true }
             }
             return builder.build()
         }

@@ -60,6 +60,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -110,6 +111,18 @@ private val POLL_INTERVAL_OPTIONS = listOf(
     60 to "1 мин",
     120 to "2 мин",
     300 to "5 мин"
+)
+
+private val OFF_HOURS_POLL_OPTIONS = listOf(
+    15 to "15 мин",
+    30 to "30 мин",
+    60 to "1 час",
+    120 to "2 часа",
+    180 to "3 часа",
+    240 to "4 часа",
+    360 to "6 часов",
+    AppSettings.OFF_HOURS_POLL_DISABLED to "Пауза до смены",
+    AppSettings.OFF_HOURS_POLL_SAME_AS_WORK to "Как днём"
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -432,7 +445,7 @@ fun ServerSettingsScreen(
                 )
 
                 Text(
-                    text = "Интервал проверки новых заявок",
+                    text = "Интервал проверки в рабочее время (${draft.workStartTime}–${draft.workEndTime})",
                     style = MaterialTheme.typography.labelLarge
                 )
 
@@ -443,9 +456,85 @@ fun ServerSettingsScreen(
                     POLL_INTERVAL_OPTIONS.forEach { (sec, label) ->
                         FilterChip(
                             selected = draft.pollIntervalSeconds == sec,
-                            onClick = { draft = draft.copy(pollIntervalSeconds = sec) },
+                            onClick = {
+                                val updated = draft.copy(pollIntervalSeconds = sec)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
                             label = { Text(label, maxLines = 1, softWrap = false) }
                         )
+                    }
+                }
+
+                HorizontalDivider()
+
+                val currentOffMin = draft.normalizedOffHoursPollMinutes
+                var customOffMinutesText by remember(currentOffMin) {
+                    mutableStateOf(if (currentOffMin > 0) currentOffMin.toString() else "")
+                }
+
+                Text(
+                    text = "Синхронизация в нерабочее время (экономия батареи)",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "Вечером, ночью, в выходные и праздничные дни РБ опрос автоматически переходит в энергосберегающий режим (сейчас: ${AppSettings.formatOffHoursIntervalLabel(currentOffMin).lowercase()}), а ровно в ${draft.workStartTime} снова включается быстрый дневной режим.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OFF_HOURS_POLL_OPTIONS.forEach { (mins, label) ->
+                        FilterChip(
+                            selected = currentOffMin == mins,
+                            onClick = {
+                                val updated = draft.copy(offHoursPollIntervalMinutes = mins)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = { Text(label, maxLines = 1, softWrap = false) }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = customOffMinutesText,
+                        onValueChange = { raw ->
+                            customOffMinutesText = raw.filter(Char::isDigit).take(4)
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Свой интервал (мин, 5–720)", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text("120") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val parsed = customOffMinutesText.toIntOrNull()?.coerceIn(5, 720)
+                            if (parsed != null) {
+                                val updated = draft.copy(offHoursPollIntervalMinutes = parsed)
+                                draft = updated
+                                onSaveSettings(updated)
+                                Toast.makeText(
+                                    context,
+                                    "Нерабочее время: ${AppSettings.formatOffHoursIntervalLabel(parsed).lowercase()}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    ) {
+                        Text("Применить", maxLines = 1)
                     }
                 }
 

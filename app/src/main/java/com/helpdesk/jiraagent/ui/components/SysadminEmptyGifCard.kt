@@ -82,6 +82,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -160,12 +163,7 @@ fun SysadminEmptyStatePanel(
         mutableStateOf(gifPrefs.getString(KEY_DISMISSED_DATE, null))
     }
     val sessionStartedEpochMs = remember { System.currentTimeMillis() }
-    val nowInstant by produceState(initialValue = Instant.now()) {
-        while (true) {
-            delay(20_000L)
-            value = Instant.now()
-        }
-    }
+    var nowInstant by remember { mutableStateOf(Instant.now()) }
 
     val showMorningGif = remember(settings, dismissedDateIso, nowInstant) {
         BelarusWorkCalendar.shouldShowMorningGif(
@@ -175,6 +173,14 @@ fun SysadminEmptyStatePanel(
             maxSessionDisplayMinutes = 10L,
             nowInstant = nowInstant
         )
+    }
+
+    // Only tick once per minute WHILE the morning GIF is actually displayed — 0 wakeups for the rest of the day!
+    LaunchedEffect(showMorningGif) {
+        while (showMorningGif) {
+            delay(60_000L)
+            nowInstant = Instant.now()
+        }
     }
 
     val dismissGifToday: () -> Unit = {
@@ -1218,11 +1224,23 @@ fun AnimatedAssetGifView(
             decodedDrawable = loaded
         }
 
-        DisposableEffect(decodedDrawable) {
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(decodedDrawable, lifecycleOwner) {
             val anim = decodedDrawable as? AnimatedImageDrawable
             anim?.repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
-            anim?.start()
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                anim?.start()
+            }
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> anim?.start()
+                    Lifecycle.Event.ON_STOP -> anim?.stop()
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
             onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
                 anim?.stop()
             }
         }

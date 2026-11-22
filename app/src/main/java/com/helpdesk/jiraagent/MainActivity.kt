@@ -459,24 +459,28 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     LaunchedEffect(returnToMainScreenStamp) {
         if (returnToMainScreenStamp > 0L) {
             currentTab = BottomDestination.TICKETS
+            viewModel.consumeReturnToMainScreenStamp()
         }
     }
 
     LaunchedEffect(openChatTabStamp) {
         if (openChatTabStamp > 0L) {
             currentTab = BottomDestination.CHAT
+            viewModel.consumeOpenChatTabStamp()
         }
     }
 
     LaunchedEffect(openRepairTabStamp) {
         if (openRepairTabStamp > 0L) {
             currentTab = BottomDestination.REPAIR
+            viewModel.consumeOpenRepairTabStamp()
         }
     }
 
     LaunchedEffect(openWikiTabStamp) {
         if (openWikiTabStamp > 0L) {
             currentTab = BottomDestination.WIKI
+            viewModel.consumeOpenWikiTabStamp()
         }
     }
 
@@ -484,6 +488,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         if (openWatchlistStamp > 0L) {
             toolboxInitialTab = 3
             showToolboxDialog = true
+            viewModel.consumeOpenWatchlistStamp()
         }
     }
 

@@ -245,6 +245,91 @@ object BelarusWorkCalendar {
     }
 
     /**
+     * Checks whether [nowInstant] falls inside RB working days and `[workStartTime .. workEndTime]`
+     * (used for battery-saving off-hours sync throttling, independent of whether off-hours banners are muted).
+     */
+    fun isCalendarWorkingHoursNow(
+        settings: AppSettings,
+        nowInstant: Instant = Instant.now()
+    ): Boolean {
+        val minskNow = nowInstant.atZone(MINSK_ZONE)
+        val today = minskNow.toLocalDate()
+        val (workingDay, _) = isWorkingDay(
+            date = today,
+            extraWorkingDatesRaw = settings.extraWorkingDates,
+            extraHolidayDatesRaw = settings.extraHolidayDates
+        )
+        if (!workingDay) return false
+        val startTime = parseLocalTimeOrDefault(settings.workStartTime, LocalTime.of(9, 0))
+        val endTime = parseLocalTimeOrDefault(settings.workEndTime, LocalTime.of(17, 30))
+        val currentTime = minskNow.toLocalTime()
+        return !currentTime.isBefore(startTime) && !currentTime.isAfter(endTime)
+    }
+
+    /**
+     * Returns milliseconds from [nowInstant] until the next RB working shift start (`workStartTime`),
+     * so an off-hours sleep (e.g. 2 hours) wakes up right at the start of the working shift
+     * instead of oversleeping past `09:00`.
+     */
+    fun millisUntilNextWorkingWindowStart(
+        settings: AppSettings,
+        nowInstant: Instant = Instant.now()
+    ): Long {
+        val minskNow = nowInstant.atZone(MINSK_ZONE)
+        val today = minskNow.toLocalDate()
+        val startTime = parseLocalTimeOrDefault(settings.workStartTime, LocalTime.of(9, 0))
+
+        for (dayOffset in 0..14) {
+            val candidateDate = today.plusDays(dayOffset.toLong())
+            val (working, _) = isWorkingDay(
+                date = candidateDate,
+                extraWorkingDatesRaw = settings.extraWorkingDates,
+                extraHolidayDatesRaw = settings.extraHolidayDates
+            )
+            if (!working) continue
+            val candidateStart = candidateDate.atTime(startTime).atZone(MINSK_ZONE).toInstant()
+            val diffMs = candidateStart.toEpochMilli() - nowInstant.toEpochMilli()
+            if (diffMs > 5_000L) {
+                return diffMs
+            }
+        }
+        return 2L * 3600_000L
+    }
+
+    /**
+     * Computes `(nextDelayMillis, isOffHoursPaused)` for the background synchronization loop:
+     * - During RB working hours (`09:00–17:30` working days): uses `pollIntervalSeconds` (e.g. 30s).
+     * - During non-working hours (evenings, nights, weekends, RB holidays): uses `offHoursPollIntervalMinutes`
+     *   (default **120 minutes = 2 hours**), capped by [millisUntilNextWorkingWindowStart] so fast polling
+     *   resumes automatically right at the start of the working shift!
+     */
+    fun computeEffectivePollSchedule(
+        settings: AppSettings,
+        nowInstant: Instant = Instant.now()
+    ): Pair<Long, Boolean> {
+        val activeIntervalMs = settings.pollIntervalSeconds.coerceIn(10, 3600) * 1_000L
+        if (isCalendarWorkingHoursNow(settings, nowInstant)) {
+            return activeIntervalMs to false
+        }
+
+        val offMinutes = settings.normalizedOffHoursPollMinutes
+        if (offMinutes == AppSettings.OFF_HOURS_POLL_SAME_AS_WORK) {
+            return activeIntervalMs to false
+        }
+
+        val untilShiftMs = millisUntilNextWorkingWindowStart(settings, nowInstant)
+        if (offMinutes == AppSettings.OFF_HOURS_POLL_DISABLED) {
+            // Pause off-hours network polling completely until the next working shift begins
+            val sleepMs = untilShiftMs.coerceIn(60_000L, 4L * 3600_000L)
+            return sleepMs to true
+        }
+
+        val offHoursIntervalMs = offMinutes * 60_000L
+        val cappedWaitMs = minOf(offHoursIntervalMs, untilShiftMs).coerceAtLeast(30_000L)
+        return cappedWaitMs to false
+    }
+
+    /**
      * Shows the IT Crowd empty-queue GIF ONLY at the beginning of a working day:
      * - Must be a working day in Belarus (or custom extra working date);
      * - Current Minsk time must fall within `[workStart - 30 min .. workStart + 45 min]`

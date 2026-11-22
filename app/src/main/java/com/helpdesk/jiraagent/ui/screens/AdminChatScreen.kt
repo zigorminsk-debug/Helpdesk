@@ -88,6 +88,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -163,9 +166,22 @@ fun AdminChatScreen(
     var showTicketPickerDialog by rememberSaveable { mutableStateOf(false) }
     var deleteCandidateId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    DisposableEffect(Unit) {
-        onChatVisibilityChanged(true)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val isStartedNow = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        if (isStartedNow) {
+            onChatVisibilityChanged(true)
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> onChatVisibilityChanged(true)
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> onChatVisibilityChanged(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             onChatVisibilityChanged(false)
         }
     }

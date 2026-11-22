@@ -102,12 +102,19 @@ object NetworkDiagnosticsTool {
         8006 to "Proxmox"
     )
 
+    private val FAST_PRIMARY_PORT_NUMBERS = setOf(443, 80, 22, 8291, 3389, 1194)
+
     private val DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(ZoneId.of("Europe/Minsk"))
 
     suspend fun runDiagnostics(
         rawHost: String,
         timeoutMs: Int = 2000,
-        portsToScan: List<Pair<Int, String>> = DEFAULT_PORTS
+        portsToScan: List<Pair<Int, String>> = DEFAULT_PORTS,
+        includeDnsRecords: Boolean = true,
+        includeHttpProbe: Boolean = true,
+        fastBackgroundMode: Boolean = false,
+        cachedSslProvider: ((String) -> SslCertificateReport?)? = null,
+        onSslFetched: ((String, SslCertificateReport) -> Unit)? = null
     ): HostDiagnosticReport = withContext(Dispatchers.IO) {
         val withoutScheme = rawHost.trim()
             .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
@@ -135,20 +142,14 @@ object NetworkDiagnosticsTool {
         val allAddresses = runCatching { InetAddress.getAllByName(cleanHost) }.getOrNull()
         val resolvedAddress = allAddresses?.firstOrNull()
         val isIpLiteral = cleanHost.all { it.isDigit() || it == '.' }
-
-        // Even if local DNS didn't resolve A record (e.g. mail-only domain), still try DoH MX/NS!
-        val dnsDeferred = coroutineScope {
-            async {
-                if (isIpLiteral) {
-                    DnsRecordSet(aRecords = listOf(cleanHost))
-                } else {
-                    resolveDnsRecords(cleanHost, allAddresses?.mapNotNull { it.hostAddress }.orEmpty())
-                }
-            }
-        }
+        val localAs = allAddresses?.mapNotNull { it.hostAddress }?.distinct()?.take(4).orEmpty()
 
         if (resolvedAddress == null) {
-            val dnsOnly = runCatching { dnsDeferred.await() }.getOrDefault(DnsRecordSet())
+            val dnsOnly = if (includeDnsRecords && !isIpLiteral) {
+                runCatching { resolveDnsRecords(cleanHost, emptyList()) }.getOrDefault(DnsRecordSet())
+            } else {
+                DnsRecordSet()
+            }
             return@withContext HostDiagnosticReport(
                 targetHost = cleanHost,
                 resolvedIp = null,
@@ -163,6 +164,14 @@ object NetworkDiagnosticsTool {
         val resolvedIp = resolvedAddress.hostAddress
 
         coroutineScope {
+            val dnsDeferred = async {
+                when {
+                    !includeDnsRecords -> DnsRecordSet(aRecords = if (isIpLiteral) listOf(cleanHost) else localAs)
+                    isIpLiteral -> DnsRecordSet(aRecords = listOf(cleanHost))
+                    else -> resolveDnsRecords(cleanHost, localAs)
+                }
+            }
+
             val icmpDeferred = async {
                 var ok = false
                 val rtt = measureTimeMillis {
@@ -177,43 +186,79 @@ object NetworkDiagnosticsTool {
                 portsToScan
             }
 
-            val portsDeferred = effectivePorts.map { (port, label) ->
-                async {
-                    var open = false
-                    val rtt = measureTimeMillis {
-                        open = runCatching {
-                            Socket().use { socket ->
-                                socket.connect(InetSocketAddress(resolvedAddress, port), timeoutMs)
-                                true
-                            }
-                        }.getOrDefault(false)
+            suspend fun probePortList(portEntries: List<Pair<Int, String>>): List<TcpPortStatus> = coroutineScope {
+                portEntries.map { (port, label) ->
+                    async {
+                        var open = false
+                        val rtt = measureTimeMillis {
+                            open = runCatching {
+                                Socket().use { socket ->
+                                    socket.connect(InetSocketAddress(resolvedAddress, port), timeoutMs)
+                                    true
+                                }
+                            }.getOrDefault(false)
+                        }
+                        TcpPortStatus(
+                            port = port,
+                            serviceName = label,
+                            isOpen = open,
+                            latencyMs = if (open) rtt else null
+                        )
                     }
-                    TcpPortStatus(
-                        port = port,
-                        serviceName = label,
-                        isOpen = open,
-                        latencyMs = if (open) rtt else null
-                    )
-                }
+                }.awaitAll()
             }
 
-            val ports = portsDeferred.awaitAll()
+            val ports: List<TcpPortStatus>
+            val (icmpOk, icmpRtt) = if (fastBackgroundMode) {
+                val primaryList = effectivePorts.filter { (p, _) ->
+                    p == customPort || p in FAST_PRIMARY_PORT_NUMBERS
+                }
+                val secondaryList = effectivePorts.filterNot { (p, _) ->
+                    p == customPort || p in FAST_PRIMARY_PORT_NUMBERS
+                }
+                val primaryResults = probePortList(primaryList)
+                val icmpPair = icmpDeferred.await()
+                if (icmpPair.first || primaryResults.any { it.isOpen } || secondaryList.isEmpty()) {
+                    ports = primaryResults
+                } else {
+                    ports = primaryResults + probePortList(secondaryList)
+                }
+                icmpPair
+            } else {
+                ports = probePortList(effectivePorts)
+                icmpDeferred.await()
+            }
+
             val port443Open = ports.any { it.port == 443 && it.isOpen }
             val port80Open = ports.any { it.port == 80 && it.isOpen }
 
             val sslDeferred = async {
-                if (port443Open) inspectSslCertificate(cleanHost, timeoutMs + 700) else null
+                if (!port443Open) {
+                    null
+                } else {
+                    val cached = cachedSslProvider?.invoke(cleanHost)
+                    if (cached != null) {
+                        cached
+                    } else {
+                        inspectSslCertificate(cleanHost, timeoutMs + 700)?.also { fresh ->
+                            onSslFetched?.invoke(cleanHost, fresh)
+                        }
+                    }
+                }
             }
             val httpDeferred = async {
-                when {
-                    port443Open -> probeHttp("https", cleanHost, timeoutMs + 700)
-                        ?: if (port80Open) probeHttp("http", cleanHost, timeoutMs + 500) else null
-                    port80Open -> probeHttp("http", cleanHost, timeoutMs + 500)
-                    else -> null
+                if (!includeHttpProbe) {
+                    null
+                } else {
+                    when {
+                        port443Open -> probeHttp("https", cleanHost, timeoutMs + 700)
+                            ?: if (port80Open) probeHttp("http", cleanHost, timeoutMs + 500) else null
+                        port80Open -> probeHttp("http", cleanHost, timeoutMs + 500)
+                        else -> null
+                    }
                 }
             }
 
-            val (icmpOk, icmpRtt) = icmpDeferred.await()
             HostDiagnosticReport(
                 targetHost = cleanHost,
                 resolvedIp = resolvedIp,

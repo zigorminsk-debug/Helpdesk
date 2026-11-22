@@ -3,6 +3,7 @@ package com.helpdesk.desktop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +23,7 @@ import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AlertSoundPreset
+import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
@@ -315,9 +317,9 @@ fun DesktopSettingsWorkspace(
                                 draft = draft.copy(pollIntervalSeconds = sec)
                             }
                         },
-                        label = { Text("Интервал опроса (сек)") },
+                        label = { Text("Интервал днём (сек)") },
                         singleLine = true,
-                        modifier = Modifier.width(190.dp)
+                        modifier = Modifier.width(180.dp)
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
@@ -325,6 +327,75 @@ fun DesktopSettingsWorkspace(
                             onCheckedChange = { controller.setMinimizeToTray(it) }
                         )
                         Text("Сворачивать в системный трей Windows при закрытии окна (✕)", fontSize = 12.5.sp)
+                    }
+                }
+
+                val currentOffMin = draft.normalizedOffHoursPollMinutes
+                var customOffMinText by remember(currentOffMin) {
+                    mutableStateOf(if (currentOffMin > 0) currentOffMin.toString() else "")
+                }
+                val desktopOffOptions = remember {
+                    listOf(
+                        15 to "15 мин",
+                        30 to "30 мин",
+                        60 to "1 час",
+                        120 to "2 часа",
+                        180 to "3 часа",
+                        240 to "4 часа",
+                        360 to "6 часов",
+                        AppSettings.OFF_HOURS_POLL_DISABLED to "Пауза до смены",
+                        AppSettings.OFF_HOURS_POLL_SAME_AS_WORK to "Как днём"
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "🌙 Синхронизация в нерабочее время (вне ${draft.workStartTime}–${draft.workEndTime} и в выходные РБ): ${AppSettings.formatOffHoursIntervalLabel(currentOffMin).lowercase()}",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = DesktopColors.CslOrange
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        desktopOffOptions.forEach { (mins, label) ->
+                            FilterChip(
+                                selected = currentOffMin == mins,
+                                onClick = {
+                                    val updated = draft.copy(offHoursPollIntervalMinutes = mins)
+                                    draft = updated
+                                    controller.saveSettings(updated)
+                                },
+                                label = { Text(label, fontSize = 11.5.sp) }
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = customOffMinText,
+                            onValueChange = { raw ->
+                                customOffMinText = raw.filter(Char::isDigit).take(4)
+                            },
+                            label = { Text("Свой интервал в нерабочее время (мин, 5–720)") },
+                            singleLine = true,
+                            modifier = Modifier.width(320.dp)
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                customOffMinText.toIntOrNull()?.coerceIn(5, 720)?.let { parsed ->
+                                    val updated = draft.copy(offHoursPollIntervalMinutes = parsed)
+                                    draft = updated
+                                    controller.saveSettings(updated)
+                                }
+                            }
+                        ) {
+                            Text("Применить")
+                        }
                     }
                 }
 

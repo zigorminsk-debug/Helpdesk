@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
@@ -17,6 +18,7 @@ import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
+import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
@@ -26,12 +28,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
 class JiraMonitorService : Service() {
 
@@ -39,13 +45,21 @@ class JiraMonitorService : Service() {
     private var pollingJob: Job? = null
     private var watchlistPingJob: Job? = null
     private var wikiDailySyncJob: Job? = null
+    private val pollWakeupChannel = Channel<Unit>(Channel.CONFLATED)
 
     private lateinit var repository: SettingsRepository
-    private val apiClient = JiraApiClient()
+    private val apiClient: JiraApiClient
+        get() = repository.jiraApiClient
 
-    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     private var lastUpdateCheckEpochMillis: Long = 0L
+    private var lastAdminChatPollEpochMillis: Long = 0L
     private var lastNotifiedUpdateTag: String? = null
+    private var lastForegroundCoreKey: String? = null
+    private var lastForegroundUpdatedAtMs: Long = 0L
+    @Volatile
+    private var skippedPollWhileOffline: Boolean = false
+    private val notifiedOfflineHostKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
@@ -55,15 +69,30 @@ class JiraMonitorService : Service() {
         registerOfflineSyncNetworkCallback()
     }
 
+    private fun hasActiveInternetConnection(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val active = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(active) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun registerOfflineSyncNetworkCallback() {
         runCatching {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             val cb = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    if (repository.offlineQueuedActions.value.isNotEmpty()) {
+                    PostponeScheduler.clearRetryBackoff()
+                    if (repository.offlineQueuedActions.value.isNotEmpty() ||
+                        repository.postponedTickets.value.any { it.scheduledAtMillis <= System.currentTimeMillis() }
+                    ) {
                         serviceScope.launch {
                             OfflineQueueProcessor.flushPending(applicationContext, apiClient)
+                            PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
                         }
+                    }
+                    if (skippedPollWhileOffline) {
+                        skippedPollWhileOffline = false
+                        pollWakeupChannel.trySend(Unit)
                     }
                 }
             }
@@ -109,7 +138,12 @@ class JiraMonitorService : Service() {
             stopPollingAndService()
             return START_NOT_STICKY
         }
-        ensureForegroundStarted("Ожидание заявок · мониторинг SSL/узлов…")
+        if (pollingJob?.isActive != true) {
+            ensureForegroundStarted("Ожидание заявок · мониторинг SSL/узлов…")
+        } else {
+            // Wake sleeping loop immediately when user updates polling / off-hours intervals in Settings
+            pollWakeupChannel.trySend(Unit)
+        }
         ensureBackgroundLoopsRunning()
         return START_STICKY
     }
@@ -144,8 +178,15 @@ class JiraMonitorService : Service() {
         }
     }
 
-    private fun updateForegroundText(statusText: String) {
+    private fun updateForegroundText(statusText: String, coreStateKey: String = statusText) {
         if (!NotificationHelper.hasNotificationPermission(this)) return
+        val now = System.currentTimeMillis()
+        // Avoid waking SystemUI via Binder IPC every 30s when counts/mode haven't changed
+        if (coreStateKey == lastForegroundCoreKey && (now - lastForegroundUpdatedAtMs) < 15L * 60_000L) {
+            return
+        }
+        lastForegroundCoreKey = coreStateKey
+        lastForegroundUpdatedAtMs = now
         runCatching {
             val notification = NotificationHelper.buildForegroundStatusNotification(this, statusText)
             NotificationManagerCompat.from(this)
@@ -162,39 +203,75 @@ class JiraMonitorService : Service() {
                     break
                 }
                 val settings = repository.appSettings.value
+                val nowInstant = Instant.now()
+                val (scheduledWaitMs, isOffHoursPaused) = BelarusWorkCalendar.computeEffectivePollSchedule(
+                    settings = settings,
+                    nowInstant = nowInstant
+                )
+                val isWorkingHours = BelarusWorkCalendar.isCalendarWorkingHoursNow(settings, nowInstant)
 
-                // Always process due postponed tickets first
-                PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+                if (!hasActiveInternetConnection()) {
+                    skippedPollWhileOffline = true
+                    updateForegroundText(
+                        statusText = "Ожидание сети · офлайн-режим энергосбережения",
+                        coreStateKey = "offline_no_net"
+                    )
+                } else {
+                    skippedPollWhileOffline = false
+                    // Always process due postponed tickets (with exponential backoff if errored)
+                    PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
 
-                if (settings.isConfigured && settings.pollingEnabled) {
-                    pollOnce()
-                    pollAdminChatSafely()
-                }
+                    if (settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused) {
+                        pollOnce()
 
-                // Periodically check GitHub Releases for new APK versions (every 90 minutes)
-                if (settings.autoCheckUpdates) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdateCheckEpochMillis >= 90L * 60_000L) {
-                        lastUpdateCheckEpochMillis = now
-                        AppUpdateManager.checkForUpdate().onSuccess { update ->
-                            if (update != null && update.tagName != lastNotifiedUpdateTag) {
-                                lastNotifiedUpdateTag = update.tagName
-                                NotificationHelper.showAppUpdateNotification(applicationContext, update)
+                        // Throttle background Admin Chat check to >= 2 min in working hours (and along with off-hours sync)
+                        val nowMs = System.currentTimeMillis()
+                        val minChatGapMs = if (isWorkingHours) 120_000L else 300_000L
+                        if (nowMs - lastAdminChatPollEpochMillis >= minChatGapMs) {
+                            lastAdminChatPollEpochMillis = nowMs
+                            pollAdminChatSafely()
+                        }
+                    } else if (isOffHoursPaused) {
+                        val label = AppSettings.formatOffHoursIntervalLabel(settings.normalizedOffHoursPollMinutes)
+                        updateForegroundText(
+                            statusText = "Нерабочее время РБ · $label",
+                            coreStateKey = "offhours_paused_${settings.normalizedOffHoursPollMinutes}"
+                        )
+                    }
+
+                    // Check GitHub Releases only during working hours (or at most every 4 hours) to save radio wakeups
+                    if (settings.autoCheckUpdates) {
+                        val now = System.currentTimeMillis()
+                        val updateCheckGapMs = if (isWorkingHours) 2L * 3600_000L else 6L * 3600_000L
+                        if (now - lastUpdateCheckEpochMillis >= updateCheckGapMs) {
+                            lastUpdateCheckEpochMillis = now
+                            AppUpdateManager.checkForUpdate().onSuccess { update ->
+                                if (update != null && update.tagName != lastNotifiedUpdateTag) {
+                                    lastNotifiedUpdateTag = update.tagName
+                                    NotificationHelper.showAppUpdateNotification(applicationContext, update)
+                                }
                             }
                         }
                     }
                 }
 
-                val intervalMs = repository.appSettings.value.pollIntervalSeconds.coerceIn(10, 3600) * 1000L
-                val nextPostponedAt = repository.postponedTickets.value
-                    .minByOrNull { it.scheduledAtMillis }
-                    ?.scheduledAtMillis
-                val waitMs = if (nextPostponedAt != null) {
-                    (nextPostponedAt - System.currentTimeMillis()).coerceIn(1_000L, intervalMs)
+                // Re-read latest settings in case user adjusted interval while poll was running
+                val latestSettings = repository.appSettings.value
+                val (baseWaitMs, _) = BelarusWorkCalendar.computeEffectivePollSchedule(
+                    settings = latestSettings,
+                    nowInstant = Instant.now()
+                )
+                val nextPostponedTrigger = PostponeScheduler.nextEffectiveTriggerMillis(applicationContext)
+                val waitMs = if (nextPostponedTrigger != null) {
+                    (nextPostponedTrigger - System.currentTimeMillis()).coerceIn(5_000L, baseWaitMs)
                 } else {
-                    intervalMs
+                    baseWaitMs
                 }
-                delay(waitMs)
+
+                // Sleep cleanly; wakes immediately if user edits settings or network comes back after offline skip
+                withTimeoutOrNull(waitMs) {
+                    pollWakeupChannel.receive()
+                }
             }
         }
     }
@@ -253,10 +330,19 @@ class JiraMonitorService : Service() {
                 .toLocalTime()
                 .format(timeFormatter)
 
-            val modePrefix = if (schedule.isAllowedNow) "" else "Тихий режим РБ · "
+            val isOffHours = !BelarusWorkCalendar.isCalendarWorkingHoursNow(settings, Instant.ofEpochMilli(nowMillis))
+            val offHoursBadge = if (isOffHours) {
+                "Эко (${AppSettings.formatOffHoursIntervalLabel(settings.normalizedOffHoursPollMinutes).lowercase()}) · "
+            } else if (!schedule.isAllowedNow) {
+                "Тихий режим РБ · "
+            } else {
+                ""
+            }
             val postponedSuffix = if (postponedCount > 0) " · Отложено: $postponedCount" else ""
+            val coreKey = "${isOffHours}_${schedule.isAllowedNow}_${newCount}_${inProgressCount}_$postponedCount"
             updateForegroundText(
-                "${modePrefix}Новые: $newCount · В работе: $inProgressCount$postponedSuffix · $timeStr"
+                statusText = "${offHoursBadge}Новые: $newCount · В работе: $inProgressCount$postponedSuffix · $timeStr",
+                coreStateKey = coreKey
             )
             repository.updateSyncStatus {
                 it.copy(
@@ -267,7 +353,10 @@ class JiraMonitorService : Service() {
             }
         }.onFailure { err ->
             val msg = err.message ?: "Ошибка подключения к Jira"
-            updateForegroundText("Ошибка связи: $msg")
+            updateForegroundText(
+                statusText = "Ошибка связи: $msg",
+                coreStateKey = "err_$msg"
+            )
             repository.updateSyncStatus {
                 it.copy(
                     isSyncing = false,
@@ -288,6 +377,9 @@ class JiraMonitorService : Service() {
                 filterSettings = filter,
                 cachedRoomKey = cachedRoomKey
             ).getOrNull() ?: return
+            if (roomKey != cachedRoomKey) {
+                repository.setResolvedChatRoomKey(roomKey)
+            }
 
             val snapshot = apiClient.fetchAdminChatRoomSnapshot(roomKey, settings).getOrNull() ?: return
             val newColleagueMessages = repository.recordPolledChatMessages(
@@ -320,34 +412,41 @@ class JiraMonitorService : Service() {
     private fun startWatchlistBackgroundLoop() {
         watchlistPingJob?.cancel()
         watchlistPingJob = serviceScope.launch {
-            // Brief initial warmup so service startup completes first
             delay(5_000L)
             while (isActive) {
+                // Suspend with 0 CPU/battery wakeups if the watchlist is empty
+                val hosts = repository.watchlistHosts.first { it.isNotEmpty() }
                 runCatching {
-                    val hosts = repository.watchlistHosts.value
-                    val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                    val hasAnyNetwork = cm == null || cm.activeNetwork != null
-                    if (hosts.isNotEmpty() && hasAnyNetwork) {
+                    if (hasActiveInternetConnection()) {
                         val labels = repository.watchlistLabels.value
-                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(hosts)
+                        val statuses = SysadminToolboxEngine.checkWatchlistHostsWithOfflineRetry(
+                            hosts = hosts,
+                            lightweightBackground = true
+                        )
                         repository.updateWatchlistStatuses(statuses)
+                        val activeKeys = statuses.map { SysadminToolboxEngine.normalizeHostKey(it.host) }.toSet()
+                        notifiedOfflineHostKeys.retainAll(activeKeys)
+
                         var playedOfflineSound = false
                         for (st in statuses) {
                             val hostKey = SysadminToolboxEngine.normalizeHostKey(st.host)
                             if (!st.isAlive) {
-                                val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(st.host, labels)
-                                val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(st.host, labels)
-                                NotificationHelper.showHostOfflineNotification(
-                                    context = applicationContext,
-                                    hostKey = hostKey,
-                                    shortTitle = shortName,
-                                    fullDisplayName = fullName
-                                )
-                                if (!playedOfflineSound && BelarusWorkCalendar.isWorkingTimeNow(repository.appSettings.value)) {
-                                    playedOfflineSound = true
-                                    AlertSoundPlayer.playTicketAlert(applicationContext, repository.appSettings.value)
+                                val newlyOffline = notifiedOfflineHostKeys.add(hostKey)
+                                if (newlyOffline) {
+                                    val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(st.host, labels)
+                                    val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(st.host, labels)
+                                    NotificationHelper.showHostOfflineNotification(
+                                        context = applicationContext,
+                                        hostKey = hostKey,
+                                        shortTitle = shortName,
+                                        fullDisplayName = fullName
+                                    )
+                                    if (!playedOfflineSound && BelarusWorkCalendar.isWorkingTimeNow(repository.appSettings.value)) {
+                                        playedOfflineSound = true
+                                        AlertSoundPlayer.playTicketAlert(applicationContext, repository.appSettings.value)
+                                    }
                                 }
-                            } else {
+                            } else if (notifiedOfflineHostKeys.remove(hostKey)) {
                                 NotificationHelper.cancelHostOfflineNotification(applicationContext, hostKey)
                             }
                         }
@@ -360,29 +459,36 @@ class JiraMonitorService : Service() {
 
     /**
      * Background loop that synchronizes the offline Confluence `Читалка` database once per 24 hours.
-     * If `w.csl.by` is reachable and rejects account authentication, wipes the local database
-     * and all records created in the program.
+     * Sleeps for the exact remaining window (bounded to 1..6 hours) to avoid unnecessary wakeups.
      */
     private fun startWikiDailySyncLoop() {
         wikiDailySyncJob?.cancel()
         wikiDailySyncJob = serviceScope.launch {
-            delay(15_000L)
+            delay(20_000L)
             while (isActive) {
+                var nextSleepMs = 2L * 3600_000L
                 runCatching {
                     val settings = repository.appSettings.value
-                    if (settings.isConfluenceReady && repository.wikiOfflineStore.isDailySyncDue()) {
-                        val outcome = repository.wikiOfflineStore.syncFromServer(
-                            wikiClient = repository.wikiClient,
-                            settings = settings
-                        )
-                        if (outcome is ConfluenceSyncOutcome.AccountRevokedWipeTriggered) {
-                            repository.wipeAllProgramDataOnAccountDisabled(outcome.reason)
-                            NotificationHelper.showAccountWipedNotification(applicationContext, outcome.reason)
+                    val store = repository.wikiOfflineStore
+                    if (settings.isConfluenceReady && hasActiveInternetConnection()) {
+                        if (store.isDailySyncDue()) {
+                            val outcome = store.syncFromServer(
+                                wikiClient = repository.wikiClient,
+                                settings = settings
+                            )
+                            if (outcome is ConfluenceSyncOutcome.AccountRevokedWipeTriggered) {
+                                repository.wipeAllProgramDataOnAccountDisabled(outcome.reason)
+                                NotificationHelper.showAccountWipedNotification(applicationContext, outcome.reason)
+                            }
+                        }
+                        val snap = store.getSnapshot()
+                        if (snap != null && snap.pagesById.isNotEmpty()) {
+                            val remainingMs = (snap.syncedAtEpochMs + 24L * 3600_000L) - System.currentTimeMillis()
+                            nextSleepMs = remainingMs.coerceIn(60L * 60_000L, 6L * 3600_000L)
                         }
                     }
                 }
-                // Re-check every 30 minutes whether the 24-hour sync window is due
-                delay(30L * 60_000L)
+                delay(nextSleepMs)
             }
         }
     }

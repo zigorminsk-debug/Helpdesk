@@ -49,6 +49,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -105,6 +108,22 @@ fun ConfluenceWikiScreen(
         }
         onDispose {
             viewModel.bindWikiWebRestFetcher(null)
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, webViewRef) {
+        val wv = webViewRef
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> runCatching { wv?.onResume() }
+                Lifecycle.Event.ON_PAUSE -> runCatching { wv?.onPause() }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -1470,6 +1489,13 @@ private fun ConfluenceEmbeddedWebView(
                     view.loadUrl(targetUrl)
                 }
                 onCanGoBackChanged(view.canGoBack())
+            },
+            onRelease = { view ->
+                webBridge.isWebReadyAndAuthenticated = false
+                runCatching { view.stopLoading() }
+                runCatching { view.onPause() }
+                runCatching { view.removeJavascriptInterface("HelpCslBridge") }
+                runCatching { view.destroy() }
             }
         )
     }

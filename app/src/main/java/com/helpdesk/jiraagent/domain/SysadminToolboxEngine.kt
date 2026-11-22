@@ -354,18 +354,38 @@ object SysadminToolboxEngine {
         }
     }
 
+    private const val BACKGROUND_SSL_CACHE_TTL_MS: Long = 6L * 3600_000L
+    private val backgroundSslCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, SslCertificateReport>>()
+
     // ==================== 4. SSL & CLIENT HOST WATCHLIST MONITOR ====================
 
-    suspend fun checkWatchlistHosts(hosts: List<String>): List<WatchlistHostStatus> = coroutineScope {
+    suspend fun checkWatchlistHosts(
+        hosts: List<String>,
+        lightweightBackground: Boolean = false
+    ): List<WatchlistHostStatus> = coroutineScope {
         val stamp = ZonedDateTime.now(ZoneId.of("Europe/Minsk"))
             .format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+        val nowMs = System.currentTimeMillis()
         val cleanedHosts = hosts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         cleanedHosts.map { host ->
             async(Dispatchers.IO) {
                 val rep = NetworkDiagnosticsTool.runDiagnostics(
                     rawHost = host,
-                    timeoutMs = 1900,
-                    portsToScan = NetworkDiagnosticsTool.WATCHLIST_PORTS
+                    timeoutMs = if (lightweightBackground) 1400 else 1900,
+                    portsToScan = NetworkDiagnosticsTool.WATCHLIST_PORTS,
+                    includeDnsRecords = false,
+                    includeHttpProbe = !lightweightBackground,
+                    fastBackgroundMode = lightweightBackground,
+                    cachedSslProvider = if (lightweightBackground) {
+                        { h ->
+                            backgroundSslCache[h.lowercase(Locale.ROOT)]
+                                ?.takeIf { nowMs - it.first < BACKGROUND_SSL_CACHE_TTL_MS }
+                                ?.second
+                        }
+                    } else null,
+                    onSslFetched = { h, ssl ->
+                        backgroundSslCache[h.lowercase(Locale.ROOT)] = System.currentTimeMillis() to ssl
+                    }
                 )
                 val sortedPortStatuses = rep.portStatuses.sortedWith(
                     compareByDescending<TcpPortStatus> { it.isOpen }.thenBy { it.port }
@@ -441,12 +461,18 @@ object SysadminToolboxEngine {
      * Runs a watchlist check with a short confirmation retry on any host that failed the initial probe,
      * eliminating transient single-packet jitter before firing background offline notifications.
      */
-    suspend fun checkWatchlistHostsWithOfflineRetry(hosts: List<String>): List<WatchlistHostStatus> {
-        val initial = checkWatchlistHosts(hosts)
+    suspend fun checkWatchlistHostsWithOfflineRetry(
+        hosts: List<String>,
+        lightweightBackground: Boolean = true
+    ): List<WatchlistHostStatus> {
+        val initial = checkWatchlistHosts(hosts, lightweightBackground = lightweightBackground)
         val failedHosts = initial.filter { !it.isAlive }.map { it.host }
         if (failedHosts.isEmpty()) return initial
         delay(1_500L)
-        val recheckedByHost = checkWatchlistHosts(failedHosts).associateBy { normalizeHostKey(it.host) }
+        val recheckedByHost = checkWatchlistHosts(
+            failedHosts,
+            lightweightBackground = lightweightBackground
+        ).associateBy { normalizeHostKey(it.host) }
         return initial.map { st ->
             if (st.isAlive) st else recheckedByHost[normalizeHostKey(st.host)] ?: st
         }.sortedWith(

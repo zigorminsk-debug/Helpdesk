@@ -118,9 +118,10 @@ fun DesktopTicketsWorkspace(
     var showPostponedDialog by remember { mutableStateOf(false) }
     var showHabrPanel by remember { mutableStateOf(false) }
 
+    // Update stale-counter clock once per minute instead of every 20 seconds
     val nowTick by produceState(initialValue = Instant.now()) {
         while (true) {
-            delay(20_000L)
+            delay(60_000L)
             value = Instant.now()
         }
     }

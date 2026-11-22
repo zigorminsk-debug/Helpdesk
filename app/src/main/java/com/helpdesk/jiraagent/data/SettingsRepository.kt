@@ -132,6 +132,8 @@ class SettingsRepository private constructor(context: Context) {
     val wikiOfflineStore: ConfluenceOfflineStore =
         ConfluenceOfflineStore(java.io.File(appContext.filesDir, "confluence_offline"))
 
+    val jiraApiClient: JiraApiClient = JiraApiClient()
+
     val wikiClient: ConfluenceWikiClient = ConfluenceWikiClient().apply {
         externalCookieProvider = { url ->
             runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
@@ -424,6 +426,7 @@ class SettingsRepository private constructor(context: Context) {
             .putBoolean(KEY_TRUST_SSL, newSettings.trustSelfSignedSsl)
             .putBoolean(KEY_POLLING_ENABLED, newSettings.pollingEnabled)
             .putInt(KEY_POLL_INTERVAL, newSettings.pollIntervalSeconds)
+            .putInt(KEY_OFF_HOURS_POLL_MINUTES, newSettings.normalizedOffHoursPollMinutes)
             .putBoolean(KEY_START_ON_BOOT, newSettings.startOnBoot)
             .putBoolean(KEY_AUTO_CHECK_UPDATES, newSettings.autoCheckUpdates)
             .putBoolean(KEY_WORK_SCHEDULE_ENABLED, newSettings.workScheduleEnabled)
@@ -665,6 +668,7 @@ class SettingsRepository private constructor(context: Context) {
     }
 
     private fun updateTicketsCache(list: List<HelpdeskTicket>) {
+        if (_tickets.value == list) return
         _tickets.value = list
         runCatching { mergeClientDirectoryEntries(extractEntriesFromTickets(list)) }
         runCatching {
@@ -1050,6 +1054,10 @@ class SettingsRepository private constructor(context: Context) {
             trustSelfSignedSsl = prefs.getBoolean(KEY_TRUST_SSL, false),
             pollingEnabled = prefs.getBoolean(KEY_POLLING_ENABLED, true),
             pollIntervalSeconds = prefs.getInt(KEY_POLL_INTERVAL, 30),
+            offHoursPollIntervalMinutes = prefs.getInt(
+                KEY_OFF_HOURS_POLL_MINUTES,
+                AppSettings.DEFAULT_OFF_HOURS_POLL_MINUTES
+            ),
             startOnBoot = prefs.getBoolean(KEY_START_ON_BOOT, true),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             workScheduleEnabled = prefs.getBoolean(KEY_WORK_SCHEDULE_ENABLED, true),
@@ -1199,6 +1207,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_TRUST_SSL = "trust_ssl"
         private const val KEY_POLLING_ENABLED = "polling_enabled"
         private const val KEY_POLL_INTERVAL = "poll_interval"
+        private const val KEY_OFF_HOURS_POLL_MINUTES = "off_hours_poll_minutes"
         private const val KEY_START_ON_BOOT = "start_on_boot"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_WORK_SCHEDULE_ENABLED = "work_schedule_enabled"
