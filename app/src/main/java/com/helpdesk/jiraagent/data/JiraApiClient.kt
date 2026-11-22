@@ -2508,7 +2508,7 @@ class JiraApiClient {
                 "ORDER BY updated DESC"
             }
             val searchJson = executeSearchWithFallback(baseUrl, jql, 100, preferCloud, settings)
-            val parsedTickets = JiraJsonParser.parseSearchResults(searchJson, settings, filterSettings)
+            val parsedTickets = JiraJsonParser.parseSearchResponse(searchJson, settings, filterSettings)
             val ticketByKey = HashMap<String, HelpdeskTicket>(parsedTickets.size)
 
             for (rawTicket in parsedTickets) {

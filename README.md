@@ -24,5 +24,5 @@
 Локальная сборка (JDK 17 + Android SDK 35):
 
 ```bash
-./gradlew testReleaseUnitTest assembleRelease -PversionCode=1026 -PversionName=1.0.26
+./gradlew testReleaseUnitTest assembleRelease -PversionCode=1027 -PversionName=1.0.27
 ```
