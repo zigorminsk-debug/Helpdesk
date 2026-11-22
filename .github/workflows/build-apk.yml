@@ -166,7 +166,8 @@ jobs:
           Copy-Item $builtSetup "dist-win\$versionedName" -Force
 
           $hash = (Get-FileHash "dist-win\setup.exe" -Algorithm SHA256).Hash.ToLower()
-          [System.IO.File]::AppendAllLines($env:GITHUB_OUTPUT, @("exe_sha256=$hash", "versioned_exe_name=$versionedName"))
+          "exe_sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "versioned_exe_name=$versionedName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Собран setup.exe ($((Get-Item 'dist-win\setup.exe').Length) байт), хеш: $hash"
 
       - name: Загрузка setup.exe в артефакты GitHub Actions
