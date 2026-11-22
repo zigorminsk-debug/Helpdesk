@@ -84,6 +84,11 @@ data class AppSettings(
     val serverUrl: String = "",
     val confluenceUrl: String = DEFAULT_CONFLUENCE_URL,
     val confluenceToken: String = "",
+    val zabbixUrl: String = DEFAULT_ZABBIX_URL,
+    val zabbixLogin: String = "",
+    val zabbixPassword: String = "",
+    val zabbixEnabled: Boolean = true,
+    val zabbixMinAlertSeverity: Int = DEFAULT_ZABBIX_MIN_SEVERITY,
     val serverType: JiraServerType = JiraServerType.AUTO,
     val authType: AuthType = AuthType.BASIC_LOGIN_PASSWORD,
     val usernameOrEmail: String = "",
@@ -125,6 +130,12 @@ data class AppSettings(
             (passwordOrToken.isNotBlank() &&
                 (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank()))
 
+    val isZabbixConfigured: Boolean
+        get() = zabbixUrl.isNotBlank() && zabbixLogin.isNotBlank() && zabbixPassword.isNotBlank()
+
+    val normalizedZabbixMinSeverity: Int
+        get() = if (zabbixMinAlertSeverity in 1..5) zabbixMinAlertSeverity else DEFAULT_ZABBIX_MIN_SEVERITY
+
     val normalizedOffHoursPollMinutes: Int
         get() = when {
             offHoursPollIntervalMinutes == OFF_HOURS_POLL_SAME_AS_WORK -> OFF_HOURS_POLL_SAME_AS_WORK
@@ -135,6 +146,8 @@ data class AppSettings(
 
     companion object {
         const val DEFAULT_CONFLUENCE_URL = "https://w.csl.by"
+        const val DEFAULT_ZABBIX_URL = "http://z.csl.by"
+        const val DEFAULT_ZABBIX_MIN_SEVERITY = 3
         const val DEFAULT_OFF_HOURS_POLL_MINUTES = 120
         const val OFF_HOURS_POLL_DISABLED = -1
         const val OFF_HOURS_POLL_SAME_AS_WORK = -2

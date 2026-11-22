@@ -25,6 +25,7 @@ import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
+import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -53,6 +54,10 @@ data class DesktopPersistedState(
     val baselineInitialized: Boolean = false,
     val seenTicketKeys: Set<String> = emptySet(),
     val deferredAlertKeys: Set<String> = emptySet(),
+    val zabbixBaselineInitialized: Boolean = false,
+    val seenZabbixAlertKeys: Set<String> = emptySet(),
+    val deferredZabbixAlertKeys: Set<String> = emptySet(),
+    val cachedZabbixSnapshot: ZabbixDashboardSnapshot? = null,
     val clientDossierNotes: Map<String, String> = emptyMap(),
     val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
     val watchlistHosts: List<String> = SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS,
@@ -108,9 +113,15 @@ class DesktopStorage {
             val safeApp = (raw.appSettings ?: AppSettings()).let { s ->
                 val safeWikiUrl = (s.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                     ?: AppSettings.DEFAULT_CONFLUENCE_URL
+                val safeZabbixUrl = (s.zabbixUrl as String?)?.takeIf { it.isNotBlank() }
+                    ?: AppSettings.DEFAULT_ZABBIX_URL
                 s.copy(
                     confluenceUrl = safeWikiUrl,
                     confluenceToken = (s.confluenceToken as String?).orEmpty(),
+                    zabbixUrl = safeZabbixUrl,
+                    zabbixLogin = (s.zabbixLogin as String?).orEmpty(),
+                    zabbixPassword = (s.zabbixPassword as String?).orEmpty(),
+                    zabbixMinAlertSeverity = s.normalizedZabbixMinSeverity,
                     offHoursPollIntervalMinutes = s.normalizedOffHoursPollMinutes,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
@@ -162,9 +173,13 @@ class DesktopStorage {
                 resolvedChatRoomKey = raw.resolvedChatRoomKey.orEmpty(),
                 resolvedRepairRoomKey = raw.resolvedRepairRoomKey.orEmpty(),
                 pinnedShiftNote = raw.pinnedShiftNote.orEmpty(),
-                baselineInitialized = raw.baselineInitialized,
-                seenTicketKeys = raw.seenTicketKeys ?: emptySet(),
-                deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
+                    baselineInitialized = raw.baselineInitialized,
+                    seenTicketKeys = raw.seenTicketKeys ?: emptySet(),
+                    deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
+                    zabbixBaselineInitialized = raw.zabbixBaselineInitialized,
+                    seenZabbixAlertKeys = raw.seenZabbixAlertKeys ?: emptySet(),
+                    deferredZabbixAlertKeys = raw.deferredZabbixAlertKeys ?: emptySet(),
+                    cachedZabbixSnapshot = raw.cachedZabbixSnapshot,
                 clientDossierNotes = raw.clientDossierNotes ?: emptyMap(),
                 clientPassports = ClientTechPassportCodec.mergePassports(
                     localMap = raw.clientPassports ?: emptyMap(),
@@ -195,6 +210,7 @@ class DesktopStorage {
         runCatching {
             val trimmed = state.copy(
                 seenTicketKeys = state.seenTicketKeys.toList().takeLast(1000).toSet(),
+                seenZabbixAlertKeys = state.seenZabbixAlertKeys.toList().takeLast(800).toSet(),
                 repairItems = state.repairItems.take(400),
                 clientDirectory = state.clientDirectory.take(1000),
                 cachedTickets = state.cachedTickets.take(80),
@@ -258,6 +274,9 @@ object DesktopQrTransferCodec {
             appSettings.copy(
                 usernameOrEmail = "",
                 passwordOrToken = "",
+                confluenceToken = "",
+                zabbixLogin = "",
+                zabbixPassword = "",
                 customAlertSoundUri = "",
                 customAlertSoundTitle = ""
             )
@@ -298,6 +317,12 @@ object DesktopQrTransferCodec {
             appSettings = parsed.appSettings.copy(
                 confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                     ?: AppSettings.DEFAULT_CONFLUENCE_URL,
+                zabbixUrl = (parsed.appSettings.zabbixUrl as String?)?.takeIf { it.isNotBlank() }
+                    ?: AppSettings.DEFAULT_ZABBIX_URL,
+                zabbixLogin = (parsed.appSettings.zabbixLogin as String?).orEmpty(),
+                zabbixPassword = (parsed.appSettings.zabbixPassword as String?).orEmpty(),
+                zabbixMinAlertSeverity = parsed.appSettings.normalizedZabbixMinSeverity,
+                offHoursPollIntervalMinutes = parsed.appSettings.normalizedOffHoursPollMinutes,
                 quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                     ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
             )

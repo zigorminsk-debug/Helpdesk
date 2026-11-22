@@ -47,6 +47,8 @@ object SettingsTransferCodec {
                 usernameOrEmail = "",
                 passwordOrToken = "",
                 confluenceToken = "",
+                zabbixLogin = "",
+                zabbixPassword = "",
                 customAlertSoundUri = "",
                 customAlertSoundTitle = ""
             )
@@ -97,6 +99,11 @@ object SettingsTransferCodec {
                     confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                         ?: AppSettings.DEFAULT_CONFLUENCE_URL,
                     confluenceToken = (parsed.appSettings.confluenceToken as String?).orEmpty(),
+                    zabbixUrl = (parsed.appSettings.zabbixUrl as String?)?.takeIf { it.isNotBlank() }
+                        ?: AppSettings.DEFAULT_ZABBIX_URL,
+                    zabbixLogin = (parsed.appSettings.zabbixLogin as String?).orEmpty(),
+                    zabbixPassword = (parsed.appSettings.zabbixPassword as String?).orEmpty(),
+                    zabbixMinAlertSeverity = parsed.appSettings.normalizedZabbixMinSeverity,
                     offHoursPollIntervalMinutes = parsed.appSettings.normalizedOffHoursPollMinutes,
                     quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES

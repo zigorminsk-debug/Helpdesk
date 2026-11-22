@@ -17,6 +17,7 @@ import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
+import com.helpdesk.jiraagent.data.ZabbixApiClient
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
@@ -42,6 +43,8 @@ import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TtsReadoutMode
+import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +62,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 enum class DesktopMainTab(val title: String) {
     TICKETS("Заявки"),
+    ZABBIX("Zabbix"),
     REPAIR("В ремонт"),
     WIKI("Wiki"),
     CHAT("Чат"),
@@ -166,6 +170,11 @@ data class DesktopUiState(
     val isSyncingChat: Boolean = false,
     val pendingChatDraft: String = "",
 
+    // Zabbix (z.csl.by) Monitoring
+    val zabbixSnapshot: ZabbixDashboardSnapshot? = null,
+    val zabbixError: String? = null,
+    val isLoadingZabbix: Boolean = false,
+
     // Desktop popup alert & GitHub self-update
     val activePopupAlert: DesktopToastAlert? = null,
     val updateInfo: DesktopReleaseUpdate? = null,
@@ -179,6 +188,7 @@ class DesktopController(
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val apiClient = JiraApiClient()
     val wikiClient = ConfluenceWikiClient()
+    val zabbixClient = ZabbixApiClient()
     private val storage = DesktopStorage()
     private val wikiOfflineStore = ConfluenceOfflineStore(storage.offlineWikiDir())
     private val jiraAttachmentMemoryCache = ConcurrentHashMap<String, ByteArray>()
@@ -186,9 +196,12 @@ class DesktopController(
     private val persisted = storage.loadState()
     private val notifiedTicketKeys = persisted.seenTicketKeys.toMutableSet()
     private val deferredTicketKeys = persisted.deferredAlertKeys.toMutableSet()
+    private val notifiedZabbixKeys = persisted.seenZabbixAlertKeys.toMutableSet()
+    private val deferredZabbixKeys = persisted.deferredZabbixAlertKeys.toMutableSet()
     private val lastStaleReminderByKey = mutableMapOf<String, Long>()
     val sessionStartedEpochMs: Long = System.currentTimeMillis()
     private var baselineInitialized: Boolean = persisted.baselineInitialized
+    private var zabbixBaselineInitialized: Boolean = persisted.zabbixBaselineInitialized
     private var seenChatIds: Set<String> = persisted.cachedChatMessages.map { it.id }.toSet()
 
     private val _state = MutableStateFlow(
@@ -210,7 +223,8 @@ class DesktopController(
             repairRoomKey = persisted.resolvedRepairRoomKey,
             chatRoomKey = persisted.resolvedChatRoomKey,
             chatMessages = persisted.cachedChatMessages,
-            chatPinnedNote = persisted.pinnedShiftNote
+            chatPinnedNote = persisted.pinnedShiftNote,
+            zabbixSnapshot = persisted.cachedZabbixSnapshot
         )
     )
     val state: StateFlow<DesktopUiState> = _state.asStateFlow()
@@ -232,6 +246,11 @@ class DesktopController(
                 syncRepairRegistry(silent = true)
                 refreshClientsDirectory(silent = true)
                 refreshChat(silent = true)
+            }
+        }
+        if (persisted.appSettings.isZabbixConfigured && persisted.appSettings.zabbixEnabled) {
+            scope.launch {
+                refreshZabbix(silent = true)
             }
         }
         if (persisted.appSettings.autoCheckUpdates) {
@@ -704,6 +723,10 @@ class DesktopController(
                     baselineInitialized = baselineInitialized,
                     seenTicketKeys = synchronized(notifiedTicketKeys) { notifiedTicketKeys.toSet() },
                     deferredAlertKeys = synchronized(notifiedTicketKeys) { deferredTicketKeys.toSet() },
+                    zabbixBaselineInitialized = zabbixBaselineInitialized,
+                    seenZabbixAlertKeys = synchronized(notifiedZabbixKeys) { notifiedZabbixKeys.toSet() },
+                    deferredZabbixAlertKeys = synchronized(notifiedZabbixKeys) { deferredZabbixKeys.toSet() },
+                    cachedZabbixSnapshot = cur.zabbixSnapshot,
                     clientPassports = cur.clientPassports,
                     watchlistHosts = cur.watchlistHosts,
                     watchlistLabels = cur.watchlistLabels,
@@ -719,6 +742,12 @@ class DesktopController(
     }
 
     fun saveSettings(newSettings: AppSettings) {
+        val old = _state.value.settings
+        if (old.zabbixUrl.trim() != newSettings.zabbixUrl.trim() ||
+            old.zabbixLogin.trim() != newSettings.zabbixLogin.trim()
+        ) {
+            zabbixClient.invalidateSession()
+        }
         _state.update {
             it.copy(
                 settings = newSettings,
@@ -732,6 +761,10 @@ class DesktopController(
             syncRepairRegistry(silent = true)
             refreshClientsDirectory(silent = true)
         }
+        if (newSettings.isZabbixConfigured && newSettings.zabbixEnabled) {
+            refreshZabbix(silent = true)
+        }
+    }
     }
 
     fun saveFilterSettings(newFilter: FilterSettings) {
@@ -790,17 +823,22 @@ class DesktopController(
                     settings = latest.settings,
                     nowInstant = java.time.Instant.now()
                 )
-                if (latest.settings.isConfigured && latest.settings.pollingEnabled && !isOffHoursPaused) {
-                    processDuePostponedTickets()
-                    refreshTickets(silent = true, isInitialBoot = false)
-                    val nowMs = System.currentTimeMillis()
-                    if (nowMs - lastRepairSilentSyncMs >= 180_000L) {
-                        lastRepairSilentSyncMs = nowMs
-                        syncRepairRegistry(silent = true)
+                if (!isOffHoursPaused && latest.settings.pollingEnabled) {
+                    if (latest.settings.isConfigured) {
+                        processDuePostponedTickets()
+                        refreshTickets(silent = true, isInitialBoot = false)
+                        val nowMs = System.currentTimeMillis()
+                        if (nowMs - lastRepairSilentSyncMs >= 180_000L) {
+                            lastRepairSilentSyncMs = nowMs
+                            syncRepairRegistry(silent = true)
+                        }
+                        if (nowMs - lastChatSilentSyncMs >= 60_000L) {
+                            lastChatSilentSyncMs = nowMs
+                            refreshChat(silent = true)
+                        }
                     }
-                    if (nowMs - lastChatSilentSyncMs >= 60_000L) {
-                        lastChatSilentSyncMs = nowMs
-                        refreshChat(silent = true)
+                    if (latest.settings.isZabbixConfigured && latest.settings.zabbixEnabled) {
+                        refreshZabbix(silent = true)
                     }
                 }
             }
@@ -937,6 +975,281 @@ class DesktopController(
         if (playSound) {
             DesktopSoundPlayer.playAlert(settings.alertSoundPreset, settings.customAlertSoundUri)
         }
+    }
+
+    fun saveAndConnectZabbix(
+        zabbixUrl: String,
+        login: String,
+        password: String,
+        enabled: Boolean,
+        minSeverity: Int
+    ) {
+        val updated = _state.value.settings.copy(
+            zabbixUrl = zabbixUrl.trim().ifBlank { AppSettings.DEFAULT_ZABBIX_URL },
+            zabbixLogin = login.trim(),
+            zabbixPassword = password,
+            zabbixEnabled = enabled,
+            zabbixMinAlertSeverity = minSeverity.coerceIn(1, 5)
+        )
+        zabbixClient.invalidateSession()
+        _state.update {
+            it.copy(
+                settings = updated,
+                zabbixError = null,
+                isLoadingZabbix = true
+            )
+        }
+        persistCurrentState()
+        restartPollingLoop()
+
+        if (!updated.isZabbixConfigured) {
+            _state.update {
+                it.copy(
+                    isLoadingZabbix = false,
+                    zabbixError = "Укажите логин и пароль Zabbix для подключения к ${updated.zabbixUrl}"
+                )
+            }
+            return
+        }
+
+        scope.launch {
+            zabbixClient.testConnection(updated)
+                .onSuccess { snapshot ->
+                    handleIncomingZabbixSnapshot(snapshot)
+                    val verInfo = snapshot.serverVersion.takeIf { it.isNotBlank() }?.let { " (Zabbix v$it)" }.orEmpty()
+                    _state.update {
+                        it.copy(
+                            isLoadingZabbix = false,
+                            statusBanner = "Подключено к Zabbix ${updated.zabbixUrl}$verInfo · активных проблем: ${snapshot.problems.size}"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _state.update {
+                        it.copy(
+                            isLoadingZabbix = false,
+                            zabbixError = err.message ?: "Не удалось подключиться к Zabbix"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun refreshZabbix(silent: Boolean = false) {
+        val cur = _state.value
+        if (!cur.settings.isZabbixConfigured) {
+            if (!silent) {
+                _state.update { it.copy(zabbixError = "Укажите логин и пароль Zabbix (${cur.settings.zabbixUrl})") }
+            }
+            return
+        }
+        _state.update { it.copy(isLoadingZabbix = true, zabbixError = if (silent) it.zabbixError else null) }
+        scope.launch {
+            zabbixClient.fetchSnapshot(cur.settings)
+                .onSuccess { snapshot ->
+                    handleIncomingZabbixSnapshot(snapshot)
+                }
+                .onFailure { err ->
+                    _state.update {
+                        it.copy(
+                            isLoadingZabbix = false,
+                            zabbixError = err.message ?: "Ошибка связи с Zabbix"
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun handleIncomingZabbixSnapshot(snapshot: ZabbixDashboardSnapshot) {
+        val cur = _state.value
+        val minSev = cur.settings.normalizedZabbixMinSeverity
+        val allowAlertsNow = isDesktopAlertAllowedNow(cur.settings, cur.respectWorkScheduleOnDesktop)
+        val newAlerts = mutableListOf<ZabbixProblem>()
+
+        synchronized(notifiedZabbixKeys) {
+            if (!zabbixBaselineInitialized) {
+                val nowSec = System.currentTimeMillis() / 1000L
+                for (prob in snapshot.problems) {
+                    if (!prob.acknowledged &&
+                        prob.shouldTriggerBanner(minSev) &&
+                        prob.clockEpochSeconds > 0L &&
+                        (nowSec - prob.clockEpochSeconds) <= 1800L
+                    ) {
+                        notifiedZabbixKeys.add(prob.alertKey)
+                        if (allowAlertsNow) {
+                            newAlerts.add(prob)
+                        } else {
+                            deferredZabbixKeys.add(prob.alertKey)
+                        }
+                    } else {
+                        notifiedZabbixKeys.add(prob.alertKey)
+                    }
+                }
+                zabbixBaselineInitialized = true
+            } else {
+                val byKey = snapshot.problems.associateBy { it.alertKey }
+                if (allowAlertsNow && deferredZabbixKeys.isNotEmpty()) {
+                    val iter = deferredZabbixKeys.iterator()
+                    while (iter.hasNext()) {
+                        val dKey = iter.next()
+                        val p = byKey[dKey]
+                        if (p != null && !p.acknowledged && p.shouldTriggerBanner(minSev)) {
+                            newAlerts.add(p)
+                        }
+                        iter.remove()
+                    }
+                }
+                for (prob in snapshot.problems) {
+                    val isUnseen = notifiedZabbixKeys.add(prob.alertKey)
+                    if (isUnseen && !prob.acknowledged && prob.shouldTriggerBanner(minSev)) {
+                        if (allowAlertsNow) {
+                            newAlerts.add(prob)
+                        } else {
+                            deferredZabbixKeys.add(prob.alertKey)
+                        }
+                    }
+                }
+            }
+        }
+
+        _state.update {
+            it.copy(
+                zabbixSnapshot = snapshot,
+                zabbixError = null,
+                isLoadingZabbix = false
+            )
+        }
+        persistCurrentState()
+
+        if (newAlerts.isNotEmpty() && allowAlertsNow) {
+            triggerZabbixDesktopAlerts(newAlerts)
+        }
+    }
+
+    private fun triggerZabbixDesktopAlerts(problems: List<ZabbixProblem>) {
+        if (problems.isEmpty()) return
+        val settings = _state.value.settings
+        if (settings.stormProtectionEnabled && problems.size > 3) {
+            val summaryLines = problems.take(4).joinToString("; ") {
+                "${it.effectiveHostLabel}: ${it.name.take(40)}"
+            }
+            val toast = DesktopToastAlert(
+                id = "zbx_storm_${System.currentTimeMillis()}",
+                title = "🚨 Шторм Zabbix: +${problems.size} ошибок / аварий",
+                subtitle = summaryLines,
+                ticketKey = null,
+                isStormSummary = true
+            )
+            emitZabbixDesktopPopup(toast, problem = null, playSound = true)
+        } else {
+            problems.forEachIndexed { idx, prob ->
+                val subtitle = buildString {
+                    append(prob.name)
+                    if (prob.opData.isNotBlank()) append(" [").append(prob.opData).append("]")
+                    append(" · ").append(prob.hostWithIpLabel)
+                }
+                val toast = DesktopToastAlert(
+                    id = "zbx_${prob.alertKey}_${System.currentTimeMillis()}",
+                    title = "🚨 Zabbix · ${prob.effectiveHostLabel} · ${prob.severity.bannerSuffix}",
+                    subtitle = subtitle,
+                    ticketKey = prob.eventId.takeIf { it.isNotBlank() && it != "0" }?.let { "ZBX-$it" },
+                    isStormSummary = false
+                )
+                emitZabbixDesktopPopup(toast, problem = prob, playSound = (idx == 0))
+            }
+        }
+    }
+
+    private fun emitZabbixDesktopPopup(
+        alert: DesktopToastAlert,
+        problem: ZabbixProblem?,
+        playSound: Boolean
+    ) {
+        val settings = _state.value.settings
+        _state.update { it.copy(activePopupAlert = alert) }
+        DesktopNativePopupManager.showAlert(
+            alert = alert,
+            onTakeInWork = if (problem != null && problem.eventId.isNotBlank() && problem.eventId != "0") {
+                { _ ->
+                    _state.update { it.copy(activePopupAlert = null) }
+                    acknowledgeZabbixProblem(problem, null)
+                }
+            } else null,
+            onOpen = {
+                onBringWindowToFront?.invoke()
+                _state.update { it.copy(activeTab = DesktopMainTab.ZABBIX, activePopupAlert = null) }
+            },
+            onDismissed = {
+                _state.update { st ->
+                    if (st.activePopupAlert?.id == alert.id) st.copy(activePopupAlert = null) else st
+                }
+            }
+        )
+        runCatching { onSystemTrayNotify?.invoke(alert.title, alert.subtitle) }
+        if (playSound) {
+            DesktopSoundPlayer.playAlert(settings.alertSoundPreset, settings.customAlertSoundUri)
+        }
+    }
+
+    fun acknowledgeZabbixProblem(problem: ZabbixProblem, customComment: String?) {
+        if (problem.eventId.startsWith("DEMO")) {
+            _state.update { it.copy(statusBanner = "Тестовое событие Zabbix подтверждено") }
+            return
+        }
+        val cur = _state.value
+        if (!cur.settings.isZabbixConfigured) return
+        val engineer = EngineerNameResolver.resolve(
+            rawEngineer = null,
+            connectedUserDisplayName = cur.connectedUserName,
+            currentUsernameOrEmail = cur.settings.zabbixLogin.ifBlank { cur.settings.usernameOrEmail },
+            knownTickets = cur.tickets
+        )
+        val comment = customComment?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "Принято в работу инженером $engineer (Help-CSL)"
+
+        scope.launch {
+            zabbixClient.acknowledgeProblem(cur.settings, problem.eventId, comment)
+                .onSuccess {
+                    _state.update { st ->
+                        val updatedSnap = st.zabbixSnapshot?.let { snap ->
+                            snap.copy(
+                                problems = snap.problems.map { p ->
+                                    if (p.eventId == problem.eventId) {
+                                        p.copy(acknowledged = true, ackMessage = comment)
+                                    } else p
+                                }
+                            )
+                        }
+                        st.copy(
+                            zabbixSnapshot = updatedSnap,
+                            statusBanner = "Событие Zabbix #${problem.eventId} подтверждено"
+                        )
+                    }
+                    persistCurrentState()
+                }
+                .onFailure { err ->
+                    _state.update {
+                        it.copy(errorBanner = err.message ?: "Не удалось подтвердить проблему в Zabbix")
+                    }
+                }
+        }
+    }
+
+    fun triggerTestZabbixBanner() {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val demo = ZabbixProblem(
+            eventId = "DEMO${nowSec % 10000}",
+            triggerId = "9901",
+            name = "Недоступен сервис 1С / Критическая загрузка диска C: (свободно < 2%)",
+            opData = "Free: 1.4 GB (1.8%)",
+            severityLevel = 4,
+            hostId = "101",
+            hostTechnicalName = "srv-1c-prod.csl.by",
+            hostDisplayName = "Сервер 1С Продакшн",
+            hostIp = "192.168.10.25",
+            clockEpochSeconds = nowSec
+        )
+        triggerZabbixDesktopAlerts(listOf(demo))
     }
 
     fun triggerTestNotification() {

@@ -9,6 +9,7 @@ import android.speech.tts.TextToSpeech
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TtsReadoutMode
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +62,30 @@ object TicketSpeechAnnouncer {
                 else -> Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                     (dev.type == AudioDeviceInfo.TYPE_BLE_HEADSET || dev.type == AudioDeviceInfo.TYPE_BLE_SPEAKER)
             }
+        }
+    }
+
+    fun announceZabbixAlertIfEnabled(
+        context: Context,
+        problem: ZabbixProblem,
+        settings: AppSettings,
+        delayAfterChimeMs: Long = 2400L
+    ) {
+        val shouldSpeak = when (settings.ttsReadoutMode) {
+            TtsReadoutMode.OFF -> false
+            TtsReadoutMode.HEADSET_ONLY -> isExternalHeadsetConnected(context)
+            TtsReadoutMode.ALWAYS -> true
+        }
+        if (!shouldSpeak) return
+
+        val host = problem.effectiveHostLabel.take(40)
+        val summary = problem.name.replace(Regex("\\s+"), " ").take(80)
+        val phrase = "Внимание, Заббикс. Узел $host. $summary"
+
+        announceJob?.cancel()
+        announceJob = scope.launch {
+            delay(delayAfterChimeMs)
+            speakInternal(context.applicationContext, phrase)
         }
     }
 

@@ -95,6 +95,7 @@ import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.TtsReadoutMode
+import com.helpdesk.jiraagent.model.ZabbixSeverity
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.notification.TicketSpeechAnnouncer
@@ -144,6 +145,7 @@ fun ServerSettingsScreen(
     val context = LocalContext.current
     var draft by remember { mutableStateOf(currentSettings) }
     var showSecret by rememberSaveable { mutableStateOf(false) }
+    var showZabbixSecret by rememberSaveable { mutableStateOf(false) }
     var samplePhoneInput by rememberSaveable { mutableStateOf("8 (029) 654-32-10") }
 
     val ringtonePickerLauncher = rememberLauncherForActivityResult(
@@ -295,6 +297,111 @@ fun ServerSettingsScreen(
                     placeholder = { Text("Оставьте пустым для веб-входа или вставьте PAT из w.csl.by") },
                     singleLine = true
                 )
+
+                HorizontalDivider()
+
+                Text(
+                    text = "Мониторинг Zabbix (z.csl.by)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "При появлении ошибки или критического предупреждения в Zabbix программа выводит срочный баннер со звуком как заявка от клиента.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixUrl,
+                    onValueChange = { draft = draft.copy(zabbixUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL сервера Zabbix") },
+                    placeholder = { Text("http://z.csl.by") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixLogin,
+                    onValueChange = { draft = draft.copy(zabbixLogin = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Логин Zabbix") },
+                    placeholder = { Text("Логин на z.csl.by") },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixPassword,
+                    onValueChange = { draft = draft.copy(zabbixPassword = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Пароль Zabbix") },
+                    singleLine = true,
+                    visualTransformation = if (showZabbixSecret) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showZabbixSecret = !showZabbixSecret }) {
+                            Icon(
+                                imageVector = if (showZabbixSecret) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Показать пароль Zabbix"
+                            )
+                        }
+                    }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Фоновый опрос и баннеры Zabbix",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Порог: ${ZabbixSeverity.formatThresholdOptionLabel(draft.normalizedZabbixMinSeverity)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.zabbixEnabled,
+                        onCheckedChange = {
+                            val updated = draft.copy(zabbixEnabled = it)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        3 to "Ошибки и критич. (3–5)",
+                        4 to "Высокие и аварии (4–5)",
+                        2 to "Предупреждения+ (2–5)",
+                        5 to "Только аварии (5)"
+                    ).forEach { (lvl, label) ->
+                        FilterChip(
+                            selected = draft.normalizedZabbixMinSeverity == lvl,
+                            onClick = {
+                                val updated = draft.copy(zabbixMinAlertSeverity = lvl)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = { Text(label, maxLines = 1) }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
 
                 Text(
                     text = "Тип сервера",

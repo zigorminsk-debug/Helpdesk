@@ -21,7 +21,51 @@ import java.time.Instant
 class NotificationActionReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action != ACTION_TAKE_TICKET_IN_WORK) return
+        val action = intent?.action ?: return
+        if (action == ACTION_ACK_ZABBIX_PROBLEM) {
+            val eventId = intent.getStringExtra(EXTRA_ZABBIX_EVENT_ID)?.trim().orEmpty()
+            if (eventId.isEmpty()) return
+            val notifId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
+            AlertSoundPlayer.stopCurrent()
+            if (notifId != -1) {
+                NotificationManagerCompat.from(context).cancel(notifId)
+            }
+            val appCtx = context.applicationContext
+            val repo = SettingsRepository.getInstance(appCtx)
+            repo.dismissInAppBanner()
+
+            val pendingResult = goAsync()
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                try {
+                    val settings = repo.appSettings.value
+                    if (!settings.isZabbixConfigured) return@launch
+                    val engineer = repo.syncStatus.value.connectedUser
+                        ?: settings.zabbixLogin.ifBlank { "Инженер" }
+                    val msg = "Принято в работу ($engineer · Help-CSL)"
+                    repo.zabbixClient.acknowledgeProblem(settings, eventId, msg)
+                        .onSuccess {
+                            repo.markZabbixProblemAcknowledgedLocally(eventId, msg)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(appCtx, "Проблема Zabbix #$eventId подтверждена", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .onFailure { err ->
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    appCtx,
+                                    err.message ?: "Не удалось подтвердить событие Zabbix",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                } finally {
+                    pendingResult.finish()
+                }
+            }
+            return
+        }
+
+        if (action != ACTION_TAKE_TICKET_IN_WORK) return
         val ticketKey = intent.getStringExtra(EXTRA_TICKET_KEY)?.trim().orEmpty()
         if (ticketKey.isEmpty()) return
 
@@ -110,7 +154,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_TAKE_TICKET_IN_WORK = "com.helpdesk.jiraagent.action.TAKE_TICKET_IN_WORK"
+        const val ACTION_ACK_ZABBIX_PROBLEM = "com.helpdesk.jiraagent.action.ACK_ZABBIX_PROBLEM"
         const val EXTRA_TICKET_KEY = "extra_ticket_key"
+        const val EXTRA_ZABBIX_EVENT_ID = "extra_zabbix_event_id"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
     }
 }

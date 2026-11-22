@@ -32,6 +32,8 @@ import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TtsReadoutMode
+import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.widget.HelpCslAppWidgetProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,8 +51,12 @@ data class PendingCallSession(
 data class InAppBannerAlert(
     val ticket: HelpdeskTicket,
     val titleSuffix: String,
+    val zabbixProblem: ZabbixProblem? = null,
     val timestampMillis: Long = System.currentTimeMillis()
-)
+) {
+    val isZabbixAlert: Boolean
+        get() = zabbixProblem != null
+}
 
 class SettingsRepository private constructor(context: Context) {
 
@@ -133,6 +139,13 @@ class SettingsRepository private constructor(context: Context) {
         ConfluenceOfflineStore(java.io.File(appContext.filesDir, "confluence_offline"))
 
     val jiraApiClient: JiraApiClient = JiraApiClient()
+    val zabbixClient: ZabbixApiClient = ZabbixApiClient()
+
+    private val _zabbixSnapshot = MutableStateFlow<ZabbixDashboardSnapshot?>(loadCachedZabbixSnapshot())
+    val zabbixSnapshot: StateFlow<ZabbixDashboardSnapshot?> = _zabbixSnapshot.asStateFlow()
+
+    private val _zabbixLastError = MutableStateFlow<String?>(null)
+    val zabbixLastError: StateFlow<String?> = _zabbixLastError.asStateFlow()
 
     val wikiClient: ConfluenceWikiClient = ConfluenceWikiClient().apply {
         externalCookieProvider = { url ->
@@ -401,6 +414,20 @@ class SettingsRepository private constructor(context: Context) {
         _latestInAppBanner.value = InAppBannerAlert(
             ticket = ticket,
             titleSuffix = titleSuffix,
+            zabbixProblem = null,
+            timestampMillis = System.currentTimeMillis()
+        )
+    }
+
+    fun emitZabbixInAppBanner(
+        problem: ZabbixProblem,
+        titleSuffix: String = problem.severity.bannerSuffix
+    ) {
+        val zbxUrl = _appSettings.value.zabbixUrl.ifBlank { AppSettings.DEFAULT_ZABBIX_URL }
+        _latestInAppBanner.value = InAppBannerAlert(
+            ticket = problem.toBannerDisplayTicket(zbxUrl),
+            titleSuffix = titleSuffix,
+            zabbixProblem = problem,
             timestampMillis = System.currentTimeMillis()
         )
     }
@@ -411,6 +438,8 @@ class SettingsRepository private constructor(context: Context) {
 
     fun saveAppSettings(newSettings: AppSettings) {
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
+        val zabbixChanged = newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim() ||
+            newSettings.zabbixLogin.trim() != _appSettings.value.zabbixLogin.trim()
         val manualRoomChanged = newSettings.adminChatIssueKey.trim() != _appSettings.value.adminChatIssueKey.trim()
         prefs.edit()
             .putString(KEY_SERVER_URL, newSettings.serverUrl.trim())
@@ -419,6 +448,14 @@ class SettingsRepository private constructor(context: Context) {
                 newSettings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
             )
             .putString(KEY_CONFLUENCE_TOKEN, newSettings.confluenceToken.trim())
+            .putString(
+                KEY_ZABBIX_URL,
+                newSettings.zabbixUrl.trim().ifBlank { AppSettings.DEFAULT_ZABBIX_URL }
+            )
+            .putString(KEY_ZABBIX_LOGIN, newSettings.zabbixLogin.trim())
+            .putString(KEY_ZABBIX_PASSWORD, newSettings.zabbixPassword)
+            .putBoolean(KEY_ZABBIX_ENABLED, newSettings.zabbixEnabled)
+            .putInt(KEY_ZABBIX_MIN_SEVERITY, newSettings.normalizedZabbixMinSeverity)
             .putString(KEY_SERVER_TYPE, newSettings.serverType.name)
             .putString(KEY_AUTH_TYPE, newSettings.authType.name)
             .putString(KEY_USERNAME, newSettings.usernameOrEmail.trim())
@@ -460,6 +497,12 @@ class SettingsRepository private constructor(context: Context) {
             val manual = newSettings.adminChatIssueKey.trim().uppercase()
             if (manual.isNotBlank()) {
                 setResolvedChatRoomKey(manual)
+            }
+        }
+        if (zabbixChanged) {
+            zabbixClient.invalidateSession()
+            if (newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim()) {
+                resetZabbixBaseline()
             }
         }
         _appSettings.value = newSettings.copy(adminChatIssueKey = newSettings.adminChatIssueKey.trim().uppercase())
@@ -950,6 +993,130 @@ class SettingsRepository private constructor(context: Context) {
         _watchlistStatuses.value = statuses
     }
 
+    @Synchronized
+    fun updateZabbixError(errorMessage: String?) {
+        _zabbixLastError.value = errorMessage
+    }
+
+    @Synchronized
+    fun markZabbixProblemAcknowledgedLocally(eventId: String, message: String) {
+        val current = _zabbixSnapshot.value ?: return
+        val updatedProblems = current.problems.map { p ->
+            if (p.eventId == eventId) {
+                p.copy(acknowledged = true, ackMessage = message.ifBlank { p.ackMessage })
+            } else {
+                p
+            }
+        }
+        val updated = current.copy(problems = updatedProblems)
+        _zabbixSnapshot.value = updated
+        cachePrefs.edit().putString(KEY_CACHED_ZABBIX_SNAPSHOT_JSON, gson.toJson(updated)).apply()
+    }
+
+    /**
+     * Records polled Zabbix problems and returns ONLY brand-new Error / Critical Warning problems
+     * that should trigger a client-ticket-style Urgent Banner.
+     */
+    @Synchronized
+    fun processPolledZabbixSnapshotAndFindNewAlerts(
+        snapshot: ZabbixDashboardSnapshot,
+        isNotificationWindowOpen: Boolean = BelarusWorkCalendar.isWorkingTimeNow(_appSettings.value)
+    ): List<ZabbixProblem> {
+        _zabbixLastError.value = null
+        val prevSnapshot = _zabbixSnapshot.value
+        _zabbixSnapshot.value = snapshot
+        if (prevSnapshot?.problems != snapshot.problems || prevSnapshot.monitoredHostsCount != snapshot.monitoredHostsCount) {
+            cachePrefs.edit().putString(KEY_CACHED_ZABBIX_SNAPSHOT_JSON, gson.toJson(snapshot)).apply()
+        }
+
+        val minSeverity = _appSettings.value.normalizedZabbixMinSeverity
+        val seenKeys = cachePrefs.getStringSet(KEY_SEEN_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val deferredKeys = cachePrefs.getStringSet(KEY_DEFERRED_ZABBIX_KEYS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val baselineInitialized = cachePrefs.getBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, false)
+
+        if (!baselineInitialized) {
+            val nowSec = System.currentTimeMillis() / 1000L
+            val recentAlerts = mutableListOf<ZabbixProblem>()
+            for (prob in snapshot.problems) {
+                if (!prob.acknowledged &&
+                    prob.shouldTriggerBanner(minSeverity) &&
+                    prob.clockEpochSeconds > 0L &&
+                    (nowSec - prob.clockEpochSeconds) <= 1800L
+                ) {
+                    if (isNotificationWindowOpen) {
+                        seenKeys.add(prob.alertKey)
+                        recentAlerts.add(prob)
+                    } else {
+                        seenKeys.add(prob.alertKey)
+                        deferredKeys.add(prob.alertKey)
+                    }
+                } else {
+                    seenKeys.add(prob.alertKey)
+                }
+            }
+            cachePrefs.edit()
+                .putStringSet(KEY_SEEN_ZABBIX_KEYS, seenKeys.toList().takeLast(800).toSet())
+                .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
+                .putBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, true)
+                .apply()
+            return recentAlerts
+        }
+
+        val problemsByKey = snapshot.problems.associateBy { it.alertKey }
+        val alertsToBanner = mutableListOf<ZabbixProblem>()
+
+        // 1. Deliver deferred off-hours Zabbix alerts if still active when working shift starts
+        if (isNotificationWindowOpen && deferredKeys.isNotEmpty()) {
+            val iter = deferredKeys.iterator()
+            while (iter.hasNext()) {
+                val defKey = iter.next()
+                val activeProb = problemsByKey[defKey]
+                if (activeProb != null && !activeProb.acknowledged && activeProb.shouldTriggerBanner(minSeverity)) {
+                    alertsToBanner.add(activeProb)
+                }
+                iter.remove()
+            }
+        }
+
+        // 2. Check newly arrived problems
+        for (prob in snapshot.problems) {
+            val isUnseen = seenKeys.add(prob.alertKey)
+            if (isUnseen && !prob.acknowledged && prob.shouldTriggerBanner(minSeverity)) {
+                if (isNotificationWindowOpen) {
+                    alertsToBanner.add(prob)
+                } else {
+                    deferredKeys.add(prob.alertKey)
+                }
+            }
+        }
+
+        val boundedSeen = if (seenKeys.size > 800) seenKeys.toList().takeLast(800).toSet() else seenKeys
+        cachePrefs.edit()
+            .putStringSet(KEY_SEEN_ZABBIX_KEYS, boundedSeen)
+            .putStringSet(KEY_DEFERRED_ZABBIX_KEYS, deferredKeys)
+            .apply()
+
+        return alertsToBanner
+    }
+
+    fun resetZabbixBaseline() {
+        _zabbixSnapshot.value = null
+        _zabbixLastError.value = null
+        cachePrefs.edit()
+            .remove(KEY_CACHED_ZABBIX_SNAPSHOT_JSON)
+            .remove(KEY_SEEN_ZABBIX_KEYS)
+            .remove(KEY_DEFERRED_ZABBIX_KEYS)
+            .putBoolean(KEY_ZABBIX_BASELINE_INITIALIZED, false)
+            .apply()
+    }
+
+    private fun loadCachedZabbixSnapshot(): ZabbixDashboardSnapshot? {
+        val json = cachePrefs.getString(KEY_CACHED_ZABBIX_SNAPSHOT_JSON, null) ?: return null
+        return runCatching {
+            gson.fromJson(json, ZabbixDashboardSnapshot::class.java)
+        }.getOrNull()
+    }
+
     fun clearSecurityWipeNotice() {
         _securityWipeNotice.value = null
     }
@@ -963,6 +1130,7 @@ class SettingsRepository private constructor(context: Context) {
         // 1. Delete offline Confluence database + media + session caches
         wikiOfflineStore.clearOfflineDatabase()
         wikiClient.clearSessionCache()
+        zabbixClient.invalidateSession()
         runCatching {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching {
@@ -1007,6 +1175,8 @@ class SettingsRepository private constructor(context: Context) {
         _repairItems.value = emptyList()
         _resolvedRepairRoomKey.value = ""
         _clientDirectory.value = emptyList()
+        _zabbixSnapshot.value = null
+        _zabbixLastError.value = null
         _appSettings.value = loadAppSettings()
         _filterSettings.value = loadFilterSettings()
         _syncStatus.value = SyncStatus(
@@ -1047,6 +1217,16 @@ class SettingsRepository private constructor(context: Context) {
                 .orEmpty()
                 .ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL },
             confluenceToken = prefs.getString(KEY_CONFLUENCE_TOKEN, "").orEmpty(),
+            zabbixUrl = prefs.getString(KEY_ZABBIX_URL, AppSettings.DEFAULT_ZABBIX_URL)
+                .orEmpty()
+                .ifBlank { AppSettings.DEFAULT_ZABBIX_URL },
+            zabbixLogin = prefs.getString(KEY_ZABBIX_LOGIN, "").orEmpty(),
+            zabbixPassword = prefs.getString(KEY_ZABBIX_PASSWORD, "").orEmpty(),
+            zabbixEnabled = prefs.getBoolean(KEY_ZABBIX_ENABLED, true),
+            zabbixMinAlertSeverity = prefs.getInt(
+                KEY_ZABBIX_MIN_SEVERITY,
+                AppSettings.DEFAULT_ZABBIX_MIN_SEVERITY
+            ),
             serverType = enumOrDefault(prefs.getString(KEY_SERVER_TYPE, null), JiraServerType.AUTO),
             authType = enumOrDefault(prefs.getString(KEY_AUTH_TYPE, null), AuthType.BASIC_LOGIN_PASSWORD),
             usernameOrEmail = prefs.getString(KEY_USERNAME, "").orEmpty(),
@@ -1265,6 +1445,15 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_CLIENT_DIRECTORY_JSON = "client_directory_entries_json"
         private const val KEY_CONFLUENCE_URL = "confluence_wiki_url"
         private const val KEY_CONFLUENCE_TOKEN = "confluence_wiki_pat_token"
+        private const val KEY_ZABBIX_URL = "zabbix_server_url"
+        private const val KEY_ZABBIX_LOGIN = "zabbix_login"
+        private const val KEY_ZABBIX_PASSWORD = "zabbix_password"
+        private const val KEY_ZABBIX_ENABLED = "zabbix_enabled"
+        private const val KEY_ZABBIX_MIN_SEVERITY = "zabbix_min_alert_severity"
+        private const val KEY_SEEN_ZABBIX_KEYS = "seen_zabbix_alert_keys"
+        private const val KEY_DEFERRED_ZABBIX_KEYS = "deferred_zabbix_alert_keys"
+        private const val KEY_ZABBIX_BASELINE_INITIALIZED = "zabbix_baseline_initialized"
+        private const val KEY_CACHED_ZABBIX_SNAPSHOT_JSON = "cached_zabbix_snapshot_json"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
         private const val KEY_WATCHLIST_LABELS_JSON = "watchlist_labels_json"

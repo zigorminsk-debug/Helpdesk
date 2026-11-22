@@ -35,7 +35,8 @@ kotlin {
                 "com/helpdesk/jiraagent/data/JiraJsonParser.kt",
                 "com/helpdesk/jiraagent/data/HabrNewsRepository.kt",
                 "com/helpdesk/jiraagent/data/ConfluenceWikiClient.kt",
-                "com/helpdesk/jiraagent/data/ConfluenceOfflineStore.kt"
+                "com/helpdesk/jiraagent/data/ConfluenceOfflineStore.kt",
+                "com/helpdesk/jiraagent/data/ZabbixApiClient.kt"
             )
             kotlin.exclude(
                 "**/SettingsTransferCodec.kt"

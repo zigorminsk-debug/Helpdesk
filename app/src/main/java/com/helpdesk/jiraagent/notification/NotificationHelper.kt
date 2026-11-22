@@ -21,6 +21,7 @@ import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.update.GitHubReleaseUpdate
 
 object NotificationHelper {
@@ -37,6 +38,8 @@ object NotificationHelper {
     const val EXTRA_TRIGGER_APP_UPDATE = "extra_trigger_app_update"
     const val EXTRA_OPEN_ADMIN_CHAT = "extra_open_admin_chat"
     const val EXTRA_OPEN_WATCHLIST_MONITOR = "extra_open_watchlist_monitor"
+    const val EXTRA_OPEN_ZABBIX_TAB = "extra_open_zabbix_tab"
+    const val EXTRA_OPEN_ZABBIX_EVENT_ID = "extra_open_zabbix_event_id"
 
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -559,5 +562,167 @@ object NotificationHelper {
             .setContentIntent(pendingIntent)
             .build()
         NotificationManagerCompat.from(context).notify(SECURITY_WIPE_NOTIFICATION_ID, notification)
+    }
+
+    /**
+     * Displays a client-ticket-style Urgent Heads-Up Banner + plays the configured alert melody
+     * + shows the top floating In-App Banner whenever Zabbix reports an Error or Critical Warning.
+     */
+    @SuppressLint("MissingPermission")
+    fun showZabbixAlertBanner(
+        context: Context,
+        problem: ZabbixProblem,
+        bypassWorkSchedule: Boolean = false
+    ): Boolean {
+        val repo = SettingsRepository.getInstance(context)
+        val appSettings = repo.appSettings.value
+
+        if (!bypassWorkSchedule && !BelarusWorkCalendar.isWorkingTimeNow(appSettings)) {
+            return false
+        }
+
+        val titleSuffix = problem.severity.bannerSuffix
+
+        // 1. Always emit in-app top floating banner (identical UX to a new client ticket)
+        repo.emitZabbixInAppBanner(problem, titleSuffix)
+
+        // 2. Always play the user's selected alert melody & vibrate via AlertSoundPlayer
+        AlertSoundPlayer.playTicketAlert(context, appSettings, forcePreview = false)
+        TicketSpeechAnnouncer.announceZabbixAlertIfEnabled(context, problem, appSettings)
+
+        if (!hasNotificationPermission(context)) return true
+        ensureChannels(context)
+
+        val openZabbixIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ZABBIX_TAB, true)
+            if (problem.eventId.isNotBlank()) {
+                putExtra(EXTRA_OPEN_ZABBIX_EVENT_ID, problem.eventId)
+            }
+        }
+        val requestCode = ("zbx_" + problem.alertKey).hashCode()
+        val openPendingIntent = PendingIntent.getActivity(
+            context,
+            requestCode,
+            openZabbixIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val bigText = buildString {
+            append(problem.name)
+            if (problem.opData.isNotBlank()) {
+                append(" [").append(problem.opData).append("]")
+            }
+            append("\nУзел: ").append(problem.hostWithIpLabel)
+            append("\nВажность: ").append(problem.severity.ruTitle)
+            val startStr = problem.formattedStartTime()
+            if (startStr.isNotBlank()) {
+                append(" · ").append(startStr)
+            }
+            if (problem.comments.isNotBlank()) {
+                val snippet = problem.comments.replace('\n', ' ').take(150)
+                append("\n").append(snippet)
+            }
+        }
+
+        val accentColor = if (problem.severityLevel >= 4) 0xFFD93025.toInt() else 0xFFF7631B.toInt()
+        val notificationId = 140_000 + (problem.alertKey.hashCode() and 0x7FFFFFFF) % 40_000
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(accentColor)
+            .setContentTitle("🚨 Zabbix · ${problem.effectiveHostLabel} · $titleSuffix")
+            .setContentText(
+                if (problem.opData.isNotBlank()) {
+                    "${problem.name} (${problem.opData})"
+                } else {
+                    "${problem.name} · ${problem.hostWithIpLabel}"
+                }
+            )
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVibrate(longArrayOf(0L, 280L, 120L, 320L))
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
+            .setAutoCancel(true)
+            .setContentIntent(openPendingIntent)
+            .setFullScreenIntent(openPendingIntent, true)
+
+        if (problem.eventId.isNotBlank() && problem.eventId != "0" && !problem.eventId.startsWith("DEMO")) {
+            val ackIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_ACK_ZABBIX_PROBLEM
+                putExtra(NotificationActionReceiver.EXTRA_ZABBIX_EVENT_ID, problem.eventId)
+                putExtra(NotificationActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val ackPendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode + 3,
+                ackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(0, "Подтвердить (Ack)", ackPendingIntent)
+        }
+
+        builder.addAction(0, "Открыть Zabbix", openPendingIntent)
+
+        NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showZabbixStormBanner(
+        context: Context,
+        problems: List<ZabbixProblem>,
+        playSound: Boolean = true
+    ) {
+        if (problems.isEmpty()) return
+        val repo = SettingsRepository.getInstance(context)
+        val settings = repo.appSettings.value
+        if (playSound) {
+            AlertSoundPlayer.playTicketAlert(context, settings)
+        }
+        problems.firstOrNull()?.let { top ->
+            repo.emitZabbixInAppBanner(top, "⚡ Шторм Zabbix: +${problems.size} аварий/ошибок!")
+        }
+
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val openZabbixIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ZABBIX_TAB, true)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            7705,
+            openZabbixIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val linesText = problems.take(6).joinToString("\n") {
+            "• [${it.severity.shortBadge}] ${it.effectiveHostLabel}: ${it.name.take(55)}"
+        } + if (problems.size > 6) "\n…и ещё ${problems.size - 6} проблем в Zabbix" else ""
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CLIENT_BANNER)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFD93025.toInt())
+            .setContentTitle("🚨 Шторм Zabbix: ${problems.size} новых ошибок / аварий")
+            .setContentText("Нажмите, чтобы открыть мониторинг z.csl.by")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(linesText))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(0, "Открыть Zabbix", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(7705, notification)
     }
 }

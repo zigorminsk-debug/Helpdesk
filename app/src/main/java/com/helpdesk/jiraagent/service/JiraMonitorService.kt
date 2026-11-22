@@ -124,10 +124,15 @@ class JiraMonitorService : Service() {
                 return START_STICKY
             }
             ACTION_POLL_NOW -> {
-                ensureForegroundStarted("Обновление заявок…")
+                ensureForegroundStarted("Обновление заявок и Zabbix…")
                 serviceScope.launch {
                     PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
-                    pollOnce()
+                    if (repository.appSettings.value.isConfigured) {
+                        pollOnce()
+                    }
+                    if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
+                        pollZabbixSafely()
+                    }
                 }
                 ensureBackgroundLoopsRunning()
                 return START_STICKY
@@ -221,7 +226,10 @@ class JiraMonitorService : Service() {
                     // Always process due postponed tickets (with exponential backoff if errored)
                     PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
 
-                    if (settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused) {
+                    val jiraPollActive = settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused
+                    val zabbixPollActive = settings.isZabbixConfigured && settings.zabbixEnabled && settings.pollingEnabled && !isOffHoursPaused
+
+                    if (jiraPollActive) {
                         pollOnce()
 
                         // Throttle background Admin Chat check to >= 2 min in working hours (and along with off-hours sync)
@@ -231,7 +239,13 @@ class JiraMonitorService : Service() {
                             lastAdminChatPollEpochMillis = nowMs
                             pollAdminChatSafely()
                         }
-                    } else if (isOffHoursPaused) {
+                    }
+
+                    if (zabbixPollActive) {
+                        pollZabbixSafely()
+                    }
+
+                    if (isOffHoursPaused) {
                         val label = AppSettings.formatOffHoursIntervalLabel(settings.normalizedOffHoursPollMinutes)
                         updateForegroundText(
                             statusText = "Нерабочее время РБ · $label",
@@ -363,6 +377,44 @@ class JiraMonitorService : Service() {
                     lastError = msg
                 )
             }
+        }
+    }
+
+    private suspend fun pollZabbixSafely() {
+        runCatching {
+            val settings = repository.appSettings.value
+            if (!settings.isZabbixConfigured || !settings.zabbixEnabled) return
+
+            repository.zabbixClient.fetchSnapshot(settings)
+                .onSuccess { snapshot ->
+                    val isNotifWindowOpen = BelarusWorkCalendar.isWorkingTimeNow(settings)
+                    val newAlerts = repository.processPolledZabbixSnapshotAndFindNewAlerts(
+                        snapshot = snapshot,
+                        isNotificationWindowOpen = isNotifWindowOpen
+                    )
+                    if (newAlerts.isNotEmpty() && isNotifWindowOpen) {
+                        if (settings.stormProtectionEnabled && newAlerts.size > 3) {
+                            NotificationHelper.showZabbixStormBanner(applicationContext, newAlerts, playSound = true)
+                        } else {
+                            for (prob in newAlerts) {
+                                NotificationHelper.showZabbixAlertBanner(applicationContext, prob)
+                            }
+                        }
+                    }
+                    if (!settings.isConfigured) {
+                        val timeStr = DateTimeFormatter.ofPattern("HH:mm")
+                            .withZone(ZoneId.systemDefault())
+                            .format(Instant.now())
+                        val critCount = snapshot.criticalAndErrorCount
+                        updateForegroundText(
+                            statusText = "Zabbix активен · ошибок/аварий: $critCount · $timeStr",
+                            coreStateKey = "zbx_only_$critCount"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    repository.updateZabbixError(err.message ?: "Ошибка подключения к Zabbix")
+                }
         }
     }
 
@@ -528,6 +580,7 @@ class JiraMonitorService : Service() {
             val hasPostponed = repo.postponedTickets.value.isNotEmpty()
             val hasWatchlistHosts = repo.watchlistHosts.value.isNotEmpty()
             return (settings.isConfigured && settings.pollingEnabled) ||
+                (settings.isZabbixConfigured && settings.zabbixEnabled && settings.pollingEnabled) ||
                 hasPostponed ||
                 hasWatchlistHosts ||
                 settings.isConfluenceReady
@@ -556,7 +609,8 @@ class JiraMonitorService : Service() {
 
         fun triggerImmediatePoll(context: Context) {
             val repo = SettingsRepository.getInstance(context)
-            if (!repo.appSettings.value.isConfigured) return
+            val s = repo.appSettings.value
+            if (!s.isConfigured && !(s.isZabbixConfigured && s.zabbixEnabled)) return
             val intent = Intent(context, JiraMonitorService::class.java).apply {
                 action = ACTION_POLL_NOW
             }

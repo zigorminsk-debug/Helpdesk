@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Forum
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -65,6 +67,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -119,6 +122,8 @@ import com.helpdesk.jiraagent.ui.screens.RepairRegistryScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.TicketDetailScreen
 import com.helpdesk.jiraagent.ui.screens.TicketsScreen
+import com.helpdesk.jiraagent.ui.screens.ZabbixMonitorScreen
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
 import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
@@ -128,11 +133,11 @@ import kotlinx.coroutines.delay
 
 private enum class BottomDestination(val label: String) {
     TICKETS("Заявки"),
+    ZABBIX("Zabbix"),
     REPAIR("Ремонт"),
     WIKI("Wiki"),
     CHAT("Чат"),
-    FILTER("Фильтр"),
-    SETTINGS("Сервер")
+    SETTINGS("Настройки")
 }
 
 class MainActivity : FragmentActivity() {
@@ -186,6 +191,10 @@ class MainActivity : FragmentActivity() {
             intent.removeExtra(NotificationHelper.EXTRA_OPEN_WATCHLIST_MONITOR)
             viewModel.requestOpenWatchlistMonitor()
         }
+        if (intent?.getBooleanExtra(NotificationHelper.EXTRA_OPEN_ZABBIX_TAB, false) == true) {
+            intent.removeExtra(NotificationHelper.EXTRA_OPEN_ZABBIX_TAB)
+            viewModel.requestOpenZabbixTab()
+        }
     }
 }
 
@@ -231,6 +240,11 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val openRepairTabStamp by viewModel.openRepairTabStamp.collectAsStateWithLifecycle()
     val wikiUiState by viewModel.wikiUiState.collectAsStateWithLifecycle()
     val openWikiTabStamp by viewModel.openWikiTabStamp.collectAsStateWithLifecycle()
+    val openZabbixTabStamp by viewModel.openZabbixTabStamp.collectAsStateWithLifecycle()
+    val zabbixSnapshot by viewModel.zabbixSnapshot.collectAsStateWithLifecycle()
+    val zabbixLastError by viewModel.zabbixLastError.collectAsStateWithLifecycle()
+    val isLoadingZabbix by viewModel.isLoadingZabbix.collectAsStateWithLifecycle()
+    val zabbixStatusFeedback by viewModel.zabbixStatusFeedback.collectAsStateWithLifecycle()
     val clientPassports by viewModel.clientPassports.collectAsStateWithLifecycle()
     val ticketStopwatches by viewModel.ticketStopwatches.collectAsStateWithLifecycle()
     val watchlistHosts by viewModel.watchlistHosts.collectAsStateWithLifecycle()
@@ -245,8 +259,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val activeWorkshopCount = remember(repairItems) {
         repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
     }
+    val activeZabbixAlertsCount = remember(zabbixSnapshot, appSettings.zabbixMinAlertSeverity) {
+        val minSev = appSettings.normalizedZabbixMinSeverity
+        zabbixSnapshot?.problems?.count { !it.acknowledged && it.shouldTriggerBanner(minSev) } ?: 0
+    }
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
+    var settingsSubTab by rememberSaveable { mutableStateOf(0) }
     var hasNotifPermission by rememberSaveable {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
     }
@@ -484,6 +503,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         }
     }
 
+    LaunchedEffect(openZabbixTabStamp) {
+        if (openZabbixTabStamp > 0L) {
+            currentTab = BottomDestination.ZABBIX
+            viewModel.consumeOpenZabbixTabStamp()
+        }
+    }
+
     LaunchedEffect(openWatchlistStamp) {
         if (openWatchlistStamp > 0L) {
             toolboxInitialTab = 3
@@ -606,6 +632,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     AlertSoundPlayer.stopCurrent()
                     viewModel.quickTakeTicketInWork(key)
                 },
+                onOpenZabbix = {
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.dismissInAppBanner()
+                    viewModel.requestOpenZabbixTab()
+                },
+                onAckZabbix = { prob ->
+                    AlertSoundPlayer.stopCurrent()
+                    viewModel.acknowledgeZabbixProblem(prob)
+                },
                 onDismiss = {
                     AlertSoundPlayer.stopCurrent()
                     viewModel.dismissInAppBanner()
@@ -693,9 +728,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             tint = Color.White
                         )
                     }
-                    if (appSettings.isConfigured || postponedTickets.isNotEmpty()) {
+                    if (appSettings.isConfigured || appSettings.isZabbixConfigured || postponedTickets.isNotEmpty()) {
                         IconButton(onClick = {
                             when (currentTab) {
+                                BottomDestination.ZABBIX -> viewModel.refreshZabbix(manual = true)
                                 BottomDestination.REPAIR -> viewModel.syncRepairRegistry()
                                 BottomDestination.WIKI -> viewModel.refreshWikiSpacesAndPages()
                                 BottomDestination.CHAT -> viewModel.refreshAdminChat()
@@ -725,6 +761,37 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     label = {
                         Text(
                             text = BottomDestination.TICKETS.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    colors = navItemColors
+                )
+                NavigationBarItem(
+                    selected = currentTab == BottomDestination.ZABBIX,
+                    onClick = { currentTab = BottomDestination.ZABBIX },
+                    icon = {
+                        BadgedBox(
+                            badge = {
+                                if (activeZabbixAlertsCount > 0) {
+                                    Badge(
+                                        containerColor = Color(0xFFD93025),
+                                        contentColor = Color.White
+                                    ) {
+                                        Text(
+                                            text = if (activeZabbixAlertsCount > 99) "99+" else activeZabbixAlertsCount.toString()
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Dns, contentDescription = null)
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = BottomDestination.ZABBIX.label,
                             fontSize = navLabelSize,
                             maxLines = 1,
                             softWrap = false
@@ -801,20 +868,6 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     label = {
                         Text(
                             text = BottomDestination.CHAT.label,
-                            fontSize = navLabelSize,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    },
-                    colors = navItemColors
-                )
-                NavigationBarItem(
-                    selected = currentTab == BottomDestination.FILTER,
-                    onClick = { currentTab = BottomDestination.FILTER },
-                    icon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                    label = {
-                        Text(
-                            text = BottomDestination.FILTER.label,
                             fontSize = navLabelSize,
                             maxLines = 1,
                             softWrap = false
@@ -926,6 +979,27 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     modifier = Modifier.weight(1f)
                 )
 
+                BottomDestination.ZABBIX -> ZabbixMonitorScreen(
+                    settings = appSettings,
+                    snapshot = zabbixSnapshot,
+                    lastError = zabbixLastError,
+                    statusFeedback = zabbixStatusFeedback,
+                    isLoading = isLoadingZabbix,
+                    hostDiagnosticState = hostDiagnosticState,
+                    onSaveAndConnect = { url, login, pwd, enabled, minSev ->
+                        viewModel.saveAndConnectZabbix(url, login, pwd, enabled, minSev)
+                    },
+                    onRefresh = { viewModel.refreshZabbix(manual = true) },
+                    onAcknowledge = { prob, comment -> viewModel.acknowledgeZabbixProblem(prob, comment) },
+                    onTestZabbixBanner = {
+                        hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
+                        viewModel.triggerTestZabbixBanner()
+                    },
+                    onRunHostDiagnostics = { host -> viewModel.runHostDiagnostics(host) },
+                    onDismissHostDiagnostics = { viewModel.dismissHostDiagnostics() },
+                    modifier = Modifier.weight(1f)
+                )
+
                 BottomDestination.REPAIR -> {
                     val engineerName = EngineerNameResolver.resolve(
                         rawEngineer = null,
@@ -997,33 +1071,67 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     modifier = Modifier.weight(1f)
                 )
 
-                BottomDestination.FILTER -> FilterSettingsScreen(
-                    currentFilter = filterSettings,
-                    onSaveFilter = { updated -> viewModel.saveFilterSettings(updated) },
-                    onSendTestBanner = {
-                        hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
-                        viewModel.triggerTestBannerNotification()
-                    },
-                    modifier = Modifier.weight(1f)
-                )
+                BottomDestination.SETTINGS -> Column(modifier = Modifier.weight(1f)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = settingsSubTab == 0,
+                                onClick = { settingsSubTab = 0 },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                label = { Text("Серверы и уведомления", maxLines = 1) }
+                            )
+                            FilterChip(
+                                selected = settingsSubTab == 1,
+                                onClick = { settingsSubTab = 1 },
+                                leadingIcon = {
+                                    Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                label = { Text("Фильтр заявок", maxLines = 1) }
+                            )
+                        }
+                    }
 
-                BottomDestination.SETTINGS -> ServerSettingsScreen(
-                    currentSettings = appSettings,
-                    connectionTest = connectionTest,
-                    appUpdateState = appUpdateState,
-                    onTestConnection = { candidate -> viewModel.testConnection(candidate) },
-                    onSaveSettings = { updated -> viewModel.saveAppSettings(updated) },
-                    onTriggerTestBanner = {
-                        hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
-                        viewModel.triggerTestBannerNotification()
-                    },
-                    onOpenGuide = { showFullGuide = true },
-                    onOpenQrTransfer = { showQrTransfer = true },
-                    onCheckForUpdate = { viewModel.checkForAppUpdate(manual = true) },
-                    onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
-                    onInstallReadyUpdate = { viewModel.installReadyUpdateApk() },
-                    modifier = Modifier.weight(1f)
-                )
+                    if (settingsSubTab == 1) {
+                        FilterSettingsScreen(
+                            currentFilter = filterSettings,
+                            onSaveFilter = { updated -> viewModel.saveFilterSettings(updated) },
+                            onSendTestBanner = {
+                                hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
+                                viewModel.triggerTestBannerNotification()
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        ServerSettingsScreen(
+                            currentSettings = appSettings,
+                            connectionTest = connectionTest,
+                            appUpdateState = appUpdateState,
+                            onTestConnection = { candidate -> viewModel.testConnection(candidate) },
+                            onSaveSettings = { updated -> viewModel.saveAppSettings(updated) },
+                            onTriggerTestBanner = {
+                                hasNotifPermission = NotificationHelper.hasNotificationPermission(context)
+                                viewModel.triggerTestBannerNotification()
+                            },
+                            onOpenGuide = { showFullGuide = true },
+                            onOpenQrTransfer = { showQrTransfer = true },
+                            onCheckForUpdate = { viewModel.checkForAppUpdate(manual = true) },
+                            onDownloadAndInstallUpdate = { viewModel.downloadAndInstallAppUpdate() },
+                            onInstallReadyUpdate = { viewModel.installReadyUpdateApk() },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         }
     }
@@ -1039,6 +1147,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             AlertSoundPlayer.stopCurrent()
             viewModel.quickTakeTicketInWork(key)
         },
+        onOpenZabbix = {
+            AlertSoundPlayer.stopCurrent()
+            viewModel.dismissInAppBanner()
+            currentTab = BottomDestination.ZABBIX
+        },
+        onAckZabbix = { prob ->
+            AlertSoundPlayer.stopCurrent()
+            viewModel.acknowledgeZabbixProblem(prob)
+        },
         onDismiss = {
             AlertSoundPlayer.stopCurrent()
             viewModel.dismissInAppBanner()
@@ -1052,6 +1169,8 @@ private fun InAppFloatingBannerOverlay(
     bannerAlert: InAppBannerAlert?,
     onOpenTicket: (String) -> Unit,
     onTakeInWork: (String) -> Unit,
+    onOpenZabbix: () -> Unit,
+    onAckZabbix: (ZabbixProblem) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1065,16 +1184,24 @@ private fun InAppFloatingBannerOverlay(
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         val alert = bannerAlert ?: return@AnimatedVisibility
+        val zbxProblem = alert.zabbixProblem
         val ticket = alert.ticket
         val phone = ticket.phoneNumbers.firstOrNull()
+        val accentBorder = if (zbxProblem != null && zbxProblem.severityLevel >= 4) {
+            Color(0xFFD93025)
+        } else {
+            CslOrange
+        }
 
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpenTicket(ticket.key) },
+                .clickable {
+                    if (zbxProblem != null) onOpenZabbix() else onOpenTicket(ticket.key)
+                },
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = CslMidnight),
-            border = BorderStroke(2.dp, CslOrange),
+            border = BorderStroke(2.dp, accentBorder),
             elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
         ) {
             Column(
@@ -1086,17 +1213,21 @@ private fun InAppFloatingBannerOverlay(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.NotificationsActive,
+                        imageVector = if (zbxProblem != null) Icons.Default.Dns else Icons.Default.NotificationsActive,
                         contentDescription = null,
-                        tint = CslOrange,
+                        tint = accentBorder,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "${ticket.reporterName.ifBlank { "Клиент" }} · ${alert.titleSuffix}",
+                        text = if (zbxProblem != null) {
+                            "🚨 Zabbix · ${zbxProblem.effectiveHostLabel} · ${alert.titleSuffix}"
+                        } else {
+                            "${ticket.reporterName.ifBlank { "Клиент" }} · ${alert.titleSuffix}"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = CslOrange,
+                        color = accentBorder,
                         modifier = Modifier.weight(1f)
                     )
                     IconButton(
@@ -1120,8 +1251,11 @@ private fun InAppFloatingBannerOverlay(
                 )
 
                 Text(
-                    text = "№ ${ticket.key}" +
-                        (phone?.let { " · ${it.formattedDisplay}" } ?: ""),
+                    text = if (zbxProblem != null) {
+                        "Узел: ${zbxProblem.hostWithIpLabel} · ${zbxProblem.severity.ruTitle}"
+                    } else {
+                        "№ ${ticket.key}" + (phone?.let { " · ${it.formattedDisplay}" } ?: "")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFFD0D5DD)
                 )
@@ -1130,41 +1264,66 @@ private fun InAppFloatingBannerOverlay(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Button(
-                        onClick = { onTakeInWork(ticket.key) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AssignmentInd,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("В работу", maxLines = 1, softWrap = false)
-                    }
-
-                    Button(
-                        onClick = { onOpenTicket(ticket.key) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
-                    ) {
-                        Text("Открыть", maxLines = 1, softWrap = false)
-                    }
-
-                    if (phone != null) {
+                    if (zbxProblem != null) {
+                        if (zbxProblem.eventId.isNotBlank() && zbxProblem.eventId != "0") {
+                            Button(
+                                onClick = { onAckZabbix(zbxProblem) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.TaskAlt,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Подтвердить", maxLines = 1, softWrap = false)
+                            }
+                        }
                         Button(
-                            onClick = {
-                                AlertSoundPlayer.stopCurrent()
-                                DialerLauncher.openDialer(context, phone.e164)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D4ED8))
+                            onClick = onOpenZabbix,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = accentBorder)
+                        ) {
+                            Text("Открыть Zabbix", maxLines = 1, softWrap = false)
+                        }
+                    } else {
+                        Button(
+                            onClick = { onTakeInWork(ticket.key) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Call,
-                                contentDescription = "Позвонить",
+                                imageVector = Icons.Default.AssignmentInd,
+                                contentDescription = null,
                                 modifier = Modifier.size(16.dp)
                             )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("В работу", maxLines = 1, softWrap = false)
+                        }
+
+                        Button(
+                            onClick = { onOpenTicket(ticket.key) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                        ) {
+                            Text("Открыть", maxLines = 1, softWrap = false)
+                        }
+
+                        if (phone != null) {
+                            Button(
+                                onClick = {
+                                    AlertSoundPlayer.stopCurrent()
+                                    DialerLauncher.openDialer(context, phone.e164)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D4ED8))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Call,
+                                    contentDescription = "Позвонить",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
                 }

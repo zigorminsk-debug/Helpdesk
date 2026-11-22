@@ -16,7 +16,9 @@ class BootReceiver : BroadcastReceiver() {
 
         val hasPostponed = repo.postponedTickets.value.isNotEmpty()
         val hasWatchlist = repo.watchlistHosts.value.isNotEmpty()
-        if ((!settings.isConfigured || !settings.pollingEnabled) && !hasPostponed && !hasWatchlist && !settings.isConfluenceReady) return
+        val jiraActive = settings.isConfigured && settings.pollingEnabled
+        val zabbixActive = settings.isZabbixConfigured && settings.zabbixEnabled && settings.pollingEnabled
+        if (!jiraActive && !zabbixActive && !hasPostponed && !hasWatchlist && !settings.isConfluenceReady) return
 
         when (action) {
             Intent.ACTION_BOOT_COMPLETED,

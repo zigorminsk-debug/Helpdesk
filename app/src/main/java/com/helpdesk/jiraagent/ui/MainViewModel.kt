@@ -60,6 +60,8 @@ import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketAttachment
 import com.helpdesk.jiraagent.model.TicketComment
+import com.helpdesk.jiraagent.model.ZabbixDashboardSnapshot
+import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.notification.NotificationHelper
 import com.helpdesk.jiraagent.service.JiraMonitorService
@@ -195,6 +197,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _openWikiTabStamp = MutableStateFlow(0L)
     val openWikiTabStamp: StateFlow<Long> = _openWikiTabStamp.asStateFlow()
 
+    private val _openZabbixTabStamp = MutableStateFlow(0L)
+    val openZabbixTabStamp: StateFlow<Long> = _openZabbixTabStamp.asStateFlow()
+
+    val zabbixSnapshot: StateFlow<ZabbixDashboardSnapshot?> = repository.zabbixSnapshot
+    val zabbixLastError: StateFlow<String?> = repository.zabbixLastError
+
+    private val _isLoadingZabbix = MutableStateFlow(false)
+    val isLoadingZabbix: StateFlow<Boolean> = _isLoadingZabbix.asStateFlow()
+
+    private val _zabbixStatusFeedback = MutableStateFlow<String?>(null)
+    val zabbixStatusFeedback: StateFlow<String?> = _zabbixStatusFeedback.asStateFlow()
+
     private val _knowledgeArchiveResults = MutableStateFlow<List<HelpdeskTicket>>(emptyList())
     val knowledgeArchiveResults: StateFlow<List<HelpdeskTicket>> = _knowledgeArchiveResults.asStateFlow()
 
@@ -278,6 +292,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _openWikiTabStamp.value = 0L
     }
 
+    fun requestOpenZabbixTab() {
+        _selectedTicketKey.value = null
+        _openZabbixTabStamp.value = System.currentTimeMillis()
+    }
+
+    fun consumeOpenZabbixTabStamp() {
+        _openZabbixTabStamp.value = 0L
+    }
+
     fun consumeOpenWatchlistStamp() {
         _openWatchlistStamp.value = 0L
     }
@@ -343,6 +366,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (repository.appSettings.value.isConfigured) {
             syncRepairRegistry()
             refreshClientsDirectory(manual = false)
+        }
+        if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
+            refreshZabbix(manual = false)
         }
     }
 
@@ -1018,6 +1044,150 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (updated.isConfigured) {
             refreshNow()
         }
+        if (updated.isZabbixConfigured && updated.zabbixEnabled) {
+            refreshZabbix(manual = false)
+        }
+    }
+
+    fun saveAndConnectZabbix(
+        zabbixUrl: String,
+        login: String,
+        password: String,
+        enabled: Boolean,
+        minSeverity: Int
+    ) {
+        val current = appSettings.value
+        val updated = current.copy(
+            zabbixUrl = zabbixUrl.trim().ifBlank { AppSettings.DEFAULT_ZABBIX_URL },
+            zabbixLogin = login.trim(),
+            zabbixPassword = password,
+            zabbixEnabled = enabled,
+            zabbixMinAlertSeverity = minSeverity.coerceIn(1, 5)
+        )
+        repository.saveAppSettings(updated)
+        JiraMonitorService.syncServiceState(appContext)
+
+        if (!updated.isZabbixConfigured) {
+            _zabbixStatusFeedback.value = "Укажите логин и пароль Zabbix"
+            return
+        }
+
+        viewModelScope.launch {
+            _isLoadingZabbix.value = true
+            _zabbixStatusFeedback.value = null
+            repository.zabbixClient.testConnection(updated)
+                .onSuccess { snapshot ->
+                    val allowedNow = BelarusWorkCalendar.isWorkingTimeNow(updated)
+                    val newAlerts = repository.processPolledZabbixSnapshotAndFindNewAlerts(
+                        snapshot = snapshot,
+                        isNotificationWindowOpen = allowedNow
+                    )
+                    if (allowedNow) {
+                        newAlerts.forEach { NotificationHelper.showZabbixAlertBanner(appContext, it) }
+                    }
+                    val verInfo = snapshot.serverVersion.takeIf { it.isNotBlank() }?.let { " (Zabbix v$it)" }.orEmpty()
+                    _zabbixStatusFeedback.value =
+                        "✅ Подключено к ${updated.zabbixUrl}$verInfo · Активных проблем: ${snapshot.problems.size}"
+                }
+                .onFailure { err ->
+                    val msg = err.message ?: "Не удалось подключиться к Zabbix"
+                    repository.updateZabbixError(msg)
+                    _zabbixStatusFeedback.value = null
+                }
+            _isLoadingZabbix.value = false
+        }
+    }
+
+    fun refreshZabbix(manual: Boolean = true) {
+        val settings = appSettings.value
+        if (!settings.isZabbixConfigured) {
+            if (manual) {
+                repository.updateZabbixError("Укажите логин и пароль от Zabbix (${settings.zabbixUrl})")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _isLoadingZabbix.value = true
+            repository.zabbixClient.fetchSnapshot(settings)
+                .onSuccess { snapshot ->
+                    val allowedNow = BelarusWorkCalendar.isWorkingTimeNow(settings)
+                    val newAlerts = repository.processPolledZabbixSnapshotAndFindNewAlerts(
+                        snapshot = snapshot,
+                        isNotificationWindowOpen = allowedNow
+                    )
+                    if (allowedNow && newAlerts.isNotEmpty()) {
+                        if (settings.stormProtectionEnabled && newAlerts.size > 3) {
+                            NotificationHelper.showZabbixStormBanner(appContext, newAlerts, playSound = true)
+                        } else {
+                            newAlerts.forEach { NotificationHelper.showZabbixAlertBanner(appContext, it) }
+                        }
+                    }
+                }
+                .onFailure { err ->
+                    repository.updateZabbixError(err.message ?: "Ошибка обновления Zabbix")
+                }
+            _isLoadingZabbix.value = false
+        }
+    }
+
+    fun acknowledgeZabbixProblem(problem: ZabbixProblem, customComment: String? = null) {
+        val settings = appSettings.value
+        repository.dismissInAppBanner()
+        if (problem.eventId.startsWith("DEMO")) {
+            Toast.makeText(appContext, "Тестовое событие Zabbix подтверждено", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!settings.isZabbixConfigured) return
+        val engineer = EngineerNameResolver.resolve(
+            rawEngineer = null,
+            connectedUserDisplayName = syncStatus.value.connectedUser,
+            currentUsernameOrEmail = settings.zabbixLogin.ifBlank { settings.usernameOrEmail },
+            knownTickets = tickets.value
+        )
+        val comment = customComment?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "Принято в работу инженером $engineer (Help-CSL)"
+
+        viewModelScope.launch {
+            repository.zabbixClient.acknowledgeProblem(settings, problem.eventId, comment)
+                .onSuccess {
+                    repository.markZabbixProblemAcknowledgedLocally(problem.eventId, comment)
+                    Toast.makeText(appContext, "Событие Zabbix подтверждено", Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { err ->
+                    Toast.makeText(
+                        appContext,
+                        err.message ?: "Не удалось подтвердить событие в Zabbix",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
+    }
+
+    fun clearZabbixFeedback() {
+        _zabbixStatusFeedback.value = null
+    }
+
+    fun triggerTestZabbixBanner() {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val demoProblem = ZabbixProblem(
+            eventId = "DEMO${nowSec % 10000}",
+            triggerId = "9901",
+            name = "Недоступен сервис 1С / Критическая загрузка диска C: (свободно < 2%)",
+            opData = "Free: 1.4 GB (1.8%)",
+            severityLevel = 4,
+            hostId = "101",
+            hostTechnicalName = "srv-1c-prod.csl.by",
+            hostDisplayName = "Сервер 1С Продакшн",
+            hostIp = "192.168.10.25",
+            clockEpochSeconds = nowSec,
+            acknowledged = false,
+            comments = "Тестовое критическое предупреждение Zabbix (z.csl.by) для проверки срочного баннера."
+        )
+        NotificationHelper.showZabbixAlertBanner(
+            context = appContext,
+            problem = demoProblem,
+            bypassWorkSchedule = true
+        )
     }
 
     fun saveFilterSettings(updated: FilterSettings) {

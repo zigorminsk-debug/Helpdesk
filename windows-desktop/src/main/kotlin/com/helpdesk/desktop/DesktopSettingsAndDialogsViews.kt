@@ -223,6 +223,46 @@ fun DesktopSettingsWorkspace(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                HorizontalDivider()
+
+                Text(
+                    text = "Мониторинг Zabbix (z.csl.by) — баннер ошибок и критических предупреждений",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.5.sp,
+                    color = DesktopColors.CslOrange
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = draft.zabbixUrl,
+                        onValueChange = { draft = draft.copy(zabbixUrl = it) },
+                        label = { Text("URL сервера Zabbix") },
+                        placeholder = { Text("http://z.csl.by") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.2f)
+                    )
+                    OutlinedTextField(
+                        value = draft.zabbixLogin,
+                        onValueChange = { draft = draft.copy(zabbixLogin = it) },
+                        label = { Text("Логин Zabbix") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = draft.zabbixPassword,
+                        onValueChange = { draft = draft.copy(zabbixPassword = it) },
+                        label = { Text("Пароль Zabbix") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                HorizontalDivider()
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     JiraServerType.entries.forEach { st ->
                         FilterChip(

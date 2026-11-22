@@ -173,6 +173,7 @@ fun main(args: Array<String>) = application {
         onPreviewKeyEvent = { ev ->
             if (ev.type == KeyEventType.KeyDown && ev.key == Key.F5) {
                 when (state.activeTab) {
+                    DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
                     DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
                     DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
                     DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
@@ -221,6 +222,7 @@ fun main(args: Array<String>) = application {
                     onSelectTab = { controller.selectTab(it) },
                     onRefresh = {
                         when (state.activeTab) {
+                            DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
                             DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
                             DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
                             DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
@@ -243,6 +245,7 @@ fun main(args: Array<String>) = application {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     when (state.activeTab) {
                         DesktopMainTab.TICKETS -> DesktopTicketsWorkspace(state, controller)
+                        DesktopMainTab.ZABBIX -> DesktopZabbixWorkspace(state, controller)
                         DesktopMainTab.REPAIR -> DesktopRepairWorkspace(state, controller)
                         DesktopMainTab.WIKI -> DesktopWikiWorkspace(state, controller)
                         DesktopMainTab.CHAT -> DesktopChatWorkspace(state, controller)
@@ -355,6 +358,10 @@ private fun DesktopTopNavigationHeader(
     val activeRepairsCount = remember(state.repairItems) {
         state.repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
     }
+    val activeZabbixAlertsCount = remember(state.zabbixSnapshot, state.settings.zabbixMinAlertSeverity) {
+        val minSev = state.settings.normalizedZabbixMinSeverity
+        state.zabbixSnapshot?.problems?.count { !it.acknowledged && it.shouldTriggerBanner(minSev) } ?: 0
+    }
 
     Surface(
         color = DesktopColors.CslMidnight,
@@ -394,6 +401,7 @@ private fun DesktopTopNavigationHeader(
                     val selected = state.activeTab == tab
                     val badgeText = when (tab) {
                         DesktopMainTab.TICKETS -> if (newQueueCount > 0) " ($newQueueCount)" else ""
+                        DesktopMainTab.ZABBIX -> if (activeZabbixAlertsCount > 0) " ($activeZabbixAlertsCount)" else ""
                         DesktopMainTab.REPAIR -> if (activeRepairsCount > 0) " ($activeRepairsCount)" else ""
                         DesktopMainTab.CHAT -> if (state.unreadChatCount > 0) " (+${state.unreadChatCount})" else ""
                         else -> ""
