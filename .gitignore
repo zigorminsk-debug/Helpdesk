@@ -1,7 +1,10 @@
-# Gradle & Android build outputs
+# Gradle & Android / Windows Desktop build outputs
 .gradle/
 build/
 app/build/
+windows-desktop/.gradle/
+windows-desktop/build/
+windows-desktop/installer/output/
 local.properties
 
 # Android Studio / IntelliJ IDEA

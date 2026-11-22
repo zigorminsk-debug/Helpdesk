@@ -1,4 +1,4 @@
-name: Build & Sign Android APK
+name: Build & Sign Android APK + Windows setup.exe
 
 on:
   push:
@@ -11,21 +11,26 @@ permissions:
 
 jobs:
   build-apk:
-    name: Сборка и подпись APK
+    name: Сборка и подпись Android APK
     runs-on: ubuntu-latest
+    outputs:
+      version_code: ${{ steps.version.outputs.version_code }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      apk_name: ${{ steps.version.outputs.apk_name }}
+      apk_sha256: ${{ steps.verify_apk.outputs.apk_sha256 }}
 
     steps:
       - name: Checkout репозитория
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Установка JDK 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Настройка и кэширование Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Вычисление номера версии сборки
         id: version
@@ -74,37 +79,156 @@ jobs:
           APK_SHA256=$(sha256sum "dist/${{ steps.version.outputs.apk_name }}" | awk '{print $1}')
           echo "apk_sha256=${APK_SHA256}" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "## Help-CSL — v${{ steps.version.outputs.version_name }}"
-            echo "- **Версия (`versionName`)**: \`${{ steps.version.outputs.version_name }}\`"
-            echo "- **Код сборки (`versionCode`)**: \`${{ steps.version.outputs.version_code }}\`"
-            echo "- **Файл APK**: \`${{ steps.version.outputs.apk_name }}\`"
-            echo "- **SHA-256 APK**: \`${APK_SHA256}\`"
-            echo "- **Подпись**: Постоянный ключ \`keystore/helpdesk-release.p12\` (обновление поверх поддерживается)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Загрузка APK в артефакты GitHub Actions
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: help-csl-v${{ steps.version.outputs.version_name }}
+          name: help-csl-android-apk
           path: dist/${{ steps.version.outputs.apk_name }}
           if-no-files-found: error
           retention-days: 90
 
-      - name: Публикация GitHub Release с подписанным APK
+  build-windows:
+    name: Сборка Windows Desktop setup.exe
+    runs-on: windows-latest
+    outputs:
+      exe_sha256: ${{ steps.package_setup.outputs.exe_sha256 }}
+      versioned_exe_name: ${{ steps.package_setup.outputs.versioned_exe_name }}
+
+    steps:
+      - name: Checkout репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка JDK 17 (с поддержкой jpackage)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Настройка и кэширование Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Сборка автономного образа Windows (Compose Desktop + встроенная JRE)
+        shell: pwsh
+        run: |
+          $versionCode = 1000 + [int]$env:GITHUB_RUN_NUMBER
+          $versionName = "1.0.$($env:GITHUB_RUN_NUMBER)"
+          Write-Host "Сборка Help-CSL Windows v$versionName (versionCode=$versionCode)"
+          .\gradlew.bat -p windows-desktop createDistributable `
+            "-PversionCode=$versionCode" `
+            "-PversionName=$versionName" `
+            --no-daemon 2>&1 | Tee-Object -FilePath windows-build.log
+          if ($LASTEXITCODE -ne 0) {
+            Select-String -Path windows-build.log -Pattern "^e: |FAILED|Exception:|What went wrong:" -Context 0,4 | Select-Object -First 40 | ForEach-Object {
+              Write-Host "::error::$($_.Line)"
+            }
+            exit 1
+          }
+          if (-not (Test-Path "windows-desktop\build\compose\binaries\main\app\Help-CSL\Help-CSL.exe")) {
+            throw "Help-CSL.exe не найден после createDistributable"
+          }
+
+      - name: Упаковка инсталлятора setup.exe через Inno Setup 6
+        id: package_setup
+        shell: pwsh
+        run: |
+          $versionName = "1.0.$($env:GITHUB_RUN_NUMBER)"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe (Inno Setup 6) не найден"
+          }
+
+          $rusLang = "C:\Program Files (x86)\Inno Setup 6\Languages\Russian.isl"
+          $isccArgs = @("/DAppVersion=$versionName")
+          if (Test-Path $rusLang) {
+            $isccArgs += "/DUseRussianLang=1"
+          }
+          $isccArgs += "windows-desktop\installer\help-csl.iss"
+
+          & $iscc @isccArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка компиляции Inno Setup setup.exe"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist-win" | Out-Null
+          $builtSetup = "windows-desktop\installer\output\setup.exe"
+          if (-not (Test-Path $builtSetup)) {
+            throw "Файл setup.exe не создан"
+          }
+          $versionedName = "Help-CSL-Setup-v$versionName.exe"
+          Copy-Item $builtSetup "dist-win\setup.exe" -Force
+          Copy-Item $builtSetup "dist-win\$versionedName" -Force
+
+          $hash = (Get-FileHash "dist-win\setup.exe" -Algorithm SHA256).Hash.ToLower()
+          "exe_sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "versioned_exe_name=$versionedName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Собран setup.exe ($((Get-Item 'dist-win\setup.exe').Length) байт), хеш: $hash"
+
+      - name: Загрузка setup.exe в артефакты GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: help-csl-windows-setup
+          path: |
+            dist-win/setup.exe
+            dist-win/${{ steps.package_setup.outputs.versioned_exe_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-release:
+    name: Публикация релиза (Android APK + Windows setup.exe)
+    needs: [build-apk, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Скачивание собранного Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: help-csl-android-apk
+          path: release-assets
+
+      - name: Скачивание собранного Windows setup.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: help-csl-windows-setup
+          path: release-assets
+
+      - name: Публикация единого GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ steps.version.outputs.version_name }}"
+          VERSION_NAME="${{ needs.build-apk.outputs.version_name }}"
+          VERSION_CODE="${{ needs.build-apk.outputs.version_code }}"
+          APK_NAME="${{ needs.build-apk.outputs.apk_name }}"
+          APK_SHA="${{ needs.build-apk.outputs.apk_sha256 }}"
+          EXE_NAME="${{ needs.build-windows.outputs.versioned_exe_name }}"
+          EXE_SHA="${{ needs.build-windows.outputs.exe_sha256 }}"
+          TAG="v${VERSION_NAME}"
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-          cat <<EOF > dist/release-notes.md
-          Автоматическая сборка **Help-CSL v${{ steps.version.outputs.version_name }}** (\`versionCode=${{ steps.version.outputs.version_code }}\`) из ветки \`${GITHUB_REF_NAME}\` (коммит \`${SHORT_SHA}\`).
 
+          cat <<EOF > release-notes.md
+          Автоматическая сборка **Help-CSL v${VERSION_NAME}** (\`versionCode=${VERSION_CODE}\`) для **Windows 10/11 (\`setup.exe\`)** и **Android (\`.apk\`)** из ветки \`${GITHUB_REF_NAME}\` (коммит \`${SHORT_SHA}\`).
+
+          ### 📱 Android (\`${APK_NAME}\`)
           - Подписан постоянным ключом \`keystore/helpdesk-release.p12\` — устанавливается **поверх предыдущей версии** без удаления и потери настроек.
-          - SHA-256 APK: \`${{ steps.verify_apk.outputs.apk_sha256 }}\`
+          - SHA-256 APK: \`${APK_SHA}\`
+
+          ### 💻 Windows 10 / 11 (\`setup.exe\` / \`${EXE_NAME}\`)
+          - Автономный инсталлятор Windows x64 со встроенной средой исполнения (установка Java не требуется, права администратора не требуются).
+          - Системный трей Windows, всплывающие баннеры и звук по производственному календарю РБ (\`09:00\`–\`17:30\`), 1-клик AnyDesk / RustDesk / RDP / SSH / SIP-звонки, вставка скриншотов \`Win+Shift+S\`, печать PDF-квитанций А4, живая синхронизация «В ремонт» (со справочником клиентов Helpdesk и аудитом «Удалённые») и внутреннего «Чата».
+          - Контрольная сумма setup.exe (256-bit): \`${EXE_SHA}\`
           EOF
 
-          gh release create "$TAG" "dist/${{ steps.version.outputs.apk_name }}" \
+          {
+            echo "## Help-CSL ${TAG} — Android APK + Windows setup.exe"
+            cat release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh release create "$TAG" \
+            "release-assets/${APK_NAME}" \
+            "release-assets/setup.exe" \
+            "release-assets/${EXE_NAME}" \
             --target "${GITHUB_SHA}" \
-            --title "Help-CSL ${TAG}" \
-            --notes-file dist/release-notes.md || echo "Примечание: для автоматического создания Release включите Read and write permissions в Settings → Actions → General → Workflow permissions (APK уже доступен в Artifacts выше)."
+            --title "Help-CSL ${TAG} (Android APK + Windows setup.exe)" \
+            --notes-file release-notes.md
