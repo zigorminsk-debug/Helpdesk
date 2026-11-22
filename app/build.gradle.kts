@@ -92,6 +92,8 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -113,4 +115,15 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+configurations.all {
+    resolutionStrategy {
+        // Prevent biometric:1.1.0 / zxing-android-embedded from pulling legacy fragment:1.2.5
+        // whose 16-bit checkForValidRequestCode crashes modern ActivityResultRegistry (>0xFFFF codes).
+        force(
+            "androidx.fragment:fragment:1.8.5",
+            "androidx.fragment:fragment-ktx:1.8.5"
+        )
+    }
 }

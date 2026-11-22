@@ -1,16 +1,19 @@
 package com.helpdesk.jiraagent.ui.components
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -98,6 +101,66 @@ import com.helpdesk.jiraagent.util.PdfServiceActGenerator
 import com.helpdesk.jiraagent.util.ServiceActInput
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+
+/**
+ * Crash-safe camera barcode / QR scanner launcher that checks `CAMERA` permission up front
+ * (required on MIUI/HyperOS & Android 6+) and immediately opens the scanner upon grant.
+ */
+@Composable
+fun rememberSafeBarcodeScanner(
+    prompt: String,
+    onScanned: (String) -> Unit
+): () -> Unit {
+    val context = LocalContext.current
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents?.trim().orEmpty()
+        if (contents.isNotEmpty()) {
+            onScanned(contents)
+        }
+    }
+    val launchScanNow = {
+        runCatching {
+            scanLauncher.launch(
+                ScanOptions()
+                    .setPrompt(prompt)
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+            )
+        }.onFailure { err ->
+            Toast.makeText(
+                context,
+                "Не удалось открыть сканер камеры: ${err.localizedMessage ?: "ошибка"}",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        Unit
+    }
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchScanNow()
+        } else {
+            Toast.makeText(
+                context,
+                "Разрешите доступ к камере для сканирования штрихкодов и QR",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    return {
+        val hasPerm = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasPerm) {
+            launchScanNow()
+        } else {
+            runCatching { cameraPermLauncher.launch(Manifest.permission.CAMERA) }
+                .onFailure { launchScanNow() }
+        }
+    }
+}
 
 /**
  * Local persistent technical dossier card for each client organization inside TicketDetailScreen.
@@ -459,11 +522,10 @@ fun ServiceActPdfDialog(
     var padWidthPx by remember { mutableIntStateOf(600) }
     var padHeightPx by remember { mutableIntStateOf(220) }
 
-    val barcodeLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val contents = result.contents?.trim().orEmpty()
-        if (contents.isNotEmpty()) {
-            serialDraft = contents
-        }
+    val launchActBarcodeScan = rememberSafeBarcodeScanner(
+        prompt = "Наведите камеру на штрихкод / S/N оборудования"
+    ) { contents ->
+        serialDraft = contents
     }
 
     AlertDialog(
@@ -493,14 +555,7 @@ fun ServiceActPdfDialog(
                     singleLine = true,
                     label = { Text("S/N или инвентарный номер (необязательно)") },
                     trailingIcon = {
-                        IconButton(onClick = {
-                            barcodeLauncher.launch(
-                                ScanOptions()
-                                    .setPrompt("Наведите камеру на штрихкод / S/N оборудования")
-                                    .setBeepEnabled(false)
-                                    .setOrientationLocked(false)
-                            )
-                        }) {
+                        IconButton(onClick = { launchActBarcodeScan() }) {
                             Icon(Icons.Default.QrCodeScanner, contentDescription = "Сканировать S/N", tint = CslOrange)
                         }
                     }
@@ -772,19 +827,18 @@ fun QrSettingsTransferDialog(
     var feedbackMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var feedbackError by rememberSaveable { mutableStateOf(false) }
 
-    val qrScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val scanned = result.contents?.trim().orEmpty()
-        if (scanned.isNotEmpty()) {
-            importText = scanned
-            val res = onImportPayload(scanned, pinCode)
-            res.onSuccess { msg ->
-                feedbackError = false
-                feedbackMessage = msg
-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-            }.onFailure { err ->
-                feedbackError = true
-                feedbackMessage = err.message ?: "Ошибка импорта QR"
-            }
+    val launchQrConfigScan = rememberSafeBarcodeScanner(
+        prompt = "Наведите камеру на QR-код настроек Help-CSL на экране коллеги"
+    ) { scanned ->
+        importText = scanned
+        val res = onImportPayload(scanned, pinCode)
+        res.onSuccess { msg ->
+            feedbackError = false
+            feedbackMessage = msg
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }.onFailure { err ->
+            feedbackError = true
+            feedbackMessage = err.message ?: "Ошибка импорта QR"
         }
     }
 
@@ -895,14 +949,7 @@ fun QrSettingsTransferDialog(
                     }
                 } else {
                     Button(
-                        onClick = {
-                            qrScannerLauncher.launch(
-                                ScanOptions()
-                                    .setPrompt("Наведите камеру на QR-код настроек Help-CSL на экране коллеги")
-                                    .setBeepEnabled(false)
-                                    .setOrientationLocked(false)
-                            )
-                        },
+                        onClick = { launchQrConfigScan() },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                     ) {

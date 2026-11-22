@@ -105,6 +105,7 @@ import com.helpdesk.jiraagent.ui.components.CreateTicketDialog
 import com.helpdesk.jiraagent.ui.components.MessengerActionChip
 import com.helpdesk.jiraagent.ui.components.MessengerCircleIconButton
 import com.helpdesk.jiraagent.ui.components.SysadminEmptyStatePanel
+import com.helpdesk.jiraagent.ui.components.rememberSafeBarcodeScanner
 import com.helpdesk.jiraagent.ui.theme.CslDangerRed
 import com.helpdesk.jiraagent.ui.theme.CslInfoBlue
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
@@ -180,11 +181,10 @@ fun TicketsScreen(
         }
     }
 
-    val serialScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val scanned = result.contents?.trim().orEmpty()
-        if (scanned.isNotEmpty()) {
-            onScanSerialHistory(scanned)
-        }
+    val launchSerialScanner = rememberSafeBarcodeScanner(
+        prompt = "Наведите камеру на S/N или QR оборудования для поиска ремонтов в Jira"
+    ) { scanned ->
+        onScanSerialHistory(scanned)
     }
 
     if (showBatchCommentDialog) {
@@ -338,14 +338,7 @@ fun TicketsScreen(
                             }
                         }
                         IconButton(
-                            onClick = {
-                                serialScannerLauncher.launch(
-                                    ScanOptions()
-                                        .setPrompt("Наведите камеру на S/N или QR оборудования для поиска ремонтов в Jira")
-                                        .setBeepEnabled(false)
-                                        .setOrientationLocked(false)
-                                )
-                            },
+                            onClick = { launchSerialScanner() },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(

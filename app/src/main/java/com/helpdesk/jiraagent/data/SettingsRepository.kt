@@ -19,6 +19,9 @@ import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.PostponedTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
+import com.helpdesk.jiraagent.model.RepairEquipmentItem
+import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TtsReadoutMode
@@ -106,6 +109,87 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _pendingCallSession = MutableStateFlow<PendingCallSession?>(null)
     val pendingCallSession: StateFlow<PendingCallSession?> = _pendingCallSession.asStateFlow()
+
+    private val _repairItems = MutableStateFlow(loadRepairItems())
+    val repairItems: StateFlow<List<RepairEquipmentItem>> = _repairItems.asStateFlow()
+
+    private val _resolvedRepairRoomKey = MutableStateFlow(
+        cachePrefs.getString(KEY_RESOLVED_REPAIR_ROOM_KEY, "").orEmpty()
+    )
+    val resolvedRepairRoomKey: StateFlow<String> = _resolvedRepairRoomKey.asStateFlow()
+
+    @Synchronized
+    fun setResolvedRepairRoomKey(issueKey: String) {
+        val clean = issueKey.trim().uppercase(Locale.ROOT)
+        _resolvedRepairRoomKey.value = clean
+        cachePrefs.edit().putString(KEY_RESOLVED_REPAIR_ROOM_KEY, clean).apply()
+    }
+
+    @Synchronized
+    fun upsertRepairItem(item: RepairEquipmentItem): RepairEquipmentItem {
+        val current = _repairItems.value
+        val assignedNumber = item.intakeNumber.trim().ifEmpty {
+            RepairEquipmentCodec.generateNextIntakeNumber(current)
+        }
+        val now = System.currentTimeMillis()
+        val stamped = item.copy(
+            intakeNumber = assignedNumber,
+            updatedAtEpochMs = now.coerceAtLeast(item.updatedAtEpochMs),
+            issuedAtEpochMs = if (item.status == RepairStatus.ISSUED) {
+                item.issuedAtEpochMs ?: now
+            } else {
+                null
+            },
+            pendingRemoteSync = true
+        )
+        val merged = (current.filterNot { it.id == stamped.id } + stamped)
+            .sortedByDescending { it.updatedAtEpochMs }
+        persistRepairItems(merged)
+        return stamped
+    }
+
+    @Synchronized
+    fun markRepairItemSynced(itemId: String, syncedUpdatedAtEpochMs: Long) {
+        val updated = _repairItems.value.map { existing ->
+            if (existing.id == itemId && existing.updatedAtEpochMs <= syncedUpdatedAtEpochMs) {
+                existing.copy(pendingRemoteSync = false)
+            } else {
+                existing
+            }
+        }
+        persistRepairItems(updated)
+    }
+
+    @Synchronized
+    fun mergeRemoteRepairEvents(
+        roomIssueKey: String,
+        remoteEvents: List<RepairEquipmentItem>
+    ): List<RepairEquipmentItem> {
+        if (roomIssueKey.isNotBlank()) {
+            setResolvedRepairRoomKey(roomIssueKey)
+        }
+        val merged = RepairEquipmentCodec.mergeItems(_repairItems.value, remoteEvents)
+        persistRepairItems(merged)
+        return merged.filter { it.pendingRemoteSync }
+    }
+
+    private fun persistRepairItems(items: List<RepairEquipmentItem>) {
+        // Keep up to 400 recent items including tombstones so cross-device deletes converge cleanly
+        val bounded = items.take(400)
+        _repairItems.value = bounded
+        prefs.edit().putString(KEY_REPAIR_ITEMS_JSON, gson.toJson(bounded)).apply()
+    }
+
+    private fun loadRepairItems(): List<RepairEquipmentItem> {
+        val raw = prefs.getString(KEY_REPAIR_ITEMS_JSON, null) ?: return emptyList()
+        return runCatching {
+            val type = object : TypeToken<List<RepairEquipmentItem>>() {}.type
+            val parsed = gson.fromJson<List<RepairEquipmentItem>>(raw, type).orEmpty()
+            parsed.filter { it.id.isNotBlank() }
+                .map { it.copy(status = it.status ?: RepairStatus.RECEIVED) }
+                .sortedByDescending { it.updatedAtEpochMs }
+        }.getOrDefault(emptyList())
+    }
 
     @Volatile
     var isChatTabVisible: Boolean = false
@@ -874,5 +958,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_PINNED_SHIFT_NOTE = "pinned_shift_note"
         private const val KEY_OFFLINE_QUEUE_JSON = "offline_queue_json"
         private const val KEY_STALE_REMINDED_KEYS = "stale_reminded_ticket_keys"
+        private const val KEY_REPAIR_ITEMS_JSON = "repair_equipment_items_json"
+        private const val KEY_RESOLVED_REPAIR_ROOM_KEY = "resolved_repair_room_key"
     }
 }

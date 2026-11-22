@@ -15,6 +15,9 @@ import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PhoneMatch
 import com.helpdesk.jiraagent.model.QueuedActionType
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
+import com.helpdesk.jiraagent.model.RepairEquipmentItem
+import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.service.HelpCslCallScreeningService
 import org.junit.Assert.assertEquals
@@ -279,5 +282,57 @@ class SysadminImprovementsTest {
         assertEquals(1, stats.closedToday)
         assertEquals(1, stats.closedByMeToday)
         assertEquals(100, stats.slaGreenPercent)
+    }
+
+    @Test
+    fun `repair registry codec encodes decodes merges and hides storage issue from client queues`() {
+        val itemV1 = RepairEquipmentItem(
+            id = "rep-1",
+            intakeNumber = "REM-1001",
+            deviceCategory = "Ноутбук",
+            deviceModel = "HP ProBook 450 G8",
+            serialNumber = "5CD1234XYZ",
+            accessories = "Блок питания / ЗУ, Сумка / Чехол",
+            reportedDefect = "Не включается после грозы",
+            clientName = "ООО Сейлзмодерн",
+            clientPhone = "+375291112233",
+            linkedTicketKey = "CSL-37368",
+            status = RepairStatus.RECEIVED,
+            updatedAtEpochMs = 1_000L
+        )
+        val encoded = RepairEquipmentCodec.encodeEntryComment(itemV1)
+        val decoded = RepairEquipmentCodec.decodeEntryComment(encoded)
+        assertNotNull(decoded)
+        assertEquals("REM-1001", decoded!!.intakeNumber)
+        assertEquals("5CD1234XYZ", decoded.serialNumber)
+        assertFalse(decoded.pendingRemoteSync)
+
+        // Newer remote update wins over older local version
+        val remoteV2 = itemV1.copy(
+            status = RepairStatus.READY,
+            repairNotes = "Заменён контроллер питания",
+            updatedAtEpochMs = 2_500L,
+            pendingRemoteSync = false
+        )
+        val merged = RepairEquipmentCodec.mergeItems(listOf(itemV1), listOf(remoteV2))
+        assertEquals(1, merged.size)
+        assertEquals(RepairStatus.READY, merged.first().status)
+        assertEquals("Заменён контроллер питания", merged.first().repairNotes)
+        assertFalse(merged.first().pendingRemoteSync)
+
+        // Search matches by S/N, intake number, client, and linked ticket key
+        assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "5cd1234"))
+        assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "REM-1001"))
+        assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "CSL-37368"))
+        assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "сейлзмодерн"))
+
+        // Storage hub issue is treated as internal storage issue (excluded from client queues & alerts)
+        assertTrue(
+            AdminChatCodec.isAdminChatStorageIssue(
+                issueKey = "CSL-99999",
+                summary = RepairEquipmentCodec.REPAIR_REGISTRY_SUMMARY,
+                labels = listOf(RepairEquipmentCodec.REPAIR_REGISTRY_LABEL)
+            )
+        )
     }
 }

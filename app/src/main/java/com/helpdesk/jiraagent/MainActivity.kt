@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
@@ -106,6 +107,7 @@ import com.helpdesk.jiraagent.ui.components.ShiftAnalyticsDialog
 import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
 import com.helpdesk.jiraagent.ui.screens.AdminChatScreen
 import com.helpdesk.jiraagent.ui.screens.FilterSettingsScreen
+import com.helpdesk.jiraagent.ui.screens.RepairRegistryScreen
 import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.TicketDetailScreen
 import com.helpdesk.jiraagent.ui.screens.TicketsScreen
@@ -118,6 +120,7 @@ import kotlinx.coroutines.delay
 
 private enum class BottomDestination(val label: String) {
     TICKETS("Заявки"),
+    REPAIR("В ремонт"),
     CHAT("Чат"),
     FILTER("Фильтр"),
     SETTINGS("Настройки")
@@ -206,6 +209,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val isLoadingColleagues by viewModel.isLoadingColleagues.collectAsStateWithLifecycle()
     val serialSearchState by viewModel.serialSearchState.collectAsStateWithLifecycle()
     val isBatchBusy by viewModel.isBatchBusy.collectAsStateWithLifecycle()
+    val repairItems by viewModel.repairItems.collectAsStateWithLifecycle()
+    val isSyncingRepair by viewModel.isSyncingRepair.collectAsStateWithLifecycle()
+    val repairSyncError by viewModel.repairSyncError.collectAsStateWithLifecycle()
+    val pendingRepairDraft by viewModel.pendingRepairDraftFromTicket.collectAsStateWithLifecycle()
+    val openRepairTabStamp by viewModel.openRepairTabStamp.collectAsStateWithLifecycle()
+
+    val activeWorkshopCount = remember(repairItems) {
+        repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
+    }
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
     var hasNotifPermission by rememberSaveable {
@@ -376,6 +388,18 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         }
     }
 
+    LaunchedEffect(openRepairTabStamp) {
+        if (openRepairTabStamp > 0L) {
+            currentTab = BottomDestination.REPAIR
+        }
+    }
+
+    LaunchedEffect(currentTab) {
+        if (currentTab == BottomDestination.REPAIR && appSettings.isConfigured) {
+            viewModel.syncRepairRegistry()
+        }
+    }
+
     LaunchedEffect(latestInAppBanner?.timestampMillis) {
         if (latestInAppBanner != null) {
             delay(14_000L)
@@ -424,6 +448,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 },
                 onGenerateServiceActPdf = { input -> viewModel.generateAndAttachServiceAct(input) },
                 onScanSerialHistory = { sn -> viewModel.searchByHardwareSerial(sn) },
+                onSendToRepair = { t, sn -> viewModel.sendTicketToRepairIntake(t, sn) },
                 loadAttachmentBytes = { url -> viewModel.loadAttachmentBytes(url) },
                 onUploadAttachmentUri = { uri, name ->
                     viewModel.uploadAttachmentFromUri(activeKey, uri, name)
@@ -541,7 +566,13 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         )
                     }
                     if (appSettings.isConfigured || postponedTickets.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.refreshNow() }) {
+                        IconButton(onClick = {
+                            if (currentTab == BottomDestination.REPAIR) {
+                                viewModel.syncRepairRegistry()
+                            } else {
+                                viewModel.refreshNow()
+                            }
+                        }) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = "Обновить",
@@ -553,7 +584,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             )
         },
         bottomBar = {
-            val navLabelSize = with(LocalDensity.current) { 11.dp.toSp() }
+            val navLabelSize = with(LocalDensity.current) { 10.dp.toSp() }
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = NavigationBarDefaults.Elevation
@@ -565,6 +596,37 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     label = {
                         Text(
                             text = BottomDestination.TICKETS.label,
+                            fontSize = navLabelSize,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    },
+                    colors = navItemColors
+                )
+                NavigationBarItem(
+                    selected = currentTab == BottomDestination.REPAIR,
+                    onClick = { currentTab = BottomDestination.REPAIR },
+                    icon = {
+                        BadgedBox(
+                            badge = {
+                                if (activeWorkshopCount > 0) {
+                                    Badge(
+                                        containerColor = CslOrange,
+                                        contentColor = Color.White
+                                    ) {
+                                        Text(
+                                            text = if (activeWorkshopCount > 99) "99+" else activeWorkshopCount.toString()
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Build, contentDescription = null)
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = BottomDestination.REPAIR.label,
                             fontSize = navLabelSize,
                             maxLines = 1,
                             softWrap = false
@@ -720,6 +782,30 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     onOpenSettings = { currentTab = BottomDestination.SETTINGS },
                     modifier = Modifier.weight(1f)
                 )
+
+                BottomDestination.REPAIR -> {
+                    val engineerName = syncStatus.connectedUser ?: appSettings.usernameOrEmail
+                    Box(modifier = Modifier.weight(1f)) {
+                        RepairRegistryScreen(
+                            items = repairItems,
+                            appSettings = appSettings,
+                            engineerDisplayName = engineerName,
+                            isSyncing = isSyncingRepair,
+                            syncErrorMessage = repairSyncError,
+                            prefillDraftFromTicket = pendingRepairDraft,
+                            onConsumePrefillDraft = { viewModel.consumePendingRepairDraft() },
+                            onSaveItem = { item, postNote ->
+                                viewModel.saveRepairEquipmentItem(item, postNote)
+                            },
+                            onDeleteItem = { item -> viewModel.deleteRepairEquipmentItem(item) },
+                            onSyncNow = { viewModel.syncRepairRegistry() },
+                            onOpenLinkedTicket = { key -> viewModel.openTicket(key) },
+                            onAttachPdfToTicket = { key, bytes, name, note ->
+                                viewModel.attachRepairPdfToTicket(key, bytes, name, note)
+                            }
+                        )
+                    }
+                }
 
                 BottomDestination.CHAT -> AdminChatScreen(
                     messages = chatMessages,

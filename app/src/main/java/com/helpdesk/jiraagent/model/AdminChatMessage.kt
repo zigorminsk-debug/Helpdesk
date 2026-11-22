@@ -109,7 +109,9 @@ object AdminChatCodec {
         if (configuredChatKey.isNotBlank() && issueKey.equals(configuredChatKey.trim(), ignoreCase = true)) {
             return true
         }
-        if (summary.contains(ADMIN_CHAT_MARKER, ignoreCase = true)) {
+        if (summary.contains(ADMIN_CHAT_MARKER, ignoreCase = true) ||
+            RepairEquipmentCodec.isRepairRegistryStorageIssue(summary, labels)
+        ) {
             return true
         }
         return labels.any { it.equals(ADMIN_CHAT_LABEL, ignoreCase = true) }

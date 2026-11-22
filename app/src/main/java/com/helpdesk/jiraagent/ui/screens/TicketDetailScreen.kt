@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -104,6 +105,7 @@ import com.helpdesk.jiraagent.ui.components.AssignColleagueDialog
 import com.helpdesk.jiraagent.ui.components.ClientDossierCard
 import com.helpdesk.jiraagent.ui.components.ServiceActPdfDialog
 import com.helpdesk.jiraagent.ui.components.WorklogAndPostCallDialog
+import com.helpdesk.jiraagent.ui.components.rememberSafeBarcodeScanner
 import com.helpdesk.jiraagent.util.ServiceActInput
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -154,6 +156,7 @@ fun TicketDetailScreen(
     onLogWorklog: (minutes: Int, comment: String, alsoComplete: Boolean) -> Unit = { _, _, _ -> },
     onGenerateServiceActPdf: (ServiceActInput) -> Unit = {},
     onScanSerialHistory: (String) -> Unit = {},
+    onSendToRepair: (HelpdeskTicket, String) -> Unit = { _, _ -> },
     loadAttachmentBytes: suspend (String) -> Result<ByteArray>,
     onUploadAttachmentUri: (Uri, String?) -> Unit,
     onOpenExternalAttachment: (TicketAttachment) -> Unit,
@@ -181,12 +184,11 @@ fun TicketDetailScreen(
     var scannedSerialForActOrChoice by rememberSaveable { mutableStateOf("") }
     var showScannedSerialChoiceDialog by rememberSaveable { mutableStateOf(false) }
 
-    val detailScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { res ->
-        val scanned = res.contents?.trim().orEmpty()
-        if (scanned.isNotEmpty()) {
-            scannedSerialForActOrChoice = scanned
-            showScannedSerialChoiceDialog = true
-        }
+    val launchDetailScanner = rememberSafeBarcodeScanner(
+        prompt = "Наведите камеру на штрихкод / S/N оборудования"
+    ) { scanned ->
+        scannedSerialForActOrChoice = scanned
+        showScannedSerialChoiceDialog = true
     }
 
     if (showScannedSerialChoiceDialog && scannedSerialForActOrChoice.isNotBlank()) {
@@ -194,7 +196,24 @@ fun TicketDetailScreen(
             onDismissRequest = { showScannedSerialChoiceDialog = false },
             title = { Text("Распознан код: $scannedSerialForActOrChoice", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Выберите действие с серийным / инвентарным номером:")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Выберите действие с серийным / инвентарным номером:")
+                    if (ticket != null) {
+                        OutlinedButton(
+                            onClick = {
+                                val sn = scannedSerialForActOrChoice
+                                showScannedSerialChoiceDialog = false
+                                onSendToRepair(ticket, sn)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, CslOrange)
+                        ) {
+                            Icon(Icons.Default.Build, contentDescription = null, tint = CslOrange, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Занести во вкладку «В ремонт»")
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
@@ -578,14 +597,7 @@ fun TicketDetailScreen(
                                 Text("PDF-акт", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                             }
                             OutlinedButton(
-                                onClick = {
-                                    detailScannerLauncher.launch(
-                                        ScanOptions()
-                                            .setPrompt("Наведите камеру на штрихкод / S/N оборудования")
-                                            .setBeepEnabled(false)
-                                            .setOrientationLocked(false)
-                                    )
-                                },
+                                onClick = { launchDetailScanner() },
                                 modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 7.dp)
                             ) {
@@ -593,6 +605,26 @@ fun TicketDetailScreen(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Скан S/N", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                             }
+                        }
+                        OutlinedButton(
+                            onClick = { onSendToRepair(ticket, scannedSerialForActOrChoice) },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, CslOrange)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Build,
+                                contentDescription = null,
+                                tint = CslOrange,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Занести технику во вкладку «В ремонт»",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                         OutlinedButton(
                             onClick = { onDiscussInChat(ticket) },

@@ -34,6 +34,8 @@ import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PhoneMatch
 import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.QueuedActionType
+import com.helpdesk.jiraagent.model.RepairEquipmentItem
+import com.helpdesk.jiraagent.model.RepairStatus
 import com.helpdesk.jiraagent.model.SyncStatus
 import com.helpdesk.jiraagent.model.TicketAttachment
 import com.helpdesk.jiraagent.model.TicketComment
@@ -132,6 +134,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val offlineQueuedActions: StateFlow<List<OfflineQueuedAction>> = repository.offlineQueuedActions
     val clientDossierNotes: StateFlow<Map<String, String>> = repository.clientDossierNotes
     val pendingCallSession: StateFlow<PendingCallSession?> = repository.pendingCallSession
+    val repairItems: StateFlow<List<RepairEquipmentItem>> = repository.repairItems
+
+    private val _isSyncingRepair = MutableStateFlow(false)
+    val isSyncingRepair: StateFlow<Boolean> = _isSyncingRepair.asStateFlow()
+
+    private val _repairSyncError = MutableStateFlow<String?>(null)
+    val repairSyncError: StateFlow<String?> = _repairSyncError.asStateFlow()
+
+    private val _pendingRepairDraftFromTicket = MutableStateFlow<RepairEquipmentItem?>(null)
+    val pendingRepairDraftFromTicket: StateFlow<RepairEquipmentItem?> = _pendingRepairDraftFromTicket.asStateFlow()
+
+    private val _openRepairTabStamp = MutableStateFlow(0L)
+    val openRepairTabStamp: StateFlow<Long> = _openRepairTabStamp.asStateFlow()
 
     private val _assignableColleagues = MutableStateFlow<List<JiraAssignableUser>>(emptyList())
     val assignableColleagues: StateFlow<List<JiraAssignableUser>> = _assignableColleagues.asStateFlow()
@@ -203,6 +218,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         JiraMonitorService.syncServiceState(appContext)
         if (repository.appSettings.value.autoCheckUpdates) {
             checkForAppUpdate(manual = false)
+        }
+        if (repository.appSettings.value.isConfigured) {
+            syncRepairRegistry()
         }
     }
 
@@ -1871,6 +1889,196 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "Настройки, фильтры и учётные данные успешно импортированы!"
             } else {
                 "Настройки сервера, РБ-графика и фильтров импортированы (введите свой логин/пароль)."
+            }
+        }
+    }
+
+    // --- Workshop Equipment Repair Registry («В ремонт») ---
+
+    fun sendTicketToRepairIntake(ticket: HelpdeskTicket, scannedSerial: String = "") {
+        val engineerName = syncStatus.value.connectedUser ?: appSettings.value.usernameOrEmail
+        val firstPhone = ticket.phoneMatches.firstOrNull()?.e164Number.orEmpty()
+        val lowerSummary = "${ticket.summary} ${ticket.description}".lowercase()
+        val guessedCategory = when {
+            lowerSummary.contains("ноутбук") || lowerSummary.contains("laptop") -> "Ноутбук"
+            lowerSummary.contains("принтер") || lowerSummary.contains("мфу") || lowerSummary.contains("kyocera") -> "Принтер / МФУ"
+            lowerSummary.contains("сервер") || lowerSummary.contains("схд") -> "Сервер / СХД"
+            lowerSummary.contains("ибп") || lowerSummary.contains("ups") -> "ИБП (UPS)"
+            lowerSummary.contains("mikrotik") || lowerSummary.contains("роутер") || lowerSummary.contains("коммутатор") -> "Сетевое (MikroTik/Cisco)"
+            lowerSummary.contains("монитор") -> "Монитор"
+            lowerSummary.contains("пк") || lowerSummary.contains("компьютер") || lowerSummary.contains("системн") -> "ПК / Системный блок"
+            else -> "Ноутбук"
+        }
+
+        _pendingRepairDraftFromTicket.value = RepairEquipmentItem(
+            deviceCategory = guessedCategory,
+            deviceModel = ticket.summary.take(70),
+            serialNumber = scannedSerial,
+            clientName = ticket.reporterName,
+            clientPhone = firstPhone,
+            linkedTicketKey = ticket.key,
+            reportedDefect = ticket.description.ifBlank { ticket.summary }.take(400),
+            assignedEngineer = engineerName,
+            status = RepairStatus.RECEIVED
+        )
+        _selectedTicketKey.value = null
+        _openRepairTabStamp.value = System.currentTimeMillis()
+    }
+
+    fun consumePendingRepairDraft() {
+        _pendingRepairDraftFromTicket.value = null
+    }
+
+    fun saveRepairEquipmentItem(
+        item: RepairEquipmentItem,
+        postNoteToLinkedTicket: Boolean = false
+    ) {
+        val saved = repository.upsertRepairItem(item)
+        Toast.makeText(
+            appContext,
+            "Сохранено во вкладку «В ремонт»: ${saved.intakeNumber}",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        val settings = appSettings.value
+        if (!settings.isConfigured) return
+
+        viewModelScope.launch {
+            if (postNoteToLinkedTicket && saved.linkedTicketKey.isNotBlank() && !saved.isDeleted) {
+                val snPart = if (saved.serialNumber.isNotBlank()) ", S/N: ${saved.serialNumber}" else ""
+                val accPart = if (saved.accessories.isNotBlank()) ", комплект: ${saved.accessories}" else ""
+                val note = "🔧 Техника в ремонте (${saved.intakeNumber}): ${saved.deviceCategory} ${saved.deviceModel}$snPart$accPart — статус: ${saved.status.title}."
+                val commentRes = apiClient.postIssueComment(
+                    issueKey = saved.linkedTicketKey,
+                    commentText = note,
+                    settings = settings,
+                    filterSettings = filterSettings.value,
+                    internalOnly = true
+                )
+                commentRes.getOrNull()?.let { repository.upsertSingleTicket(it) }
+                if (commentRes.isFailure && (commentRes.exceptionOrNull() as? JiraApiException)?.isNetworkError == true) {
+                    repository.enqueueOfflineAction(
+                        OfflineQueuedAction(
+                            type = QueuedActionType.COMMENT,
+                            ticketKey = saved.linkedTicketKey,
+                            commentText = note,
+                            internalComment = true
+                        )
+                    )
+                }
+            }
+
+            syncSingleRepairItemAndPull(saved)
+        }
+    }
+
+    fun deleteRepairEquipmentItem(item: RepairEquipmentItem) {
+        val deleted = repository.upsertRepairItem(item.copy(isDeleted = true))
+        Toast.makeText(appContext, "Карточка ${deleted.intakeNumber} удалена", Toast.LENGTH_SHORT).show()
+        if (appSettings.value.isConfigured) {
+            viewModelScope.launch {
+                syncSingleRepairItemAndPull(deleted)
+            }
+        }
+    }
+
+    fun syncRepairRegistry() {
+        val settings = appSettings.value
+        if (!settings.isConfigured || _isSyncingRepair.value) return
+        viewModelScope.launch {
+            _isSyncingRepair.value = true
+            _repairSyncError.value = null
+            val roomRes = apiClient.resolveOrCreateRepairRegistryRoom(
+                settings = settings,
+                filterSettings = filterSettings.value,
+                cachedRoomKey = repository.resolvedRepairRoomKey.value
+            )
+            roomRes.onSuccess { roomKey ->
+                repository.setResolvedRepairRoomKey(roomKey)
+                // First push any unsynced local entries
+                val unsynced = repository.repairItems.value.filter { it.pendingRemoteSync }
+                for (pending in unsynced) {
+                    val postRes = apiClient.postRepairRegistryEntry(roomKey, pending, settings)
+                    if (postRes.isSuccess) {
+                        repository.markRepairItemSynced(pending.id, pending.updatedAtEpochMs)
+                    }
+                }
+                // Then pull remote entries from colleagues
+                apiClient.fetchRepairRegistryRemoteEntries(roomKey, settings)
+                    .onSuccess { remoteList ->
+                        repository.mergeRemoteRepairEvents(roomKey, remoteList)
+                    }
+                    .onFailure { err ->
+                        _repairSyncError.value = err.message
+                    }
+            }.onFailure { err ->
+                _repairSyncError.value = err.message
+            }
+            _isSyncingRepair.value = false
+        }
+    }
+
+    private suspend fun syncSingleRepairItemAndPull(item: RepairEquipmentItem) {
+        val settings = appSettings.value
+        if (!settings.isConfigured) return
+        val roomKey = apiClient.resolveOrCreateRepairRegistryRoom(
+            settings = settings,
+            filterSettings = filterSettings.value,
+            cachedRoomKey = repository.resolvedRepairRoomKey.value
+        ).getOrElse { err ->
+            _repairSyncError.value = err.message
+            return
+        }
+        repository.setResolvedRepairRoomKey(roomKey)
+        val postRes = apiClient.postRepairRegistryEntry(roomKey, item, settings)
+        if (postRes.isSuccess) {
+            repository.markRepairItemSynced(item.id, item.updatedAtEpochMs)
+            apiClient.fetchRepairRegistryRemoteEntries(roomKey, settings).onSuccess { remote ->
+                repository.mergeRemoteRepairEvents(roomKey, remote)
+            }
+        } else {
+            _repairSyncError.value = postRes.exceptionOrNull()?.message
+        }
+    }
+
+    fun attachRepairPdfToTicket(
+        ticketKey: String,
+        pdfBytes: ByteArray,
+        fileName: String,
+        noteText: String
+    ) {
+        val settings = appSettings.value
+        if (!settings.isConfigured) {
+            Toast.makeText(appContext, "Сначала настройте подключение к Jira", Toast.LENGTH_SHORT).show()
+            return
+        }
+        viewModelScope.launch {
+            val uploadRes = apiClient.uploadIssueAttachment(
+                issueKey = ticketKey,
+                fileName = fileName,
+                mimeType = "application/pdf",
+                fileBytes = pdfBytes,
+                settings = settings,
+                filterSettings = filterSettings.value
+            )
+            uploadRes.onSuccess { updated ->
+                updated?.let { repository.upsertSingleTicket(it) }
+                if (noteText.isNotBlank()) {
+                    apiClient.postIssueComment(
+                        issueKey = ticketKey,
+                        commentText = noteText,
+                        settings = settings,
+                        filterSettings = filterSettings.value,
+                        internalOnly = true
+                    ).getOrNull()?.let { repository.upsertSingleTicket(it) }
+                }
+                Toast.makeText(appContext, "PDF прикреплён к заявке $ticketKey", Toast.LENGTH_LONG).show()
+            }.onFailure { err ->
+                Toast.makeText(
+                    appContext,
+                    err.message ?: "Ошибка загрузки PDF в Jira",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }

@@ -9,6 +9,8 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentItem
+import com.helpdesk.jiraagent.model.RepairStatus
 import java.io.File
 import java.io.FileOutputStream
 import java.time.ZonedDateTime
@@ -201,6 +203,191 @@ object PdfServiceActGenerator {
         val safeKey = input.ticket.key.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val outFile = File(dir, "Akt_${safeKey}_${System.currentTimeMillis() / 1000}.pdf")
         FileOutputStream(outFile).use { doc.writeTo(it) }
+        doc.close()
+        return outFile
+    }
+
+    /**
+     * Generates a corporate `csl.by` A4 PDF Equipment Repair Intake Receipt or Issue Act
+     * (`Квитанция о приёме техники в ремонт` / `Акт выдачи оборудования из ремонта`).
+     */
+    fun generateRepairReceiptPdfFile(
+        context: Context,
+        item: RepairEquipmentItem,
+        engineerName: String,
+        clientSignatureBitmap: Bitmap? = null
+    ): File {
+        val isIssueAct = item.status == RepairStatus.READY || item.status == RepairStatus.ISSUED
+        val pageWidth = 595
+        val pageHeight = 842
+        val doc = PdfDocument()
+        val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
+        val page = doc.startPage(pageInfo)
+        val canvas: Canvas = page.canvas
+
+        val navy = Color.parseColor("#04091E")
+        val orange = Color.parseColor("#F7631B")
+        val darkText = Color.parseColor("#111827")
+        val mutedText = Color.parseColor("#4B5563")
+        val lightBg = Color.parseColor("#F4F6FA")
+        val borderGray = Color.parseColor("#CBD5E1")
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        // Header
+        paint.color = navy
+        canvas.drawRect(0f, 0f, pageWidth.toFloat(), 86f, paint)
+        paint.color = orange
+        canvas.drawRect(0f, 82f, pageWidth.toFloat(), 88f, paint)
+
+        paint.color = Color.WHITE
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 19f
+        canvas.drawText("Help-CSL · Сервис и техническая поддержка", 36f, 38f, paint)
+
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        paint.textSize = 11.5f
+        paint.color = Color.parseColor("#FFD2B8")
+        val nowStr = ZonedDateTime.now(ZoneId.of("Europe/Minsk")).format(DATE_FMT)
+        val docTitle = if (isIssueAct) {
+            "АКТ ВЫДАЧИ ТЕХНИКИ ИЗ РЕМОНТА № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
+        } else {
+            "КВИТАНЦИЯ О ПРИЁМЕ ТЕХНИКИ В РЕМОНТ № ${item.intakeNumber.ifBlank { "Б/Н" }}  от  $nowStr"
+        }
+        canvas.drawText(docTitle, 36f, 62f, paint)
+
+        var y = 110f
+
+        // Equipment & Client Card
+        paint.color = lightBg
+        val cardHeight = 165f
+        val infoRect = RectF(36f, y, (pageWidth - 36).toFloat(), y + cardHeight)
+        canvas.drawRoundRect(infoRect, 8f, 8f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 1f
+        paint.color = borderGray
+        canvas.drawRoundRect(infoRect, 8f, 8f, paint)
+        paint.style = Paint.Style.FILL
+
+        var infoY = y + 22f
+        drawKeyValue(canvas, "Клиент / Организация:", item.clientName.ifBlank { "Не указан" }.take(52), 50f, infoY, darkText, mutedText)
+        infoY += 20f
+        drawKeyValue(
+            canvas,
+            "Контакт / Заявка Jira:",
+            listOf(item.clientPhone, item.linkedTicketKey).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "—" },
+            50f,
+            infoY,
+            darkText,
+            mutedText
+        )
+        infoY += 20f
+        drawKeyValue(
+            canvas,
+            "Оборудование:",
+            "${item.deviceCategory} — ${item.deviceModel.ifBlank { "Без модели" }}".take(54),
+            50f,
+            infoY,
+            darkText,
+            mutedText
+        )
+        infoY += 20f
+        drawKeyValue(canvas, "Серийный / Инв. №:", item.serialNumber.ifBlank { "Б/Н" }.take(52), 50f, infoY, darkText, mutedText)
+        infoY += 20f
+        drawKeyValue(canvas, "Комплектность:", item.accessories.ifBlank { "Без комплекта" }.take(54), 50f, infoY, darkText, mutedText)
+        infoY += 20f
+        drawKeyValue(canvas, "Внешний вид / Полка:", listOf(item.externalCondition.ifBlank { "Б/У, следы эксплуатации" }, item.shelfLocation).filter { it.isNotBlank() }.joinToString(" · ").take(54), 50f, infoY, darkText, mutedText)
+        infoY += 20f
+        drawKeyValue(canvas, "Текущий статус:", "${item.status.title}  (Инженер: ${item.assignedEngineer.ifBlank { engineerName }.take(28)})", 50f, infoY, darkText, mutedText)
+
+        y += cardHeight + 22f
+
+        // Defect Block
+        paint.color = orange
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 13f
+        canvas.drawText("Заявленная неисправность (со слов заказчика):", 36f, y, paint)
+        y += 18f
+
+        paint.color = darkText
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        paint.textSize = 11f
+        for (line in wrapText(item.reportedDefect.ifBlank { "Диагностика и проверка работоспособности" }, 82).take(5)) {
+            canvas.drawText(line, 44f, y, paint)
+            y += 15f
+        }
+
+        y += 14f
+
+        // Diagnostics & Repair Notes Block
+        if (item.repairNotes.isNotBlank() || isIssueAct) {
+            paint.color = orange
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            paint.textSize = 13f
+            canvas.drawText("Результаты диагностики / Выполненный ремонт:", 36f, y, paint)
+            y += 18f
+
+            paint.color = darkText
+            paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            paint.textSize = 11f
+            val notesText = item.repairNotes.ifBlank { "Диагностика и сервисное обслуживание выполнены, устройство исправно." }
+            for (line in wrapText(notesText, 82).take(8)) {
+                canvas.drawText(line, 44f, y, paint)
+                y += 15f
+            }
+            y += 12f
+        }
+
+        // Legal / Service Terms Note
+        paint.color = mutedText
+        paint.textSize = 9.5f
+        val terms = if (isIssueAct) {
+            "Оборудование проверено в присутствии представителя Заказчика, комплектность полная, претензий к внешнему виду и работе нет."
+        } else {
+            "Оборудование принято для проведения диагностики и ремонта без вскрытия на месте. Скрытые дефекты выявляются в процессе диагностики."
+        }
+        for (line in wrapText(terms, 92)) {
+            canvas.drawText(line, 36f, y, paint)
+            y += 13f
+        }
+
+        // Signature Block at bottom
+        val sigTop = (pageHeight - 155).toFloat().coerceAtLeast(y + 18f)
+        paint.color = borderGray
+        paint.strokeWidth = 1f
+        canvas.drawLine(36f, sigTop, (pageWidth - 36).toFloat(), sigTop, paint)
+
+        paint.color = darkText
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        paint.textSize = 11f
+        canvas.drawText("Сервисный инженер:", 36f, sigTop + 24f, paint)
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        canvas.drawText(item.assignedEngineer.ifBlank { engineerName }.ifBlank { "Инженер Help-CSL" }, 36f, sigTop + 42f, paint)
+        canvas.drawLine(36f, sigTop + 76f, 240f, sigTop + 76f, paint)
+
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        canvas.drawText("Представитель Заказчика:", 300f, sigTop + 24f, paint)
+        paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        canvas.drawText(item.clientName.take(36), 300f, sigTop + 42f, paint)
+
+        if (clientSignatureBitmap != null) {
+            val dstRect = RectF(305f, sigTop + 46f, 515f, sigTop + 104f)
+            canvas.drawBitmap(clientSignatureBitmap, null, dstRect, null)
+        }
+        canvas.drawLine(300f, sigTop + 106f, 545f, sigTop + 106f, paint)
+        paint.textSize = 9f
+        paint.color = mutedText
+        canvas.drawText("(подпись представителя Заказчика)", 335f, sigTop + 120f, paint)
+
+        doc.finishPage(page)
+
+        val actsDir = File(context.cacheDir, "service_acts").apply { mkdirs() }
+        val safeIntake = item.intakeNumber.ifBlank { "REM" }.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val prefix = if (isIssueAct) "Repair_Issue" else "Repair_Intake"
+        val outFile = File(actsDir, "${prefix}_${safeIntake}_${System.currentTimeMillis() / 1000}.pdf")
+        FileOutputStream(outFile).use { fos ->
+            doc.writeTo(fos)
+        }
         doc.close()
         return outFile
     }

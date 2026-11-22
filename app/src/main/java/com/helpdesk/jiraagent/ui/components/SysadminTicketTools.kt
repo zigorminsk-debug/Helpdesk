@@ -1,16 +1,19 @@
 package com.helpdesk.jiraagent.ui.components
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -725,6 +728,35 @@ fun TicketAttachmentsCard(
         }
     }
 
+    val startCameraCapture = {
+        runCatching {
+            val dir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
+            val name = "photo_${System.currentTimeMillis()}.jpg"
+            val photoFile = File(dir, name)
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                photoFile
+            )
+            pendingCameraUri = uri
+            pendingCameraFileName = name
+            cameraLauncher.launch(uri)
+        }.onFailure {
+            Toast.makeText(context, "Не удалось открыть камеру", Toast.LENGTH_SHORT).show()
+        }
+        Unit
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startCameraCapture()
+        } else {
+            Toast.makeText(context, "Разрешите доступ к камере для фотосъёмки", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -764,20 +796,14 @@ fun TicketAttachmentsCard(
             ) {
                 OutlinedButton(
                     onClick = {
-                        runCatching {
-                            val dir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
-                            val name = "photo_${System.currentTimeMillis()}.jpg"
-                            val photoFile = File(dir, name)
-                            val uri = FileProvider.getUriForFile(
-                                context,
-                                "${context.packageName}.fileprovider",
-                                photoFile
-                            )
-                            pendingCameraUri = uri
-                            pendingCameraFileName = name
-                            cameraLauncher.launch(uri)
-                        }.onFailure {
-                            Toast.makeText(context, "Не удалось открыть камеру", Toast.LENGTH_SHORT).show()
+                        val hasCamPerm = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasCamPerm) {
+                            startCameraCapture()
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
                     },
                     enabled = !isBusy,

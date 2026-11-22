@@ -13,6 +13,8 @@ import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PostponedTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
+import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -2354,6 +2356,105 @@ class JiraApiClient {
         preferCloud: Boolean,
         settings: AppSettings,
         filterSettings: FilterSettings
+    ): String = createSharedSystemStorageIssue(
+        baseUrl = baseUrl,
+        preferCloud = preferCloud,
+        settings = settings,
+        filterSettings = filterSettings,
+        summaryText = AdminChatCodec.ADMIN_CHAT_ROOM_SUMMARY,
+        descriptionText = AdminChatCodec.ADMIN_CHAT_ROOM_DESCRIPTION,
+        labelText = AdminChatCodec.ADMIN_CHAT_LABEL
+    )
+
+    /**
+     * Resolves or creates the shared Jira storage issue `[HELPCSL_REPAIR_REGISTRY_ROOM]`
+     * so all engineers share the same workshop equipment repair registry.
+     */
+    suspend fun resolveOrCreateRepairRegistryRoom(
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        cachedRoomKey: String = ""
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+
+            val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
+            if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
+                return@runCatching localCached
+            }
+
+            val searchQueries = listOf(
+                """summary ~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}" ORDER BY created ASC""",
+                """labels = "${RepairEquipmentCodec.REPAIR_REGISTRY_LABEL}" ORDER BY created ASC"""
+            )
+            for (jql in searchQueries) {
+                val foundKey = runCatching {
+                    val json = executeSearchWithFallback(baseUrl, jql, 5, preferCloud, settings)
+                    val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                    arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
+                }.getOrNull()
+                if (!foundKey.isNullOrBlank()) {
+                    return@runCatching foundKey.uppercase(Locale.ROOT)
+                }
+            }
+
+            createSharedSystemStorageIssue(
+                baseUrl = baseUrl,
+                preferCloud = preferCloud,
+                settings = settings,
+                filterSettings = filterSettings,
+                summaryText = RepairEquipmentCodec.REPAIR_REGISTRY_SUMMARY,
+                descriptionText = RepairEquipmentCodec.REPAIR_REGISTRY_DESCRIPTION,
+                labelText = RepairEquipmentCodec.REPAIR_REGISTRY_LABEL
+            )
+        }
+    }
+
+    suspend fun fetchRepairRegistryRemoteEntries(
+        roomIssueKey: String,
+        settings: AppSettings
+    ): Result<List<RepairEquipmentItem>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val rawComments = fetchLatestRawCommentsJson(baseUrl, preferCloud, roomIssueKey, settings)
+            rawComments.mapNotNull { el ->
+                if (!el.isJsonObject) return@mapNotNull null
+                val bodyText = JiraJsonParser.extractReadableText(el.asJsonObject.get("body"))
+                RepairEquipmentCodec.decodeEntryComment(bodyText)
+            }
+        }
+    }
+
+    suspend fun postRepairRegistryEntry(
+        roomIssueKey: String,
+        item: RepairEquipmentItem,
+        settings: AppSettings
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val encoded = RepairEquipmentCodec.encodeEntryComment(item)
+            addCommentToIssue(
+                baseUrl = baseUrl,
+                preferCloud = preferCloud,
+                issueKey = roomIssueKey,
+                commentText = encoded,
+                settings = settings,
+                internalOnly = true
+            )
+        }
+    }
+
+    private fun createSharedSystemStorageIssue(
+        baseUrl: String,
+        preferCloud: Boolean,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        summaryText: String,
+        descriptionText: String,
+        labelText: String
     ): String {
         data class ProjectTypeCandidate(
             val projectId: String?,
@@ -2471,13 +2572,13 @@ class JiraApiClient {
                     }
                 )
                 add("issuetype", JsonObject().apply { addProperty("id", cand.issueTypeId) })
-                addProperty("summary", AdminChatCodec.ADMIN_CHAT_ROOM_SUMMARY)
+                addProperty("summary", summaryText)
                 if (preferCloud) {
-                    add("description", buildAdfDocument(AdminChatCodec.ADMIN_CHAT_ROOM_DESCRIPTION))
+                    add("description", buildAdfDocument(descriptionText))
                 } else {
-                    addProperty("description", AdminChatCodec.ADMIN_CHAT_ROOM_DESCRIPTION)
+                    addProperty("description", descriptionText)
                 }
-                add("labels", JsonArray().apply { add(AdminChatCodec.ADMIN_CHAT_LABEL) })
+                add("labels", JsonArray().apply { add(labelText) })
             }
 
             repeat(3) {
