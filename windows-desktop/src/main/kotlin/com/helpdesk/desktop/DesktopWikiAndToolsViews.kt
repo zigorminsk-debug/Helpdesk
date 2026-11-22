@@ -189,26 +189,54 @@ fun DesktopWikiWorkspace(
                 }
 
                 state.wikiError?.let { err ->
+                    var patInput by remember { mutableStateOf("") }
                     Surface(
-                        color = DesktopColors.StatusRed.copy(alpha = 0.12f),
+                        color = DesktopColors.CslOrange.copy(alpha = 0.10f),
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, DesktopColors.StatusRed.copy(alpha = 0.35f))
+                        border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.45f))
                     ) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(err, color = DesktopColors.StatusRed, fontSize = 12.sp)
+                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(err, fontSize = 12.sp)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { controller.openWikiInBrowserWithSso() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("🌐 Открыть w.csl.by в браузере", fontSize = 11.5.sp)
+                                }
                                 OutlinedButton(
                                     onClick = { controller.refreshWikiSpacesAndPages() },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                 ) {
                                     Text("Повторить", fontSize = 11.5.sp)
                                 }
+                            }
+                            Text(
+                                "Для встроенной читалки при включённой 2FA создайте Personal Access Token в профиле w.csl.by:",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextButton(
+                                onClick = { controller.openConfluencePatCreationPage() },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                Text("🔑 Создать токен в w.csl.by (Профиль → Персональные токены) ↗", fontSize = 11.5.sp)
+                            }
+                            OutlinedTextField(
+                                value = patInput,
+                                onValueChange = { patInput = it },
+                                label = { Text("Вставьте PAT-токен Confluence", fontSize = 11.5.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (patInput.isNotBlank()) {
                                 Button(
-                                    onClick = { controller.openWikiInBrowserWithSso() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    onClick = { controller.saveConfluencePatToken(patInput) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslMidnight),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("🌐 Войти через браузер", fontSize = 11.5.sp)
+                                    Text("Сохранить токен и подключить Wiki", fontSize = 12.sp)
                                 }
                             }
                         }

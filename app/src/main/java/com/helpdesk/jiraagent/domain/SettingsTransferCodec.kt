@@ -46,6 +46,7 @@ object SettingsTransferCodec {
             appSettings.copy(
                 usernameOrEmail = "",
                 passwordOrToken = "",
+                confluenceToken = "",
                 customAlertSoundUri = "",
                 customAlertSoundTitle = ""
             )
@@ -95,6 +96,7 @@ object SettingsTransferCodec {
                 appSettings = parsed.appSettings.copy(
                     confluenceUrl = (parsed.appSettings.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                         ?: AppSettings.DEFAULT_CONFLUENCE_URL,
+                    confluenceToken = (parsed.appSettings.confluenceToken as String?).orEmpty(),
                     quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )

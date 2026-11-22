@@ -213,6 +213,14 @@ fun DesktopSettingsWorkspace(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                OutlinedTextField(
+                    value = draft.confluenceToken,
+                    onValueChange = { draft = draft.copy(confluenceToken = it) },
+                    label = { Text("Персональный токен Confluence (PAT — необязательно, если на w.csl.by включена 2FA)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     JiraServerType.entries.forEach { st ->
                         FilterChip(

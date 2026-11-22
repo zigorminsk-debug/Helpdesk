@@ -35,6 +35,9 @@ class ConfluenceWikiAndNineFeaturesTest {
             passwordOrToken = "secret123"
         )
         assertTrue(configured.isConfluenceReady)
+
+        val patOnly = AppSettings(confluenceToken = "pat_confluence_2fa_token")
+        assertTrue(patOnly.isConfluenceReady)
     }
 
     @Test

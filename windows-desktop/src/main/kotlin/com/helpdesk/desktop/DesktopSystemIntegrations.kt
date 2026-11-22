@@ -638,68 +638,9 @@ object WindowsExternalLaunchers {
             else -> "$baseUrl/${targetUrl.trimStart('/')}"
         }
 
-        if (settings.authType == AuthType.BEARER_PAT ||
-            settings.usernameOrEmail.isBlank() ||
-            settings.passwordOrToken.isBlank()
-        ) {
-            openUrl(resolvedTarget)
-            return
-        }
-
-        runCatching {
-            val destRel = if (resolvedTarget.startsWith(baseUrl, ignoreCase = true)) {
-                resolvedTarget.substring(baseUrl.length).ifBlank { "/index.action" }
-            } else {
-                "/index.action"
-            }
-
-            fun escHtml(s: String): String = s
-                .replace("&", "&amp;")
-                .replace("\"", "&quot;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-
-            val actionUrl = "$baseUrl/dologin.action"
-            val html = """
-                <!DOCTYPE html>
-                <html lang="ru">
-                <head>
-                  <meta charset="UTF-8"/>
-                  <title>Вход в Confluence Wiki (w.csl.by)...</title>
-                  <style>
-                    body { background:#04091E; color:#F8FAFC; font-family:Segoe UI,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
-                    .box { text-align:center; padding:24px 32px; border:1px solid #F7631B; border-radius:12px; }
-                  </style>
-                </head>
-                <body onload="document.getElementById('ssoForm').submit();">
-                  <div class="box">
-                    <h3>Help-CSL · Вход в Confluence (w.csl.by)…</h3>
-                    <form id="ssoForm" method="POST" action="${escHtml(actionUrl)}">
-                      <input type="hidden" name="os_username" value="${escHtml(settings.usernameOrEmail.trim())}" />
-                      <input type="hidden" name="os_password" value="${escHtml(settings.passwordOrToken)}" />
-                      <input type="hidden" name="os_cookie" value="true" />
-                      <input type="hidden" name="os_destination" value="${escHtml(destRel)}" />
-                      <noscript><button type="submit">Войти в Wiki</button></noscript>
-                    </form>
-                  </div>
-                </body>
-                </html>
-            """.trimIndent()
-
-            val tempHtml = File.createTempFile("helpcsl-wiki-sso-", ".html")
-            tempHtml.deleteOnExit()
-            tempHtml.writeText(html, StandardCharsets.UTF_8)
-            openFile(tempHtml)
-
-            thread(isDaemon = true, name = "helpcsl-sso-cleanup") {
-                runCatching {
-                    Thread.sleep(8_000L)
-                    tempHtml.delete()
-                }
-            }
-        }.onFailure {
-            openUrl(resolvedTarget)
-        }
+        // Open directly in the user's normal browser so saved session cookies and Confluence 2FA work cleanly
+        // without triggering Confluence's cross-origin dologin.action / Basic-Auth 2FA block.
+        openUrl(resolvedTarget)
     }
 }
 

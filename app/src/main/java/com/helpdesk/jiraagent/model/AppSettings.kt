@@ -83,6 +83,7 @@ enum class TtsReadoutMode(val title: String, val subtitle: String) {
 data class AppSettings(
     val serverUrl: String = "",
     val confluenceUrl: String = DEFAULT_CONFLUENCE_URL,
+    val confluenceToken: String = "",
     val serverType: JiraServerType = JiraServerType.AUTO,
     val authType: AuthType = AuthType.BASIC_LOGIN_PASSWORD,
     val usernameOrEmail: String = "",
@@ -119,8 +120,9 @@ data class AppSettings(
             (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank())
 
     val isConfluenceReady: Boolean
-        get() = passwordOrToken.isNotBlank() &&
-            (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank())
+        get() = confluenceToken.isNotBlank() ||
+            (passwordOrToken.isNotBlank() &&
+                (authType == AuthType.BEARER_PAT || usernameOrEmail.isNotBlank()))
 
     companion object {
         const val DEFAULT_CONFLUENCE_URL = "https://w.csl.by"

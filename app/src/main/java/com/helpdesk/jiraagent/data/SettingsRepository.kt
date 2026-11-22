@@ -387,6 +387,7 @@ class SettingsRepository private constructor(context: Context) {
                 KEY_CONFLUENCE_URL,
                 newSettings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
             )
+            .putString(KEY_CONFLUENCE_TOKEN, newSettings.confluenceToken.trim())
             .putString(KEY_SERVER_TYPE, newSettings.serverType.name)
             .putString(KEY_AUTH_TYPE, newSettings.authType.name)
             .putString(KEY_USERNAME, newSettings.usernameOrEmail.trim())
@@ -927,6 +928,7 @@ class SettingsRepository private constructor(context: Context) {
             confluenceUrl = prefs.getString(KEY_CONFLUENCE_URL, AppSettings.DEFAULT_CONFLUENCE_URL)
                 .orEmpty()
                 .ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL },
+            confluenceToken = prefs.getString(KEY_CONFLUENCE_TOKEN, "").orEmpty(),
             serverType = enumOrDefault(prefs.getString(KEY_SERVER_TYPE, null), JiraServerType.AUTO),
             authType = enumOrDefault(prefs.getString(KEY_AUTH_TYPE, null), AuthType.BASIC_LOGIN_PASSWORD),
             usernameOrEmail = prefs.getString(KEY_USERNAME, "").orEmpty(),
@@ -1139,6 +1141,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_RESOLVED_REPAIR_ROOM_KEY = "resolved_repair_room_key"
         private const val KEY_CLIENT_DIRECTORY_JSON = "client_directory_entries_json"
         private const val KEY_CONFLUENCE_URL = "confluence_wiki_url"
+        private const val KEY_CONFLUENCE_TOKEN = "confluence_wiki_pat_token"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
         private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"

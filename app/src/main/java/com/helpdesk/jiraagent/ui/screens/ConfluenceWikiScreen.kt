@@ -83,78 +83,121 @@ fun ConfluenceWikiScreen(
     viewModel: MainViewModel
 ) {
     val context = LocalContext.current
-    var mode by remember { mutableStateOf(WikiDisplayMode.READER) }
+    var mode by remember {
+        mutableStateOf(
+            if (wikiState.pages.isNotEmpty() || settings.confluenceToken.isNotBlank()) {
+                WikiDisplayMode.READER
+            } else {
+                WikiDisplayMode.WEBVIEW
+            }
+        )
+    }
     var searchInput by remember(wikiState.searchQuery) { mutableStateOf(wikiState.searchQuery) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var canWebGoBack by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.loadWikiInitialIfNeeded()
     }
 
+    LaunchedEffect(wikiState.requiresWeb2faLogin) {
+        if (wikiState.requiresWeb2faLogin && wikiState.pages.isEmpty()) {
+            mode = WikiDisplayMode.WEBVIEW
+        }
+    }
+
     BackHandler(enabled = mode == WikiDisplayMode.READER && wikiState.selectedPage != null) {
         viewModel.closeSelectedWikiPage()
     }
-    BackHandler(enabled = mode == WikiDisplayMode.WEBVIEW && webViewRef?.canGoBack() == true) {
+    BackHandler(enabled = mode == WikiDisplayMode.WEBVIEW && canWebGoBack) {
         webViewRef?.goBack()
     }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // Top Confluence bar with Reader / WebView toggle
+        // Compact single-row Confluence bar — never wraps awkwardly on phone screens
         Surface(color = CslMidnight, contentColor = Color.White) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    if (mode == WikiDisplayMode.WEBVIEW && canWebGoBack) {
+                        IconButton(
+                            onClick = { webViewRef?.goBack() },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Назад",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                    Column {
                         Text(
-                            text = "📘 Confluence Wiki · w.csl.by",
+                            text = "📘 w.csl.by",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = Color.White
+                            fontSize = 14.5.sp,
+                            color = Color.White,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "🔑 Вход Jira: ${settings.usernameOrEmail.ifBlank { "укажите в «Сервер»" }}",
-                            fontSize = 11.sp,
-                            color = Color(0xFFCBD5E1),
+                            text = settings.usernameOrEmail.ifBlank { "Confluence Wiki" },
+                            fontSize = 10.5.sp,
+                            color = Color(0xFF94A3B8),
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(
-                            selected = mode == WikiDisplayMode.READER,
-                            onClick = { mode = WikiDisplayMode.READER },
-                            label = { Text("📖 Читалка", fontSize = 11.5.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = CslOrange,
-                                selectedLabelColor = Color.White,
-                                labelColor = Color.White
-                            )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = mode == WikiDisplayMode.WEBVIEW,
+                        onClick = { mode = WikiDisplayMode.WEBVIEW },
+                        label = { Text("🌐 Web", fontSize = 11.5.sp, maxLines = 1, softWrap = false) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CslOrange,
+                            selectedLabelColor = Color.White,
+                            labelColor = Color.White
                         )
-                        FilterChip(
-                            selected = mode == WikiDisplayMode.WEBVIEW,
-                            onClick = { mode = WikiDisplayMode.WEBVIEW },
-                            label = { Text("🌐 Web", fontSize = 11.5.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = CslOrange,
-                                selectedLabelColor = Color.White,
-                                labelColor = Color.White
-                            )
+                    )
+                    FilterChip(
+                        selected = mode == WikiDisplayMode.READER,
+                        onClick = {
+                            mode = WikiDisplayMode.READER
+                            if (wikiState.pages.isEmpty() && !wikiState.isLoadingList) {
+                                viewModel.refreshWikiSpacesAndPages()
+                            }
+                        },
+                        label = { Text("📖 Читалка", fontSize = 11.5.sp, maxLines = 1, softWrap = false) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CslOrange,
+                            selectedLabelColor = Color.White,
+                            labelColor = Color.White
                         )
-                        IconButton(
-                            onClick = {
-                                if (mode == WikiDisplayMode.WEBVIEW) webViewRef?.reload()
-                                else viewModel.refreshWikiSpacesAndPages()
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = Color.White)
-                        }
+                    )
+                    IconButton(
+                        onClick = {
+                            if (mode == WikiDisplayMode.WEBVIEW) webViewRef?.reload()
+                            else viewModel.refreshWikiSpacesAndPages()
+                        },
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = Color.White)
                     }
                 }
             }
@@ -164,6 +207,9 @@ fun ConfluenceWikiScreen(
             ConfluenceEmbeddedWebView(
                 settings = settings,
                 initialTargetUrl = wikiState.selectedPage?.webUrl.orEmpty(),
+                searchQuery = wikiState.searchQuery,
+                onCanGoBackChanged = { canWebGoBack = it },
+                onAuthenticated = { viewModel.onWikiWebAuthenticated() },
                 onWebViewReady = { webViewRef = it }
             )
         } else {
@@ -246,23 +292,39 @@ private fun ConfluenceAndroidBrowserList(
         }
 
         wikiState.errorMessage?.let { err ->
+            var patDraft by remember { mutableStateOf("") }
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = CslDangerRed.copy(alpha = 0.12f),
-                border = BorderStroke(1.dp, CslDangerRed.copy(alpha = 0.4f)),
+                color = CslOrangeContainer.copy(alpha = 0.25f),
+                border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.55f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(err, color = CslDangerRed, fontSize = 12.5.sp)
+                    Text(err, fontSize = 12.5.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { viewModel.refreshWikiSpacesAndPages() }) {
-                            Text("Повторить", fontSize = 12.sp)
-                        }
                         Button(
                             onClick = onSwitchToWebView,
                             colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
                         ) {
-                            Text("🌐 Открыть Web w.csl.by", fontSize = 12.sp)
+                            Text("🌐 Войти через Web (w.csl.by)", fontSize = 12.sp)
+                        }
+                        OutlinedButton(onClick = { viewModel.refreshWikiSpacesAndPages() }) {
+                            Text("Повторить", fontSize = 12.sp)
+                        }
+                    }
+                    OutlinedTextField(
+                        value = patDraft,
+                        onValueChange = { patDraft = it },
+                        label = { Text("Или вставьте PAT-токен Confluence (для 2FA)", fontSize = 11.5.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (patDraft.isNotBlank()) {
+                        Button(
+                            onClick = { viewModel.saveConfluencePatToken(patDraft) },
+                            colors = ButtonDefaults.buttonColors(containerColor = CslMidnight)
+                        ) {
+                            Text("🔑 Сохранить токен и подключить Читалка", fontSize = 12.sp)
                         }
                     }
                 }
@@ -603,14 +665,19 @@ private fun AndroidWikiAttachmentCard(
 }
 
 /**
- * Embedded Android WebView for `w.csl.by` that automatically authenticates using
- * the exact same Jira credentials (`settings.usernameOrEmail` & `settings.passwordOrToken`).
+ * Embedded Android WebView for `w.csl.by` operating as a standard persistent browser
+ * (NO `Authorization: Basic` header — full compatibility with Confluence Two-Factor Authentication!).
+ * Automatically fills Jira credentials into Confluence's login form (`#os_username` / `#username`)
+ * and shares authenticated session cookies with the native Reader (`ConfluenceWikiClient`).
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun ConfluenceEmbeddedWebView(
     settings: AppSettings,
     initialTargetUrl: String,
+    searchQuery: String,
+    onCanGoBackChanged: (Boolean) -> Unit,
+    onAuthenticated: () -> Unit,
     onWebViewReady: (WebView) -> Unit
 ) {
     val rawBase = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }.trimEnd('/')
@@ -618,126 +685,249 @@ private fun ConfluenceEmbeddedWebView(
         rawBase
     } else "https://$rawBase"
 
-    val targetUrl = initialTargetUrl.ifBlank { baseUrl }
-
-    val authHeaders = remember(settings.authType, settings.usernameOrEmail, settings.passwordOrToken) {
-        val map = mutableMapOf<String, String>()
-        if (settings.authType == AuthType.BEARER_PAT && settings.passwordOrToken.isNotBlank()) {
-            map["Authorization"] = "Bearer ${settings.passwordOrToken.trim()}"
-        } else if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
-            val raw = "${settings.usernameOrEmail.trim()}:${settings.passwordOrToken}"
-            val encoded = Base64.encodeToString(raw.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
-            map["Authorization"] = "Basic $encoded"
+    val targetUrl = remember(baseUrl, initialTargetUrl, searchQuery) {
+        when {
+            initialTargetUrl.isNotBlank() -> initialTargetUrl
+            searchQuery.isNotBlank() ->
+                "$baseUrl/dosearchsite.action?queryString=${URLEncoder.encode(searchQuery.trim(), "UTF-8")}"
+            else -> baseUrl
         }
-        map
     }
 
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                CookieManager.getInstance().setAcceptCookie(true)
-                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                this.settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    builtInZoomControls = true
-                    displayZoomControls = false
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
-                    mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+    var isLoadingWeb by remember { mutableStateOf(true) }
+    var isOnLoginPage by remember { mutableStateOf(false) }
+    var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+    var lastLoadedTargetUrl by remember { mutableStateOf("") }
+
+    val fullLogin = settings.usernameOrEmail.trim()
+    val shortAdLogin = remember(fullLogin) {
+        if ('@' in fullLogin) fullLogin.substringBefore('@').trim() else ""
+    }
+
+    fun buildDomLoginScript(loginToUse: String, passwordToUse: String, autoSubmit: Boolean): String {
+        fun jsStr(s: String): String = buildString {
+            append('"')
+            for (ch in s) {
+                when (ch) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    else -> append(ch)
                 }
-
-                var autoSubmittedLoginOnce = false
-
-                webViewClient = object : WebViewClient() {
-                    override fun onReceivedHttpAuthRequest(
-                        view: WebView?,
-                        handler: HttpAuthHandler?,
-                        host: String?,
-                        realm: String?
-                    ) {
-                        if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
-                            handler?.proceed(settings.usernameOrEmail.trim(), settings.passwordOrToken)
-                        } else {
-                            super.onReceivedHttpAuthRequest(view, handler, host, realm)
-                        }
+            }
+            append('"')
+        }
+        return """
+            (function() {
+                function setInputVal(el, val) {
+                    if (!el) return false;
+                    el.focus();
+                    var proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+                    var desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+                    if (desc && desc.set) {
+                        desc.set.call(el, val);
+                    } else {
+                        el.value = val;
                     }
-
-                    override fun onReceivedSslError(
-                        view: WebView?,
-                        handler: SslErrorHandler?,
-                        error: SslError?
-                    ) {
-                        val urlHost = error?.url.orEmpty().lowercase()
-                        if (settings.trustSelfSignedSsl || urlHost.contains("csl.by")) {
-                            handler?.proceed()
-                        } else {
-                            super.onReceivedSslError(view, handler, error)
-                        }
-                    }
-
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView?,
-                        request: WebResourceRequest?
-                    ): Boolean {
-                        val nextUrl = request?.url?.toString() ?: return false
-                        if (nextUrl.contains("csl.by", ignoreCase = true) && authHeaders.isNotEmpty()) {
-                            view?.loadUrl(nextUrl, authHeaders)
-                            return true
-                        }
-                        return false
-                    }
-
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        val currentUrl = url.orEmpty()
-                        if (!autoSubmittedLoginOnce &&
-                            settings.authType != AuthType.BEARER_PAT &&
-                            settings.usernameOrEmail.isNotBlank() &&
-                            settings.passwordOrToken.isNotBlank() &&
-                            (currentUrl.contains("login.action", ignoreCase = true) ||
-                                currentUrl.contains("/login", ignoreCase = true))
-                        ) {
-                            autoSubmittedLoginOnce = true
-                            val destRel = if (targetUrl.startsWith(baseUrl, ignoreCase = true)) {
-                                targetUrl.substring(baseUrl.length).ifBlank { "/index.action" }
-                            } else "/index.action"
-                            val postBody = buildString {
-                                append("os_username=")
-                                append(URLEncoder.encode(settings.usernameOrEmail.trim(), "UTF-8"))
-                                append("&os_password=")
-                                append(URLEncoder.encode(settings.passwordOrToken, "UTF-8"))
-                                append("&os_cookie=true&os_destination=")
-                                append(URLEncoder.encode(destRel, "UTF-8"))
-                            }
-                            view?.postUrl("$baseUrl/dologin.action", postBody.toByteArray(StandardCharsets.UTF_8))
-                        }
-                    }
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
                 }
+                var u = document.querySelector('#os_username, input[name="os_username"], #username, input[name="username"], input[autocomplete="username"]');
+                var p = document.querySelector('#os_password, input[name="os_password"], #password, input[name="password"], input[type="password"]');
+                if (!p) return "NO_LOGIN_FORM";
+                if (u) setInputVal(u, ${jsStr(loginToUse)});
+                setInputVal(p, ${jsStr(passwordToUse)});
+                var rem = document.querySelector('#os_cookie, input[name="os_cookie"], input[name="rememberMe"], #rememberMe');
+                if (rem && !rem.checked) {
+                    rem.click();
+                    rem.checked = true;
+                }
+                if (${if (autoSubmit) "true" else "false"}) {
+                    setTimeout(function() {
+                        var btn = document.querySelector('#loginButton, button[name="login"], input[name="login"], button[type="submit"], input[type="submit"]');
+                        if (btn) btn.click();
+                        else if (p.form) p.form.submit();
+                    }, 180);
+                }
+                return "LOGIN_FORM_FOUND";
+            })();
+        """.trimIndent()
+    }
 
-                onWebViewReady(this)
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (isLoadingWeb) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
+        }
 
-                if (settings.authType != AuthType.BEARER_PAT &&
-                    settings.usernameOrEmail.isNotBlank() &&
-                    settings.passwordOrToken.isNotBlank()
+        if (isOnLoginPage && fullLogin.isNotEmpty() && settings.passwordOrToken.isNotEmpty()) {
+            Surface(
+                color = CslOrangeContainer.copy(alpha = 0.35f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val destRel = if (targetUrl.startsWith(baseUrl, ignoreCase = true)) {
-                        targetUrl.substring(baseUrl.length).ifBlank { "/index.action" }
-                    } else "/index.action"
-                    val postBody = buildString {
-                        append("os_username=")
-                        append(URLEncoder.encode(settings.usernameOrEmail.trim(), "UTF-8"))
-                        append("&os_password=")
-                        append(URLEncoder.encode(settings.passwordOrToken, "UTF-8"))
-                        append("&os_cookie=true&os_destination=")
-                        append(URLEncoder.encode(destRel, "UTF-8"))
+                    Text("🔑 Авто-вход Jira:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Button(
+                        onClick = {
+                            webViewInstance?.evaluateJavascript(
+                                buildDomLoginScript(fullLogin, settings.passwordOrToken, autoSubmit = true),
+                                null
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Войти как $fullLogin", fontSize = 11.5.sp)
                     }
-                    postUrl("$baseUrl/dologin.action", postBody.toByteArray(StandardCharsets.UTF_8))
-                } else {
-                    loadUrl(targetUrl, authHeaders)
+                    if (shortAdLogin.isNotEmpty() && !shortAdLogin.equals(fullLogin, ignoreCase = true)) {
+                        OutlinedButton(
+                            onClick = {
+                                webViewInstance?.evaluateJavascript(
+                                    buildDomLoginScript(shortAdLogin, settings.passwordOrToken, autoSubmit = true),
+                                    null
+                                )
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("Войти как $shortAdLogin", fontSize = 11.5.sp)
+                        }
+                    }
                 }
             }
         }
-    )
+
+        AndroidView(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    val cookieMgr = CookieManager.getInstance()
+                    cookieMgr.setAcceptCookie(true)
+                    cookieMgr.setAcceptThirdPartyCookies(this, true)
+
+                    this.settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        databaseEnabled = true
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
+                        userAgentString =
+                            "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+                        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    }
+
+                    var autoSubmittedLoginOnce = false
+
+                    webViewClient = object : WebViewClient() {
+                        override fun onReceivedHttpAuthRequest(
+                            view: WebView?,
+                            handler: HttpAuthHandler?,
+                            host: String?,
+                            realm: String?
+                        ) {
+                            if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
+                                handler?.proceed(settings.usernameOrEmail.trim(), settings.passwordOrToken)
+                            } else {
+                                super.onReceivedHttpAuthRequest(view, handler, host, realm)
+                            }
+                        }
+
+                        override fun onReceivedSslError(
+                            view: WebView?,
+                            handler: SslErrorHandler?,
+                            error: SslError?
+                        ) {
+                            val urlHost = error?.url.orEmpty().lowercase()
+                            if (settings.trustSelfSignedSsl || urlHost.contains("csl.by")) {
+                                handler?.proceed()
+                            } else {
+                                super.onReceivedSslError(view, handler, error)
+                            }
+                        }
+
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            // Never inject Authorization: Basic headers — let WebView handle cookies & 2FA natively!
+                            return false
+                        }
+
+                        override fun onPageStarted(
+                            view: WebView?,
+                            url: String?,
+                            favicon: android.graphics.Bitmap?
+                        ) {
+                            super.onPageStarted(view, url, favicon)
+                            isLoadingWeb = true
+                            onCanGoBackChanged(view?.canGoBack() == true)
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            isLoadingWeb = false
+                            onCanGoBackChanged(view?.canGoBack() == true)
+                            runCatching { CookieManager.getInstance().flush() }
+
+                            val currentUrl = url.orEmpty()
+                            val looksLikeLoginUrl = currentUrl.contains("login.action", ignoreCase = true) ||
+                                currentUrl.contains("/login", ignoreCase = true) ||
+                                currentUrl.contains("dologin", ignoreCase = true)
+
+                            if (fullLogin.isNotEmpty() && settings.passwordOrToken.isNotEmpty()) {
+                                val shouldAutoClick = !autoSubmittedLoginOnce && looksLikeLoginUrl
+                                if (shouldAutoClick) {
+                                    autoSubmittedLoginOnce = true
+                                }
+                                view?.evaluateJavascript(
+                                    buildDomLoginScript(
+                                        loginToUse = fullLogin,
+                                        passwordToUse = settings.passwordOrToken,
+                                        autoSubmit = shouldAutoClick
+                                    )
+                                ) { jsResult ->
+                                    val foundForm = jsResult?.contains("LOGIN_FORM_FOUND") == true
+                                    isOnLoginPage = foundForm || looksLikeLoginUrl
+                                    if (!isOnLoginPage &&
+                                        !currentUrl.contains("two-step", ignoreCase = true) &&
+                                        !currentUrl.contains("authenticate", ignoreCase = true) &&
+                                        currentUrl.startsWith("http", ignoreCase = true)
+                                    ) {
+                                        onAuthenticated()
+                                    }
+                                }
+                            } else {
+                                isOnLoginPage = looksLikeLoginUrl
+                                if (!looksLikeLoginUrl && currentUrl.startsWith("http", ignoreCase = true)) {
+                                    onAuthenticated()
+                                }
+                            }
+                        }
+                    }
+
+                    webViewInstance = this
+                    onWebViewReady(this)
+                    lastLoadedTargetUrl = targetUrl
+                    // Normal browser GET without Authorization: Basic header!
+                    loadUrl(targetUrl)
+                }
+            },
+            update = { view ->
+                if (targetUrl.isNotBlank() && targetUrl != lastLoadedTargetUrl) {
+                    lastLoadedTargetUrl = targetUrl
+                    view.loadUrl(targetUrl)
+                }
+                onCanGoBackChanged(view.canGoBack())
+            }
+        )
+    }
 }

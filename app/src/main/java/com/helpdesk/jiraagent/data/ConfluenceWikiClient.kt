@@ -13,8 +13,11 @@ import okhttp3.CookieJar
 import okhttp3.Credentials
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -103,7 +106,23 @@ data class ConfluencePageDetail(
     val ancestors: List<ConfluenceBreadcrumb> get() = breadcrumbs
 }
 
+class ConfluenceTwoFactorAuthException(message: String) : SecurityException(message)
+
 class ConfluenceWikiClient {
+
+    /**
+     * Optional callback supplied by Android `MainViewModel` to read live browser session cookies
+     * (`CookieManager.getInstance().getCookie(url)`) from the embedded WebView after 2FA/SSO login.
+     */
+    @Volatile
+    var externalCookieProvider: ((String) -> String?)? = null
+
+    private enum class AuthAttemptMode {
+        CONFLUENCE_PAT,
+        COOKIE_SESSION_ONLY,
+        JIRA_BEARER_PAT,
+        BASIC_CREDENTIALS
+    }
 
     private class SessionCookieJar : CookieJar {
         private val store = ConcurrentHashMap<String, CopyOnWriteArrayList<Cookie>>()
@@ -122,12 +141,19 @@ class ConfluenceWikiClient {
             return hostList.filter { it.expiresAt >= now }
         }
 
+        fun hasCookiesForUrl(rawUrl: String): Boolean {
+            val httpUrl = rawUrl.toHttpUrlOrNull() ?: return false
+            return loadForRequest(httpUrl).isNotEmpty()
+        }
+
         fun clear() = store.clear()
     }
 
     private val cookieJar = SessionCookieJar()
     private val standardClient: OkHttpClient = buildClientWithCookieJar(trustAllSsl = false, jar = cookieJar)
     private val trustAllClient: OkHttpClient = buildClientWithCookieJar(trustAllSsl = true, jar = cookieJar)
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    private val twoFactorHosts = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var workingBaseUrlCache: Pair<String, String>? = null
@@ -135,6 +161,12 @@ class ConfluenceWikiClient {
 
     private fun clientFor(settings: AppSettings): OkHttpClient {
         return if (settings.trustSelfSignedSsl) trustAllClient else standardClient
+    }
+
+    fun clearSessionCache() {
+        cookieJar.clear()
+        imageBytesCache.clear()
+        workingBaseUrlCache = null
     }
 
     fun resolveConfiguredWikiDisplayUrl(settings: AppSettings): String {
@@ -174,60 +206,172 @@ class ConfluenceWikiClient {
         return candidates.distinct()
     }
 
-    private fun Request.Builder.applyConfluenceAuth(settings: AppSettings): Request.Builder {
-        header("X-Atlassian-Token", "no-check")
-        header("Accept", "application/json")
-        header("User-Agent", "Help-CSL-Wiki/1.0")
-        when (settings.authType) {
-            AuthType.BEARER_PAT -> {
-                if (settings.passwordOrToken.isNotBlank()) {
-                    header("Authorization", "Bearer ${settings.passwordOrToken.trim()}")
+    private fun buildMergedCookieHeader(targetUrl: String): String? {
+        val ext = runCatching { externalCookieProvider?.invoke(targetUrl)?.trim() }.getOrNull()
+        val jarCookies = targetUrl.toHttpUrlOrNull()?.let { cookieJar.loadForRequest(it) }.orEmpty()
+        val map = LinkedHashMap<String, String>()
+        for (c in jarCookies) {
+            map[c.name] = c.value
+        }
+        if (!ext.isNullOrBlank()) {
+            ext.split(';').forEach { part ->
+                val idx = part.indexOf('=')
+                if (idx > 0) {
+                    val k = part.substring(0, idx).trim()
+                    val v = part.substring(idx + 1).trim()
+                    if (k.isNotEmpty()) map[k] = v
                 }
             }
-            AuthType.BASIC_LOGIN_PASSWORD, AuthType.CLOUD_EMAIL_TOKEN -> {
-                if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
-                    val basic = Credentials.basic(
-                        settings.usernameOrEmail.trim(),
-                        settings.passwordOrToken,
-                        StandardCharsets.UTF_8
-                    )
-                    header("Authorization", basic)
-                }
+        }
+        if (map.isEmpty()) return null
+        return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    private fun Request.Builder.applyModeHeaders(
+        targetUrl: String,
+        settings: AppSettings,
+        mode: AuthAttemptMode,
+        acceptHeader: String = "application/json"
+    ): Request.Builder {
+        header("X-Atlassian-Token", "no-check")
+        header("Accept", acceptHeader)
+        header("User-Agent", BROWSER_USER_AGENT)
+        when (mode) {
+            AuthAttemptMode.CONFLUENCE_PAT -> {
+                header("Authorization", "Bearer ${settings.confluenceToken.trim()}")
+            }
+            AuthAttemptMode.COOKIE_SESSION_ONLY -> {
+                // Intentionally NO Authorization header — Confluence 2FA rejects Basic Auth with HTTP 403!
+                buildMergedCookieHeader(targetUrl)?.let { header("Cookie", it) }
+            }
+            AuthAttemptMode.JIRA_BEARER_PAT -> {
+                header("Authorization", "Bearer ${settings.passwordOrToken.trim()}")
+            }
+            AuthAttemptMode.BASIC_CREDENTIALS -> {
+                val basic = Credentials.basic(
+                    settings.usernameOrEmail.trim(),
+                    settings.passwordOrToken,
+                    StandardCharsets.UTF_8
+                )
+                header("Authorization", basic)
             }
         }
         return this
     }
 
     /**
-     * Performs Seraph form login (`POST /dologin.action`) so installations of Confluence Server/DC
-     * that require `JSESSIONID` / `seraph.confluence` cookies work automatically with Jira credentials.
+     * Establishes a Confluence browser session (`JSESSIONID` + `seraph.confluence`) without
+     * triggering Confluence Data Center's Basic-Auth 2FA blocker.
+     * Supports both Atlassian Two-Step Verification (`/rest/tsv/1.0/authenticate`) and
+     * classic Seraph (`/dologin.action`), trying both full login (`ziv@csl.by`) and short AD login (`ziv`).
      */
-    private fun attemptFormSessionLogin(baseRoot: String, settings: AppSettings): Boolean {
-        if (settings.authType == AuthType.BEARER_PAT) return false
-        val user = settings.usernameOrEmail.trim()
+    private fun attemptInteractiveFreeSessionLogin(
+        baseRoot: String,
+        testApiUrl: String,
+        settings: AppSettings
+    ): Pair<JsonObject?, Boolean> {
+        if (settings.authType == AuthType.BEARER_PAT && settings.usernameOrEmail.isBlank()) {
+            return null to false
+        }
+        val rawUser = settings.usernameOrEmail.trim()
         val pass = settings.passwordOrToken
-        if (user.isEmpty() || pass.isEmpty()) return false
+        if (rawUser.isEmpty() || pass.isEmpty()) return null to false
 
-        return runCatching {
-            val form = FormBody.Builder(StandardCharsets.UTF_8)
-                .add("os_username", user)
-                .add("os_password", pass)
-                .add("os_cookie", "true")
-                .add("os_destination", "/index.action")
-                .add("login", "Log in")
-                .build()
-
-            val req = Request.Builder()
-                .url("$baseRoot/dologin.action")
-                .post(form)
-                .header("X-Atlassian-Token", "no-check")
-                .header("User-Agent", "Help-CSL-Wiki/1.0")
-                .build()
-
-            clientFor(settings).newCall(req).execute().use { resp ->
-                resp.code in 200..399
+        val candidateUsers = buildList {
+            add(rawUser)
+            if ('@' in rawUser) {
+                val shortAd = rawUser.substringBefore('@').trim()
+                if (shortAd.isNotEmpty()) add(shortAd)
             }
-        }.getOrDefault(false)
+        }.distinct()
+
+        var requiresInteractiveOtp = false
+
+        // Warm up JSESSIONID cookie from /login.action (no Basic header!)
+        runCatching {
+            val warmReq = Request.Builder()
+                .url("$baseRoot/login.action")
+                .get()
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,*/*")
+                .build()
+            clientFor(settings).newCall(warmReq).execute().close()
+        }
+
+        for (u in candidateUsers) {
+            // 1. Try Confluence Data Center 8.2+/9.x Two-Step Verification login endpoint
+            runCatching {
+                val payload = JsonObject().apply {
+                    addProperty("username", u)
+                    addProperty("password", pass)
+                    addProperty("rememberMe", true)
+                }
+                val tsvReq = Request.Builder()
+                    .url("$baseRoot/rest/tsv/1.0/authenticate")
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .header("X-Atlassian-Token", "no-check")
+                    .header("User-Agent", BROWSER_USER_AGENT)
+                    .header("Origin", baseRoot)
+                    .header("Referer", "$baseRoot/login.action")
+                    .build()
+
+                clientFor(settings).newCall(tsvReq).execute().use { resp ->
+                    val respBody = resp.body?.string().orEmpty()
+                    if (respBody.contains("twoStepVerification", ignoreCase = true) ||
+                        respBody.contains("elevatedSecurity", ignoreCase = true) ||
+                        respBody.contains("otp", ignoreCase = true) ||
+                        respBody.contains("captcha", ignoreCase = true)
+                    ) {
+                        requiresInteractiveOtp = true
+                    }
+                }
+            }
+
+            performSingleJsonRequest(testApiUrl, settings, AuthAttemptMode.COOKIE_SESSION_ONLY).first?.let { okJson ->
+                return okJson to false
+            }
+
+            // 2. Try standard Seraph /dologin.action (no Basic header!)
+            runCatching {
+                val form = FormBody.Builder(StandardCharsets.UTF_8)
+                    .add("os_username", u)
+                    .add("os_password", pass)
+                    .add("os_cookie", "true")
+                    .add("os_destination", "/index.action")
+                    .add("login", "Log in")
+                    .build()
+
+                val dologinReq = Request.Builder()
+                    .url("$baseRoot/dologin.action")
+                    .post(form)
+                    .header("X-Atlassian-Token", "no-check")
+                    .header("User-Agent", BROWSER_USER_AGENT)
+                    .header("Origin", baseRoot)
+                    .header("Referer", "$baseRoot/login.action")
+                    .build()
+
+                clientFor(settings).newCall(dologinReq).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (isTwoFactorBlockedResponse(body)) {
+                        requiresInteractiveOtp = true
+                    }
+                }
+            }
+
+            performSingleJsonRequest(testApiUrl, settings, AuthAttemptMode.COOKIE_SESSION_ONLY).first?.let { okJson ->
+                return okJson to false
+            }
+        }
+
+        return null to requiresInteractiveOtp
+    }
+
+    private fun isTwoFactorBlockedResponse(body: String): Boolean {
+        return body.contains("двухфакторн", ignoreCase = true) ||
+            body.contains("two-factor", ignoreCase = true) ||
+            body.contains("two-step", ignoreCase = true) ||
+            body.contains("twoStepVerification", ignoreCase = true) ||
+            (body.contains("<warning>", ignoreCase = true) && body.contains("<message>", ignoreCase = true))
     }
 
     private fun executeRestGetJson(
@@ -235,7 +379,7 @@ class ConfluenceWikiClient {
         settings: AppSettings
     ): Pair<String, JsonObject> {
         if (!settings.isConfluenceReady) {
-            throw IllegalStateException("Укажите логин и пароль Jira в разделе «Настройки» — они же используются для входа в Wiki (w.csl.by).")
+            throw IllegalStateException("Укажите логин и пароль Jira в разделе «Сервер» — они же используются для входа в Wiki (w.csl.by).")
         }
 
         val rawCfg = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
@@ -246,74 +390,145 @@ class ConfluenceWikiClient {
         }.distinct()
 
         var lastError: Exception? = null
+        var detected2faBlock = false
         val relClean = apiRelativePathWithQuery.trimStart('/')
 
         for (root in roots) {
+            val hostKey = root.toHttpUrlOrNull()?.host?.lowercase(Locale.ROOT).orEmpty()
+            val plainUrl = "$root/rest/api/$relClean"
+
             try {
-                val sep = if ('?' in relClean) "&" else "?"
-                val urlWithBasicHint = if (settings.authType != AuthType.BEARER_PAT && !relClean.contains("os_authType=")) {
-                    "$root/rest/api/$relClean${sep}os_authType=basic"
-                } else {
-                    "$root/rest/api/$relClean"
-                }
-
-                val firstAttempt = performSingleJsonRequest(urlWithBasicHint, settings)
-                if (firstAttempt != null) {
-                    workingBaseUrlCache = rawCfg to root
-                    return root to firstAttempt
-                }
-
-                // Fallback: perform Confluence dologin.action cookie authentication and retry
-                if (attemptFormSessionLogin(root, settings)) {
-                    val plainUrl = "$root/rest/api/$relClean"
-                    val secondAttempt = performSingleJsonRequest(plainUrl, settings)
-                    if (secondAttempt != null) {
+                // 1. Dedicated Confluence Personal Access Token (Bearer PAT — works natively with 2FA!)
+                if (settings.confluenceToken.isNotBlank()) {
+                    val (patJson, pat2fa) = performSingleJsonRequest(plainUrl, settings, AuthAttemptMode.CONFLUENCE_PAT)
+                    if (patJson != null) {
                         workingBaseUrlCache = rawCfg to root
-                        return root to secondAttempt
+                        return root to patJson
+                    }
+                    if (pat2fa) detected2faBlock = true
+                }
+
+                // 2. Existing WebView / CookieJar session (NO Basic Auth header — avoids 2FA HTTP 403!)
+                if (buildMergedCookieHeader(plainUrl) != null || cookieJar.hasCookiesForUrl(plainUrl)) {
+                    val (cookieJson, cookie2fa) = performSingleJsonRequest(
+                        plainUrl,
+                        settings,
+                        AuthAttemptMode.COOKIE_SESSION_ONLY
+                    )
+                    if (cookieJson != null) {
+                        workingBaseUrlCache = rawCfg to root
+                        return root to cookieJson
+                    }
+                    if (cookie2fa) detected2faBlock = true
+                }
+
+                // 3. Jira Bearer PAT (in case same SSO token works on Confluence)
+                if (settings.authType == AuthType.BEARER_PAT && settings.passwordOrToken.isNotBlank()) {
+                    val (bearerJson, bearer2fa) = performSingleJsonRequest(
+                        plainUrl,
+                        settings,
+                        AuthAttemptMode.JIRA_BEARER_PAT
+                    )
+                    if (bearerJson != null) {
+                        workingBaseUrlCache = rawCfg to root
+                        return root to bearerJson
+                    }
+                    if (bearer2fa) detected2faBlock = true
+                }
+
+                // 4. Cookie-based form login (/rest/tsv/1.0/authenticate + /dologin.action, NO Basic header!)
+                if (settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank()) {
+                    val (sessionJson, otpNeeded) = attemptInteractiveFreeSessionLogin(root, plainUrl, settings)
+                    if (sessionJson != null) {
+                        workingBaseUrlCache = rawCfg to root
+                        return root to sessionJson
+                    }
+                    if (otpNeeded) {
+                        detected2faBlock = true
+                        if (hostKey.isNotEmpty()) twoFactorHosts.add(hostKey)
                     }
                 }
-            } catch (e: SecurityException) {
-                throw e
+
+                // 5. Fallback HTTP Basic Auth ONLY if host hasn't flagged 2FA blocking
+                if (settings.authType != AuthType.BEARER_PAT &&
+                    settings.usernameOrEmail.isNotBlank() &&
+                    settings.passwordOrToken.isNotBlank() &&
+                    hostKey !in twoFactorHosts
+                ) {
+                    val sep = if ('?' in relClean) "&" else "?"
+                    val basicUrl = if (!relClean.contains("os_authType=")) {
+                        "$root/rest/api/$relClean${sep}os_authType=basic"
+                    } else plainUrl
+
+                    val (basicJson, basic2fa) = performSingleJsonRequest(
+                        basicUrl,
+                        settings,
+                        AuthAttemptMode.BASIC_CREDENTIALS
+                    )
+                    if (basicJson != null) {
+                        workingBaseUrlCache = rawCfg to root
+                        return root to basicJson
+                    }
+                    if (basic2fa) {
+                        detected2faBlock = true
+                        if (hostKey.isNotEmpty()) twoFactorHosts.add(hostKey)
+                    }
+                }
+            } catch (e: ConfluenceTwoFactorAuthException) {
+                detected2faBlock = true
+                lastError = e
             } catch (e: Exception) {
                 lastError = e
             }
         }
 
-        throw (lastError ?: IllegalStateException("Не удалось подключиться к Confluence (${resolveConfiguredWikiDisplayUrl(settings)})"))
+        if (detected2faBlock) {
+            throw ConfluenceTwoFactorAuthException(
+                "На сервере w.csl.by включена двухфакторная аутентификация (2FA), которая блокирует прямой Basic-вход по паролю. " +
+                    "Войдите один раз через вкладку «🌐 Web» (или создайте Personal Access Token в профиле w.csl.by)."
+            )
+        }
+
+        throw (lastError ?: IllegalStateException(
+            "Не удалось войти в Confluence (${resolveConfiguredWikiDisplayUrl(settings)}). Откройте режим «🌐 Web» или проверьте токен Confluence."
+        ))
     }
 
-    private fun performSingleJsonRequest(fullUrl: String, settings: AppSettings): JsonObject? {
+    /**
+     * Returns `(parsedJsonOrNull, sawTwoFactorBlock)`.
+     * Never throws on 401/403 so caller can seamlessly try Cookie-session / PAT modes!
+     */
+    private fun performSingleJsonRequest(
+        fullUrl: String,
+        settings: AppSettings,
+        mode: AuthAttemptMode
+    ): Pair<JsonObject?, Boolean> {
         val req = Request.Builder()
             .url(fullUrl)
             .get()
-            .applyConfluenceAuth(settings)
+            .applyModeHeaders(fullUrl, settings, mode)
             .build()
 
         clientFor(settings).newCall(req).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
+            val saw2fa = isTwoFactorBlockedResponse(body)
             if (resp.code == 401 || resp.code == 403) {
-                // Return null so caller can try dologin.action cookie session before failing
-                if (body.contains("loginform", ignoreCase = true) ||
-                    body.contains("dologin", ignoreCase = true) ||
-                    resp.header("X-Seraph-LoginReason") != null ||
-                    resp.code == 401
-                ) {
-                    return null
-                }
-                throw SecurityException("Доступ к Wiki отклонён (HTTP ${resp.code}). Проверьте права учётной записи ${settings.usernameOrEmail} в Confluence.")
+                return null to saw2fa
             }
             if (resp.code == 404) {
                 throw IllegalStateException("REST API Confluence не найден по адресу $fullUrl (HTTP 404)")
             }
             if (!resp.isSuccessful) {
-                throw IllegalStateException("Ошибка ответа Confluence w.csl.by (HTTP ${resp.code})")
+                if (saw2fa) return null to true
+                return null to false
             }
             val trimmed = body.trim()
             if (!trimmed.startsWith("{")) {
-                // Redirected to HTML login form
-                return null
+                return null to saw2fa
             }
-            return JsonParser.parseString(trimmed).asJsonObject
+            val parsed = JsonParser.parseString(trimmed).asJsonObject
+            // Verify Confluence didn't return an anonymous empty wrapper when login is required
+            return parsed to false
         }
     }
 
@@ -573,25 +788,46 @@ class ConfluenceWikiClient {
 
             imageBytesCache[resolved]?.let { return@runCatching it }
 
-            val req = Request.Builder()
-                .url(resolved)
-                .get()
-                .applyConfluenceAuth(settings)
-                .header("Accept", "*/*")
-                .build()
-
-            clientFor(settings).newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    throw IllegalStateException("HTTP ${resp.code} при загрузке ресурса Wiki")
+            val modes = buildList {
+                if (settings.confluenceToken.isNotBlank()) add(AuthAttemptMode.CONFLUENCE_PAT)
+                if (buildMergedCookieHeader(resolved) != null || cookieJar.hasCookiesForUrl(resolved)) {
+                    add(AuthAttemptMode.COOKIE_SESSION_ONLY)
                 }
-                val bytes = resp.body?.bytes() ?: ByteArray(0)
-                if (bytes.isEmpty()) throw IllegalStateException("Пустой ответ от сервера Wiki")
-                if (bytes.size <= 4 * 1024 * 1024) {
-                    if (imageBytesCache.size > 60) imageBytesCache.clear()
-                    imageBytesCache[resolved] = bytes
+                if (settings.authType == AuthType.BEARER_PAT && settings.passwordOrToken.isNotBlank()) {
+                    add(AuthAttemptMode.JIRA_BEARER_PAT)
                 }
-                bytes
+                val hostKey = resolved.toHttpUrlOrNull()?.host?.lowercase(Locale.ROOT).orEmpty()
+                if (settings.authType != AuthType.BEARER_PAT &&
+                    settings.usernameOrEmail.isNotBlank() &&
+                    settings.passwordOrToken.isNotBlank() &&
+                    hostKey !in twoFactorHosts
+                ) {
+                    add(AuthAttemptMode.BASIC_CREDENTIALS)
+                }
+                if (isEmpty()) add(AuthAttemptMode.COOKIE_SESSION_ONLY)
             }
+
+            var lastCode = 0
+            for (mode in modes) {
+                val req = Request.Builder()
+                    .url(resolved)
+                    .get()
+                    .applyModeHeaders(resolved, settings, mode, acceptHeader = "*/*")
+                    .build()
+
+                val bytes = clientFor(settings).newCall(req).execute().use { resp ->
+                    lastCode = resp.code
+                    if (resp.isSuccessful) resp.body?.bytes() else null
+                }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    if (bytes.size <= 4 * 1024 * 1024) {
+                        if (imageBytesCache.size > 60) imageBytesCache.clear()
+                        imageBytesCache[resolved] = bytes
+                    }
+                    return@runCatching bytes
+                }
+            }
+            throw IllegalStateException("HTTP $lastCode при загрузке ресурса Wiki")
         }
     }
 
@@ -653,6 +889,9 @@ class ConfluenceWikiClient {
     }
 
     companion object {
+        const val BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+
         private fun JsonElement?.asObj(): JsonObject? =
             if (this != null && isJsonObject) asJsonObject else null
 

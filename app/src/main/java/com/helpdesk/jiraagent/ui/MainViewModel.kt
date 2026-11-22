@@ -15,6 +15,7 @@ import com.helpdesk.jiraagent.data.ConfluenceAttachment
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceSpace
+import com.helpdesk.jiraagent.data.ConfluenceTwoFactorAuthException
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.data.InAppBannerAlert
 import com.helpdesk.jiraagent.data.JiraApiClient
@@ -148,6 +149,7 @@ data class ConfluenceWikiUiState(
     val selectedPage: ConfluencePageDetail? = null,
     val isLoadingList: Boolean = false,
     val isLoadingPage: Boolean = false,
+    val requiresWeb2faLogin: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -156,7 +158,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private val repository = SettingsRepository.getInstance(appContext)
     private val apiClient = JiraApiClient()
-    val wikiClient = ConfluenceWikiClient()
+    val wikiClient = ConfluenceWikiClient().apply {
+        externalCookieProvider = { url ->
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(url) }.getOrNull()
+        }
+    }
 
     val appSettings: StateFlow<AppSettings> = repository.appSettings
     val filterSettings: StateFlow<FilterSettings> = repository.filterSettings
@@ -2602,18 +2608,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val spaces = spacesRes.getOrDefault(_wikiUiState.value.spaces)
             pagesRes.onSuccess { pages ->
                 _wikiUiState.update {
-                    it.copy(isLoadingList = false, spaces = spaces, pages = pages, errorMessage = null)
+                    it.copy(
+                        isLoadingList = false,
+                        spaces = spaces,
+                        pages = pages,
+                        requiresWeb2faLogin = false,
+                        errorMessage = null
+                    )
                 }
             }.onFailure { err ->
+                val cause = spacesRes.exceptionOrNull() ?: err
+                val is2fa = cause is ConfluenceTwoFactorAuthException || err is ConfluenceTwoFactorAuthException
                 _wikiUiState.update {
                     it.copy(
                         isLoadingList = false,
                         spaces = spaces,
-                        errorMessage = spacesRes.exceptionOrNull()?.message ?: err.message ?: "Ошибка подключения к w.csl.by"
+                        requiresWeb2faLogin = is2fa,
+                        errorMessage = cause.message ?: err.message ?: "Ошибка подключения к w.csl.by"
                     )
                 }
             }
         }
+    }
+
+    fun onWikiWebAuthenticated() {
+        runCatching { android.webkit.CookieManager.getInstance().flush() }
+        val st = _wikiUiState.value
+        if ((st.pages.isEmpty() || st.requiresWeb2faLogin) && !st.isLoadingList) {
+            refreshWikiSpacesAndPages()
+        }
+    }
+
+    fun saveConfluencePatToken(token: String) {
+        val updated = appSettings.value.copy(confluenceToken = token.trim())
+        repository.saveAppSettings(updated)
+        wikiClient.clearSessionCache()
+        refreshWikiSpacesAndPages()
     }
 
     fun selectWikiSpace(spaceKey: String?) {

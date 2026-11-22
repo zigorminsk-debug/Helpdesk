@@ -109,6 +109,7 @@ class DesktopStorage {
                     ?: AppSettings.DEFAULT_CONFLUENCE_URL
                 s.copy(
                     confluenceUrl = safeWikiUrl,
+                    confluenceToken = (s.confluenceToken as String?).orEmpty(),
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )

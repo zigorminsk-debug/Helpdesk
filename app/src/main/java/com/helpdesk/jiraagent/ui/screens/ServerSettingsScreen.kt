@@ -274,6 +274,15 @@ fun ServerSettingsScreen(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
                 )
 
+                OutlinedTextField(
+                    value = draft.confluenceToken,
+                    onValueChange = { draft = draft.copy(confluenceToken = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Токен Confluence PAT (необязательно — если включена 2FA)") },
+                    placeholder = { Text("Оставьте пустым для веб-входа или вставьте PAT из w.csl.by") },
+                    singleLine = true
+                )
+
                 Text(
                     text = "Тип сервера",
                     style = MaterialTheme.typography.labelLarge,

@@ -2401,7 +2401,26 @@ class DesktopController(
 
     fun openWikiInBrowserWithSso(url: String = "") {
         val cur = _state.value
-        val target = url.ifBlank { cur.selectedWikiPage?.webUrl.orEmpty() }
+        val rawBase = wikiClient.resolveConfiguredWikiDisplayUrl(cur.settings)
+        val target = when {
+            url.isNotBlank() -> url
+            cur.selectedWikiPage != null -> cur.selectedWikiPage.webUrl
+            cur.wikiSearchQuery.isNotBlank() ->
+                "$rawBase/dosearchsite.action?queryString=${java.net.URLEncoder.encode(cur.wikiSearchQuery.trim(), "UTF-8")}"
+            else -> rawBase
+        }
         WindowsExternalLaunchers.openConfluenceWithAutoLogin(target, cur.settings)
+    }
+
+    fun openConfluencePatCreationPage() {
+        val base = wikiClient.resolveConfiguredWikiDisplayUrl(_state.value.settings)
+        WindowsExternalLaunchers.openUrl("$base/plugins/personalaccesstokens/usertokens.action")
+    }
+
+    fun saveConfluencePatToken(token: String) {
+        val updated = _state.value.settings.copy(confluenceToken = token.trim())
+        saveSettings(updated, _state.value.filterSettings)
+        wikiClient.clearSessionCache()
+        refreshWikiSpacesAndPages()
     }
 }
