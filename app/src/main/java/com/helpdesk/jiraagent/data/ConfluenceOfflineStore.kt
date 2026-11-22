@@ -38,6 +38,15 @@ data class ConfluenceOfflineSnapshot(
     val totalPagesCount: Int get() = pagesById.size
 }
 
+data class ConfluenceSyncProgress(
+    val message: String,
+    val downloadedPages: Int = 0,
+    val totalPages: Int = 0,
+    val fraction: Float = 0f
+) {
+    val percentInt: Int get() = (fraction.coerceIn(0f, 1f) * 100f).toInt()
+}
+
 sealed class ConfluenceSyncOutcome {
     data class Synced(val snapshot: ConfluenceOfflineSnapshot) : ConfluenceSyncOutcome()
     data class OfflineUsingCache(
@@ -213,11 +222,33 @@ class ConfluenceOfflineStore(private val storageDir: File) {
     suspend fun syncFromServer(
         wikiClient: ConfluenceWikiClient,
         settings: AppSettings,
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {},
+        onProgressDetail: (ConfluenceSyncProgress) -> Unit = {}
     ): ConfluenceSyncOutcome = syncMutex.withLock {
         withContext(Dispatchers.IO) {
+            fun reportProgress(
+                msg: String,
+                downloaded: Int = 0,
+                total: Int = 0,
+                fraction: Float = 0f
+            ) {
+                val safeFraction = fraction.coerceIn(0f, 1f)
+                onProgress(msg)
+                onProgressDetail(
+                    ConfluenceSyncProgress(
+                        message = msg,
+                        downloadedPages = downloaded,
+                        totalPages = total,
+                        fraction = safeFraction
+                    )
+                )
+            }
+
             val hadExistingDb = hasOfflineSnapshot()
-            onProgress("Проверка связи и учётной записи на w.csl.by…")
+            reportProgress(
+                msg = "Проверка связи и учётной записи на w.csl.by…",
+                fraction = 0.03f
+            )
 
             when (val access = wikiClient.verifyConfluenceAccountAccess(settings, hadExistingDb)) {
                 is ConfluenceAccessCheckResult.OfflineUnreachable -> {
@@ -235,7 +266,10 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                 }
                 is ConfluenceAccessCheckResult.Authorized -> {
                     try {
-                        onProgress("Загрузка списка пространств w.csl.by…")
+                        reportProgress(
+                            msg = "Загрузка списка пространств w.csl.by…",
+                            fraction = 0.07f
+                        )
                         val spaces = wikiClient.fetchSpaces(settings).getOrThrow()
                         val recentPages = wikiClient.fetchSpaceRootOrRecentPages(
                             spaceKey = ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY,
@@ -248,8 +282,16 @@ class ConfluenceOfflineStore(private val storageDir: File) {
 
                         // Download global spaces + primary spaces (up to 25 spaces)
                         val spacesToSync = spaces.take(25)
+                        val spaceSpan = 0.80f / spacesToSync.size.coerceAtLeast(1)
+
                         for ((idx, sp) in spacesToSync.withIndex()) {
-                            onProgress("Синхронизация «${sp.key}» (${idx + 1}/${spacesToSync.size})…")
+                            val spaceBaseFraction = 0.08f + idx * spaceSpan
+                            reportProgress(
+                                msg = "Синхронизация «${sp.key}» (${idx + 1}/${spacesToSync.size})…",
+                                downloaded = allPagesById.size,
+                                total = allPagesById.size,
+                                fraction = spaceBaseFraction
+                            )
 
                             val roots = wikiClient.fetchSpaceRootOrRecentPages(
                                 spaceKey = sp.key,
@@ -261,9 +303,28 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                                 spaceKey = sp.key,
                                 spaceNameHint = sp.name,
                                 settings = settings,
-                                onBatchProgress = { inSpaceCount ->
-                                    onProgress(
-                                        "Скачивание «${sp.key}»: ${allPagesById.size + inSpaceCount} стр.…"
+                                onBatchProgress = { inSpaceCount, inSpaceTotal ->
+                                    val inSpaceRatio = if (inSpaceTotal > 0) {
+                                        (inSpaceCount.toFloat() / inSpaceTotal.toFloat()).coerceIn(0f, 1f)
+                                    } else {
+                                        0.5f
+                                    }
+                                    val cumDownloaded = allPagesById.size + inSpaceCount
+                                    val estTotal = if (inSpaceTotal > 0) {
+                                        allPagesById.size + inSpaceTotal
+                                    } else {
+                                        cumDownloaded
+                                    }
+                                    val label = if (inSpaceTotal > 0) {
+                                        "Скачивание «${sp.key}» (${idx + 1}/${spacesToSync.size}): $inSpaceCount из $inSpaceTotal стр. (всего $cumDownloaded стр.)"
+                                    } else {
+                                        "Скачивание «${sp.key}» (${idx + 1}/${spacesToSync.size}): $cumDownloaded стр.…"
+                                    }
+                                    reportProgress(
+                                        msg = label,
+                                        downloaded = cumDownloaded,
+                                        total = estTotal,
+                                        fraction = spaceBaseFraction + inSpaceRatio * spaceSpan
                                     )
                                 }
                             ).getOrDefault(emptyList())
@@ -286,6 +347,19 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                             rootPagesBySpace[sp.key] = resolvedRoots
                         }
 
+                        if (allPagesById.isEmpty()) {
+                            return@withContext if (!hadExistingDb) {
+                                ConfluenceSyncOutcome.RequiresInitialWeb2fa(
+                                    "Сервер w.csl.by не вернул ни одной доступной страницы. Выполните вход во вкладке «🌐 Web» или укажите PAT-токен."
+                                )
+                            } else {
+                                ConfluenceSyncOutcome.OfflineUsingCache(
+                                    snapshot = getSnapshot(),
+                                    message = "Сервер w.csl.by вернул пустой список страниц — сохранена текущая локальная база"
+                                )
+                            }
+                        }
+
                         // Pre-cache up to 80 inline diagram/screenshot images not yet cached on disk
                         var newlyCachedImages = 0
                         for (detail in allPagesById.values) {
@@ -302,6 +376,14 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                                     wikiClient.downloadProtectedBytes(imgUrl, settings).getOrNull()?.let { bytes ->
                                         saveCachedMediaBytes(imgUrl, bytes)
                                         newlyCachedImages++
+                                        if (newlyCachedImages % 5 == 0) {
+                                            reportProgress(
+                                                msg = "Кэширование схем и изображений ($newlyCachedImages) — база ${allPagesById.size} стр.…",
+                                                downloaded = allPagesById.size,
+                                                total = allPagesById.size,
+                                                fraction = 0.88f + (newlyCachedImages.coerceAtMost(80) / 80f) * 0.08f
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -321,12 +403,23 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                             pagesById = allPagesById
                         )
 
-                        onProgress("Сохранение офлайн-базы (${allPagesById.size} стр.)…")
+                        reportProgress(
+                            msg = "Сохранение офлайн-базы (${allPagesById.size} стр.) на устройство…",
+                            downloaded = allPagesById.size,
+                            total = allPagesById.size,
+                            fraction = 0.98f
+                        )
                         saveSnapshotToDisk(snapshot)
                         synchronized(this@ConfluenceOfflineStore) {
                             memorySnapshot = snapshot
                             loadedFromDisk = true
                         }
+                        reportProgress(
+                            msg = "Офлайн-база w.csl.by загружена (${allPagesById.size} стр.)",
+                            downloaded = allPagesById.size,
+                            total = allPagesById.size,
+                            fraction = 1.0f
+                        )
                         return@withContext ConfluenceSyncOutcome.Synced(snapshot)
                     } catch (revoked: ConfluenceAccountRevokedException) {
                         clearOfflineDatabase()

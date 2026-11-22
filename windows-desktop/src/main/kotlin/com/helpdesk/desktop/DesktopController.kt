@@ -133,6 +133,7 @@ data class DesktopUiState(
     val isLoadingWikiPage: Boolean = false,
     val isSyncingWikiOfflineDb: Boolean = false,
     val wikiSyncProgressText: String? = null,
+    val wikiSyncProgressFraction: Float = 0f,
     val wikiOfflineSyncedAtLabel: String = "",
     val wikiOfflinePagesCount: Int = 0,
     val wikiError: String? = null,
@@ -2486,6 +2487,7 @@ class DesktopController(
                 isSyncingWikiOfflineDb = true,
                 isLoadingWikiList = !wikiOfflineStore.hasOfflineSnapshot(),
                 wikiSyncProgressText = "Подключение к w.csl.by…",
+                wikiSyncProgressFraction = 0.02f,
                 wikiError = null
             )
         }
@@ -2493,8 +2495,13 @@ class DesktopController(
             val outcome = wikiOfflineStore.syncFromServer(
                 wikiClient = wikiClient,
                 settings = cur.settings,
-                onProgress = { msg ->
-                    _state.update { it.copy(wikiSyncProgressText = msg) }
+                onProgressDetail = { prog ->
+                    _state.update {
+                        it.copy(
+                            wikiSyncProgressText = prog.message,
+                            wikiSyncProgressFraction = prog.fraction
+                        )
+                    }
                 }
             )
             when (outcome) {
@@ -2506,9 +2513,11 @@ class DesktopController(
                             isSyncingWikiOfflineDb = false,
                             isLoadingWikiList = false,
                             wikiSyncProgressText = null,
+                            wikiSyncProgressFraction = 1f,
                             wikiError = null
                         )
                     }
+                    showTransientNotice("✅ Офлайн-база w.csl.by загружена (${outcome.snapshot.totalPagesCount} стр.)")
                 }
                 is ConfluenceSyncOutcome.OfflineUsingCache -> {
                     outcome.snapshot?.let { applyOfflineWikiSnapshotToUi(it) }
@@ -2517,6 +2526,7 @@ class DesktopController(
                             isSyncingWikiOfflineDb = false,
                             isLoadingWikiList = false,
                             wikiSyncProgressText = null,
+                            wikiSyncProgressFraction = 0f,
                             wikiError = if (outcome.snapshot != null) null else outcome.message
                         )
                     }
@@ -2527,6 +2537,7 @@ class DesktopController(
                             isSyncingWikiOfflineDb = false,
                             isLoadingWikiList = false,
                             wikiSyncProgressText = null,
+                            wikiSyncProgressFraction = 0f,
                             wikiError = outcome.message
                         )
                     }

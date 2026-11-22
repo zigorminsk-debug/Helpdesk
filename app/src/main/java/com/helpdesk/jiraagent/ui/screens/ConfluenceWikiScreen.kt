@@ -92,6 +92,21 @@ fun ConfluenceWikiScreen(
     var searchInput by remember(wikiState.searchQuery) { mutableStateOf(wikiState.searchQuery) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var canWebGoBack by remember { mutableStateOf(false) }
+    val webBridge = remember { HelpCslWebBridge() }
+
+    DisposableEffect(webViewRef) {
+        val currentWebView = webViewRef
+        if (currentWebView != null) {
+            viewModel.bindWikiWebRestFetcher { relPath ->
+                webBridge.fetchJsonBlocking(currentWebView, relPath)
+            }
+        } else {
+            viewModel.bindWikiWebRestFetcher(null)
+        }
+        onDispose {
+            viewModel.bindWikiWebRestFetcher(null)
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.loadWikiInitialIfNeeded()
@@ -100,8 +115,19 @@ fun ConfluenceWikiScreen(
     LaunchedEffect(wikiState.requiresWeb2faLogin, wikiState.offlinePagesCount) {
         if (wikiState.requiresWeb2faLogin && wikiState.offlinePagesCount == 0 && wikiState.pages.isEmpty()) {
             mode = WikiDisplayMode.WEBVIEW
-        } else if (!wikiState.requiresWeb2faLogin && wikiState.offlinePagesCount > 0 && mode == WikiDisplayMode.WEBVIEW) {
-            mode = WikiDisplayMode.READER
+        }
+    }
+
+    LaunchedEffect(wikiState.syncCompletedStamp) {
+        if (wikiState.syncCompletedStamp > 0L && wikiState.offlinePagesCount > 0) {
+            if (mode == WikiDisplayMode.WEBVIEW) {
+                mode = WikiDisplayMode.READER
+            }
+            Toast.makeText(
+                context,
+                "✅ Офлайн-база w.csl.by загружена (${wikiState.offlinePagesCount} стр.)",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -191,8 +217,12 @@ fun ConfluenceWikiScreen(
                     )
                     IconButton(
                         onClick = {
-                            if (mode == WikiDisplayMode.WEBVIEW) webViewRef?.reload()
-                            else viewModel.syncWikiOfflineDatabase(force = true)
+                            if (mode == WikiDisplayMode.WEBVIEW) {
+                                webViewRef?.reload()
+                                viewModel.syncWikiOfflineDatabase(force = true)
+                            } else {
+                                viewModel.syncWikiOfflineDatabase(force = true)
+                            }
                         },
                         modifier = Modifier.size(30.dp)
                     ) {
@@ -202,40 +232,111 @@ fun ConfluenceWikiScreen(
             }
         }
 
-        if (mode == WikiDisplayMode.WEBVIEW) {
-            ConfluenceEmbeddedWebView(
-                settings = settings,
-                initialTargetUrl = wikiState.selectedPage?.webUrl.orEmpty(),
-                searchQuery = wikiState.searchQuery,
-                onCanGoBackChanged = { canWebGoBack = it },
-                onAuthenticated = { viewModel.onWikiWebAuthenticated() },
-                onWebViewReady = { webViewRef = it }
-            )
-        } else {
-            val detail = wikiState.selectedPage
-            if (detail != null) {
-                ConfluenceAndroidPageReader(
-                    detail = detail,
-                    wikiState = wikiState,
-                    isLoading = wikiState.isLoadingPage,
-                    context = context,
-                    viewModel = viewModel,
-                    onStepBack = { viewModel.navigateBackWikiPage() },
-                    onBackToRootList = { viewModel.closeSelectedWikiPage() },
-                    onOpenInWebMode = { mode = WikiDisplayMode.WEBVIEW }
+        // Prominent top-level download progress bar visible in BOTH Web and Reader modes
+        if (wikiState.isSyncingOfflineDb) {
+            val pct = (wikiState.syncProgressFraction.coerceIn(0.01f, 0.99f) * 100f).toInt()
+            Surface(
+                color = CslOrangeContainer.copy(alpha = 0.35f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "⏬ Загрузка офлайн-базы w.csl.by",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CslOrange,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "$pct%",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = CslOrange,
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { wikiState.syncProgressFraction.coerceIn(0.02f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = CslOrange
+                    )
+                    Text(
+                        text = wikiState.syncProgressText ?: "Подключение к w.csl.by…",
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        val keepWarmWebView = mode == WikiDisplayMode.WEBVIEW ||
+            wikiState.offlinePagesCount == 0 ||
+            wikiState.isSyncingOfflineDb
+
+        if (keepWarmWebView) {
+            Box(
+                modifier = if (mode == WikiDisplayMode.WEBVIEW) {
+                    Modifier.weight(1f).fillMaxWidth()
+                } else {
+                    Modifier.size(0.dp)
+                }
+            ) {
+                ConfluenceEmbeddedWebView(
+                    settings = settings,
+                    initialTargetUrl = wikiState.selectedPage?.webUrl.orEmpty(),
+                    searchQuery = wikiState.searchQuery,
+                    webBridge = webBridge,
+                    onCanGoBackChanged = { canWebGoBack = it },
+                    onAuthenticated = { viewModel.onWikiWebAuthenticated() },
+                    onWebViewReady = { webViewRef = it }
                 )
-            } else {
-                ConfluenceAndroidBrowserList(
-                    wikiState = wikiState,
-                    searchInput = searchInput,
-                    onSearchChange = {
-                        searchInput = it
-                        if (it.isBlank()) viewModel.searchWikiPages("")
-                    },
-                    onSubmitSearch = { viewModel.searchWikiPages(searchInput) },
-                    onSwitchToWebView = { mode = WikiDisplayMode.WEBVIEW },
-                    viewModel = viewModel
-                )
+            }
+        }
+
+        if (mode == WikiDisplayMode.READER) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                val detail = wikiState.selectedPage
+                if (detail != null) {
+                    ConfluenceAndroidPageReader(
+                        detail = detail,
+                        wikiState = wikiState,
+                        isLoading = wikiState.isLoadingPage,
+                        context = context,
+                        viewModel = viewModel,
+                        onStepBack = { viewModel.navigateBackWikiPage() },
+                        onBackToRootList = { viewModel.closeSelectedWikiPage() },
+                        onOpenInWebMode = { mode = WikiDisplayMode.WEBVIEW }
+                    )
+                } else {
+                    ConfluenceAndroidBrowserList(
+                        wikiState = wikiState,
+                        searchInput = searchInput,
+                        onSearchChange = {
+                            searchInput = it
+                            if (it.isBlank()) viewModel.searchWikiPages("")
+                        },
+                        onSubmitSearch = { viewModel.searchWikiPages(searchInput) },
+                        onSwitchToWebView = { mode = WikiDisplayMode.WEBVIEW },
+                        viewModel = viewModel
+                    )
+                }
             }
         }
     }
@@ -313,18 +414,11 @@ private fun ConfluenceAndroidBrowserList(
             }
         }
 
-        if (wikiState.isLoadingList || wikiState.isLoadingPage || wikiState.isSyncingOfflineDb) {
+        if (wikiState.isLoadingList || wikiState.isLoadingPage) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
         }
 
-        if (wikiState.isSyncingOfflineDb && !wikiState.syncProgressText.isNullOrBlank()) {
-            Text(
-                text = "⏬ ${wikiState.syncProgressText}",
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Medium,
-                color = CslOrange
-            )
-        } else if (wikiState.offlinePagesCount > 0) {
+        if (!wikiState.isSyncingOfflineDb && wikiState.offlinePagesCount > 0) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -360,16 +454,28 @@ private fun ConfluenceAndroidBrowserList(
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(err, fontSize = 12.5.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = onSwitchToWebView,
-                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
-                        ) {
-                            Text("🌐 Войти через Web (w.csl.by)", fontSize = 12.sp)
-                        }
-                        OutlinedButton(onClick = { viewModel.refreshWikiSpacesAndPages() }) {
-                            Text("Повторить", fontSize = 12.sp)
-                        }
+                    Button(
+                        onClick = onSwitchToWebView,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                    ) {
+                        Text(
+                            text = "🌐 Войти через Web (w.csl.by)",
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.syncWikiOfflineDatabase(force = true) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "🔄 Скачать / Обновить офлайн-базу",
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     OutlinedTextField(
                         value = patDraft,
@@ -381,9 +487,10 @@ private fun ConfluenceAndroidBrowserList(
                     if (patDraft.isNotBlank()) {
                         Button(
                             onClick = { viewModel.saveConfluencePatToken(patDraft) },
+                            modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = CslMidnight)
                         ) {
-                            Text("🔑 Сохранить токен и подключить Читалка", fontSize = 12.sp)
+                            Text("🔑 Сохранить токен и скачать базу", fontSize = 12.sp, maxLines = 1)
                         }
                     }
                 }
@@ -457,6 +564,40 @@ private fun ConfluenceAndroidBrowserList(
         val displayedList = remember(baseList, selectedLetter) {
             if (selectedLetter == null) baseList
             else baseList.filter { ConfluenceWikiClient.firstAlphabetLetter(it.title) == selectedLetter }
+        }
+
+        if (displayedList.isEmpty() && !wikiState.isSyncingOfflineDb && !wikiState.isLoadingList && wikiState.errorMessage == null) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 1.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = if (searchInput.isNotBlank()) {
+                            "По запросу «$searchInput» ничего не найдено в офлайн-базе."
+                        } else {
+                            "Офлайн-база w.csl.by ещё не скачана на устройство."
+                        },
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (searchInput.isBlank()) {
+                        Button(
+                            onClick = { viewModel.syncWikiOfflineDatabase(force = true) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                        ) {
+                            Text("📥 Скачать офлайн-базу w.csl.by", fontSize = 13.sp, maxLines = 1)
+                        }
+                    }
+                }
+            }
         }
 
         LazyColumn(
@@ -1069,6 +1210,7 @@ private fun ConfluenceEmbeddedWebView(
     settings: AppSettings,
     initialTargetUrl: String,
     searchQuery: String,
+    webBridge: HelpCslWebBridge,
     onCanGoBackChanged: (Boolean) -> Unit,
     onAuthenticated: () -> Unit,
     onWebViewReady: (WebView) -> Unit
@@ -1218,6 +1360,8 @@ private fun ConfluenceEmbeddedWebView(
                         mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                     }
 
+                    addJavascriptInterface(webBridge, "HelpCslBridge")
+
                     var autoSubmittedLoginOnce = false
 
                     webViewClient = object : WebViewClient() {
@@ -1290,17 +1434,23 @@ private fun ConfluenceEmbeddedWebView(
                                 ) { jsResult ->
                                     val foundForm = jsResult?.contains("LOGIN_FORM_FOUND") == true
                                     isOnLoginPage = foundForm || looksLikeLoginUrl
-                                    if (!isOnLoginPage &&
+                                    val isAuthReady = !isOnLoginPage &&
                                         !currentUrl.contains("two-step", ignoreCase = true) &&
                                         !currentUrl.contains("authenticate", ignoreCase = true) &&
                                         currentUrl.startsWith("http", ignoreCase = true)
-                                    ) {
+                                    webBridge.isWebReadyAndAuthenticated = isAuthReady
+                                    if (isAuthReady) {
                                         onAuthenticated()
                                     }
                                 }
                             } else {
                                 isOnLoginPage = looksLikeLoginUrl
-                                if (!looksLikeLoginUrl && currentUrl.startsWith("http", ignoreCase = true)) {
+                                val isAuthReady = !looksLikeLoginUrl &&
+                                    !currentUrl.contains("two-step", ignoreCase = true) &&
+                                    !currentUrl.contains("authenticate", ignoreCase = true) &&
+                                    currentUrl.startsWith("http", ignoreCase = true)
+                                webBridge.isWebReadyAndAuthenticated = isAuthReady
+                                if (isAuthReady) {
                                     onAuthenticated()
                                 }
                             }
@@ -1324,3 +1474,88 @@ private fun ConfluenceEmbeddedWebView(
         )
     }
 }
+
+@androidx.annotation.Keep
+private class HelpCslWebBridge {
+    @Volatile
+    var isWebReadyAndAuthenticated: Boolean = false
+
+    private val pending = java.util.concurrent.ConcurrentHashMap<
+        String,
+        Pair<java.util.concurrent.CountDownLatch, java.util.concurrent.atomic.AtomicReference<String?>>
+    >()
+
+    fun fetchJsonBlocking(webView: WebView, apiRelativePathWithQuery: String): String? {
+        if (!isWebReadyAndAuthenticated) return null
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return null
+        val reqId = java.util.UUID.randomUUID().toString()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val resultRef = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        pending[reqId] = latch to resultRef
+
+        val escapedPath = buildString {
+            append('"')
+            for (ch in apiRelativePathWithQuery.trimStart('/')) {
+                when (ch) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    else -> append(ch)
+                }
+            }
+            append('"')
+        }
+
+        val js = """
+            (function() {
+                try {
+                    if (!window.location || !window.location.href || window.location.href.indexOf('http') !== 0) {
+                        window.HelpCslBridge.onFetchResult('$reqId', '');
+                        return;
+                    }
+                    var ctx = (window.AJS && typeof window.AJS.contextPath === 'function') ? (window.AJS.contextPath() || '') : '';
+                    fetch(ctx + '/rest/api/' + $escapedPath, {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Atlassian-Token': 'no-check'
+                        }
+                    }).then(function(r) {
+                        if (!r.ok) return '';
+                        var au = r.headers.get('X-AUSERNAME') || '';
+                        if (au.toLowerCase() === 'anonymous') return '';
+                        return r.text();
+                    }).then(function(txt) {
+                        window.HelpCslBridge.onFetchResult('$reqId', txt || '');
+                    }).catch(function() {
+                        window.HelpCslBridge.onFetchResult('$reqId', '');
+                    });
+                } catch (e) {
+                    window.HelpCslBridge.onFetchResult('$reqId', '');
+                }
+            })();
+        """.trimIndent()
+
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runCatching { webView.evaluateJavascript(js, null) }
+                .onFailure {
+                    pending.remove(reqId)
+                    latch.countDown()
+                }
+        }
+
+        latch.await(12, java.util.concurrent.TimeUnit.SECONDS)
+        pending.remove(reqId)
+        return resultRef.get()?.takeIf { it.isNotBlank() }
+    }
+
+    @android.webkit.JavascriptInterface
+    fun onFetchResult(reqId: String, body: String?) {
+        val entry = pending.remove(reqId) ?: return
+        entry.second.set(body)
+        entry.first.countDown()
+    }
+}
+

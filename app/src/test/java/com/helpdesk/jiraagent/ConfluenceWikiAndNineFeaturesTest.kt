@@ -10,7 +10,10 @@ import com.helpdesk.jiraagent.data.ConfluenceOfflineStore
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceSpace
+import com.helpdesk.jiraagent.data.ConfluenceSyncOutcome
+import com.helpdesk.jiraagent.data.ConfluenceSyncProgress
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
+import kotlinx.coroutines.runBlocking
 import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
@@ -453,4 +456,68 @@ class ConfluenceWikiAndNineFeaturesTest {
             SysadminToolboxEngine.resolveWatchlistDisplayName("10.10.1.1", labels)
         )
     }
+
+    @Test
+    fun `ConfluenceOfflineStore syncFromServer downloads Confluence Server spaces without user_current and emits determinate progress`() = runBlocking {
+        val tempDir = java.nio.file.Files.createTempDirectory("wiki_sync_progress_test").toFile()
+        try {
+            val client = ConfluenceWikiClient()
+            client.externalWebRestFetcher = { relPath ->
+                when {
+                    relPath.startsWith("space") -> """
+                        {"results":[{"key":"CSL","name":"CSL База клиентов","type":"global","_expandable":{"homepage":"/rest/api/content/10"}}]}
+                    """.trimIndent()
+                    relPath.startsWith("content/search") -> """
+                        {"results":[{"id":"11","title":"ООО ТестКлиент","space":{"key":"CSL","name":"CSL"}}]}
+                    """.trimIndent()
+                    relPath.startsWith("content/10/child/page") -> """
+                        {"results":[{"id":"11","title":"ООО ТестКлиент","space":{"key":"CSL","name":"CSL"}}]}
+                    """.trimIndent()
+                    relPath.startsWith("content?spaceKey=CSL") && relPath.contains("expand=") -> """
+                        {
+                          "results":[
+                            {
+                              "id":"11",
+                              "title":"ООО ТестКлиент",
+                              "space":{"key":"CSL","name":"CSL База клиентов"},
+                              "version":{"number":3,"when":"2026-11-20T10:00:00.000+03:00","by":{"displayName":"Игорь"}},
+                              "ancestors":[{"id":"10","title":"Главная"}],
+                              "body":{"view":{"value":"<p>Шлюз: 10.99.88.1</p>"}}
+                            }
+                          ]
+                        }
+                    """.trimIndent()
+                    relPath.startsWith("content?spaceKey=CSL") -> """
+                        {"results":[{"id":"11","title":"ООО ТестКлиент","space":{"key":"CSL","name":"CSL"}}]}
+                    """.trimIndent()
+                    else -> null
+                }
+            }
+
+            val store = ConfluenceOfflineStore(tempDir)
+            val recordedProgress = mutableListOf<ConfluenceSyncProgress>()
+            val settings = AppSettings(
+                baseUrl = "https://jira.csl.by",
+                confluenceUrl = "http://127.0.0.1:9",
+                usernameOrEmail = "ziv@csl.by",
+                passwordOrToken = "secret"
+            )
+
+            val outcome = store.syncFromServer(
+                wikiClient = client,
+                settings = settings,
+                onProgressDetail = { recordedProgress.add(it) }
+            )
+
+            assertTrue("Expected Synced outcome but got $outcome", outcome is ConfluenceSyncOutcome.Synced)
+            val synced = outcome as ConfluenceSyncOutcome.Synced
+            assertEquals(1, synced.snapshot.totalPagesCount)
+            assertTrue(recordedProgress.isNotEmpty())
+            assertEquals(100, recordedProgress.last().percentInt)
+            assertEquals(1, ConfluenceOfflineStore(tempDir).searchOffline("10.99.88.1", "CSL").size)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
+

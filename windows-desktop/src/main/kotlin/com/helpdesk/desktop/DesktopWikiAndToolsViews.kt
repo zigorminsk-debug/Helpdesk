@@ -190,17 +190,61 @@ fun DesktopWikiWorkspace(
                     }
                 }
 
-                if (state.isLoadingWikiList || state.isSyncingWikiOfflineDb) {
+                if (state.isLoadingWikiList) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
                 }
 
-                if (state.isSyncingWikiOfflineDb && !state.wikiSyncProgressText.isNullOrBlank()) {
-                    Text(
-                        text = "⏬ ${state.wikiSyncProgressText}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = DesktopColors.CslOrange
-                    )
+                if (state.isSyncingWikiOfflineDb) {
+                    val pct = (state.wikiSyncProgressFraction.coerceIn(0.01f, 0.99f) * 100f).toInt()
+                    Surface(
+                        color = DesktopColors.CslOrange.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.50f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "⏬ Загрузка офлайн-базы w.csl.by",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = DesktopColors.CslOrange
+                                )
+                                Text(
+                                    text = "$pct%",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = DesktopColors.CslOrange
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(DesktopColors.CslOrange.copy(alpha = 0.22f))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(state.wikiSyncProgressFraction.coerceIn(0.02f, 1f))
+                                        .fillMaxHeight()
+                                        .background(DesktopColors.CslOrange)
+                                )
+                            }
+                            Text(
+                                text = state.wikiSyncProgressText ?: "Подключение к w.csl.by…",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 } else if (state.wikiOfflinePagesCount > 0) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -236,20 +280,20 @@ fun DesktopWikiWorkspace(
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(err, fontSize = 12.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { controller.openWikiInBrowserWithSso() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text("🌐 Открыть w.csl.by в браузере", fontSize = 11.5.sp)
-                                }
-                                OutlinedButton(
-                                    onClick = { controller.refreshWikiSpacesAndPages() },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text("Повторить", fontSize = 11.5.sp)
-                                }
+                            Button(
+                                onClick = { controller.openWikiInBrowserWithSso() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("🌐 Открыть w.csl.by в браузере", fontSize = 11.5.sp, maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = { controller.syncWikiOfflineDatabase(force = true) },
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("🔄 Скачать / Обновить офлайн-базу", fontSize = 11.5.sp, maxLines = 1)
                             }
                             Text(
                                 "Для встроенной читалки при включённой 2FA создайте Personal Access Token в профиле w.csl.by:",

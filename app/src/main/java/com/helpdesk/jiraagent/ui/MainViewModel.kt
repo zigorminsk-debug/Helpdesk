@@ -155,6 +155,10 @@ data class ConfluenceWikiUiState(
     val isLoadingPage: Boolean = false,
     val isSyncingOfflineDb: Boolean = false,
     val syncProgressText: String? = null,
+    val syncProgressFraction: Float = 0f,
+    val syncDownloadedPages: Int = 0,
+    val syncTotalPages: Int = 0,
+    val syncCompletedStamp: Long = 0L,
     val offlineSyncedAtLabel: String = "",
     val offlinePagesCount: Int = 0,
     val requiresWeb2faLogin: Boolean = false,
@@ -2745,14 +2749,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isSyncingOfflineDb = true,
                     isLoadingList = !wikiOfflineStore.hasOfflineSnapshot(),
                     syncProgressText = "Подключение к w.csl.by…",
+                    syncProgressFraction = 0.02f,
+                    syncDownloadedPages = 0,
+                    syncTotalPages = 0,
                     errorMessage = null
                 )
             }
             val outcome = wikiOfflineStore.syncFromServer(
                 wikiClient = wikiClient,
                 settings = settings,
-                onProgress = { progressMsg ->
-                    _wikiUiState.update { it.copy(syncProgressText = progressMsg) }
+                onProgressDetail = { prog ->
+                    _wikiUiState.update {
+                        it.copy(
+                            syncProgressText = prog.message,
+                            syncProgressFraction = prog.fraction,
+                            syncDownloadedPages = prog.downloadedPages,
+                            syncTotalPages = prog.totalPages
+                        )
+                    }
                 }
             )
             when (outcome) {
@@ -2764,6 +2778,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isSyncingOfflineDb = false,
                             isLoadingList = false,
                             syncProgressText = null,
+                            syncProgressFraction = 1f,
+                            syncDownloadedPages = outcome.snapshot.totalPagesCount,
+                            syncTotalPages = outcome.snapshot.totalPagesCount,
+                            syncCompletedStamp = System.currentTimeMillis(),
                             requiresWeb2faLogin = false,
                             errorMessage = null
                         )
@@ -2777,6 +2795,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isSyncingOfflineDb = false,
                             isLoadingList = false,
                             syncProgressText = null,
+                            syncProgressFraction = 0f,
                             errorMessage = if (outcome.snapshot != null) null else outcome.message
                         )
                     }
@@ -2787,6 +2806,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isSyncingOfflineDb = false,
                             isLoadingList = false,
                             syncProgressText = null,
+                            syncProgressFraction = 0f,
                             requiresWeb2faLogin = true,
                             errorMessage = outcome.message
                         )
@@ -2797,6 +2817,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun bindWikiWebRestFetcher(fetcher: ((String) -> String?)?) {
+        wikiClient.externalWebRestFetcher = fetcher
     }
 
     fun refreshWikiSpacesAndPages(spaceKeyOverride: String? = _wikiUiState.value.selectedSpaceKey) {
