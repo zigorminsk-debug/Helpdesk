@@ -111,6 +111,7 @@ data class DesktopUiState(
     val diagnosticReport: HostDiagnosticReport? = null,
     val isRunningDiagnostics: Boolean = false,
     val watchlistHosts: List<String> = SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS,
+    val watchlistLabels: Map<String, String> = emptyMap(),
     val watchlistStatuses: List<WatchlistHostStatus> = emptyList(),
     val isCheckingWatchlist: Boolean = false,
 
@@ -190,6 +191,7 @@ class DesktopController(
             postponedTickets = persisted.postponedTickets,
             clientPassports = persisted.clientPassports,
             watchlistHosts = persisted.watchlistHosts,
+            watchlistLabels = persisted.watchlistLabels,
             ticketStopwatches = persisted.ticketStopwatches,
             repairItems = persisted.repairItems,
             clientsDirectory = persisted.clientDirectory,
@@ -515,6 +517,7 @@ class DesktopController(
                     deferredAlertKeys = synchronized(notifiedTicketKeys) { deferredTicketKeys.toSet() },
                     clientPassports = cur.clientPassports,
                     watchlistHosts = cur.watchlistHosts,
+                    watchlistLabels = cur.watchlistLabels,
                     ticketStopwatches = cur.ticketStopwatches,
                     postponedTickets = cur.postponedTickets,
                     repairItems = cur.repairItems,
@@ -2151,22 +2154,54 @@ class DesktopController(
 
     // --- Sysadmin Toolbox Watchlist ---
 
-    fun addWatchlistHost(rawHost: String) {
+    fun addWatchlistHost(rawHost: String, label: String = "") {
         val clean = rawHost.trim()
         if (clean.isEmpty()) return
+        val normKey = SysadminToolboxEngine.normalizeHostKey(clean)
+        val cleanLabel = label.trim()
         _state.update { st ->
-            if (st.watchlistHosts.any { it.equals(clean, ignoreCase = true) }) st
-            else st.copy(watchlistHosts = st.watchlistHosts + clean)
+            val updatedHosts = if (st.watchlistHosts.any { SysadminToolboxEngine.normalizeHostKey(it) == normKey }) {
+                st.watchlistHosts
+            } else {
+                st.watchlistHosts + clean
+            }
+            val updatedLabels = if (cleanLabel.isNotEmpty() && normKey.isNotEmpty()) {
+                st.watchlistLabels + (normKey to cleanLabel)
+            } else {
+                st.watchlistLabels
+            }
+            st.copy(watchlistHosts = updatedHosts, watchlistLabels = updatedLabels)
         }
         persistCurrentState()
         refreshWatchlistHosts()
     }
 
-    fun removeWatchlistHost(host: String) {
+    fun updateWatchlistHostLabel(host: String, label: String) {
+        val normKey = SysadminToolboxEngine.normalizeHostKey(host)
+        if (normKey.isEmpty()) return
+        val cleanLabel = label.trim()
         _state.update { st ->
+            val updated = st.watchlistLabels.toMutableMap()
+            if (cleanLabel.isEmpty()) updated.remove(normKey) else updated[normKey] = cleanLabel
+            st.copy(watchlistLabels = updated)
+        }
+        persistCurrentState()
+        showToast("Подпись узла сохранена")
+    }
+
+    fun removeWatchlistHost(host: String) {
+        val normKey = SysadminToolboxEngine.normalizeHostKey(host)
+        _state.update { st ->
+            val updatedLabels = st.watchlistLabels.toMutableMap()
+            updatedLabels.remove(normKey)
             st.copy(
-                watchlistHosts = st.watchlistHosts.filterNot { it.equals(host, ignoreCase = true) },
-                watchlistStatuses = st.watchlistStatuses.filterNot { it.host.equals(host, ignoreCase = true) }
+                watchlistHosts = st.watchlistHosts.filterNot {
+                    SysadminToolboxEngine.normalizeHostKey(it) == normKey || it.equals(host, ignoreCase = true)
+                },
+                watchlistLabels = updatedLabels,
+                watchlistStatuses = st.watchlistStatuses.filterNot {
+                    SysadminToolboxEngine.normalizeHostKey(it.host) == normKey || it.host.equals(host, ignoreCase = true)
+                }
             )
         }
         persistCurrentState()

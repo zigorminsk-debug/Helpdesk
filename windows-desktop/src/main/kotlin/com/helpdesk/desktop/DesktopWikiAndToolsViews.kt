@@ -1562,7 +1562,10 @@ fun DesktopSysadminToolboxDialog(
 
                         3 -> {
                             var newHost by remember { mutableStateOf("") }
-                            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            var newLabel by remember { mutableStateOf("") }
+                            var expandedHost by remember { mutableStateOf<String?>(null) }
+
+                            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1571,14 +1574,24 @@ fun DesktopSysadminToolboxDialog(
                                     OutlinedTextField(
                                         value = newHost,
                                         onValueChange = { newHost = it },
-                                        label = { Text("Добавить домен или IP для контроля доступности и SSL") },
+                                        placeholder = { Text("IP или домен (93.84.x.x / vpn.client.by)") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = newLabel,
+                                        onValueChange = { newLabel = it },
+                                        placeholder = { Text("Подпись: чей IP / клиент") },
                                         singleLine = true,
                                         modifier = Modifier.weight(1f)
                                     )
                                     Button(
                                         onClick = {
-                                            controller.addWatchlistHost(newHost)
-                                            newHost = ""
+                                            if (newHost.isNotBlank()) {
+                                                controller.addWatchlistHost(newHost, newLabel)
+                                                newHost = ""
+                                                newLabel = ""
+                                            }
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
                                     ) {
@@ -1596,16 +1609,28 @@ fun DesktopSysadminToolboxDialog(
                                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DesktopColors.CslOrange)
                                 }
 
+                                Text(
+                                    text = "Нажмите на карточку узла, чтобы подписать IP или развернуть полный список всех проверенных портов",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
                                 LazyColumn(
                                     modifier = Modifier.weight(1f).fillMaxWidth(),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     items(state.watchlistHosts, key = { it }) { host ->
-                                        val st = state.watchlistStatuses.firstOrNull { it.host.equals(host, ignoreCase = true) }
+                                        val normKey = SysadminToolboxEngine.normalizeHostKey(host)
+                                        val savedLabel = state.watchlistLabels[normKey].orEmpty()
+                                        val st = state.watchlistStatuses.firstOrNull {
+                                            SysadminToolboxEngine.normalizeHostKey(it.host) == normKey ||
+                                                it.host.equals(host, ignoreCase = true)
+                                        }
+                                        val isExpanded = expandedHost == host
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
                                             border = BorderStroke(
-                                                1.dp,
+                                                if (isExpanded) 1.5.dp else 1.dp,
                                                 when {
                                                     st == null -> MaterialTheme.colorScheme.outlineVariant
                                                     !st.isOnline -> DesktopColors.StatusRed
@@ -1613,33 +1638,167 @@ fun DesktopSysadminToolboxDialog(
                                                     else -> DesktopColors.StatusGreen.copy(alpha = 0.5f)
                                                 }
                                             ),
-                                            modifier = Modifier.fillMaxWidth()
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    expandedHost = if (isExpanded) null else host
+                                                }
                                         ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    val badge = when {
-                                                        st == null -> "⏳ Ожидает проверки"
-                                                        !st.isOnline -> "🔴 Недоступен"
-                                                        st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
-                                                        else -> "🟢 Онлайн"
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier.weight(1f),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                    ) {
+                                                        if (savedLabel.isNotBlank()) {
+                                                            Text(
+                                                                text = "🏷 $savedLabel",
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 13.5.sp,
+                                                                color = DesktopColors.CslOrange
+                                                            )
+                                                        }
+                                                        val badge = when {
+                                                            st == null -> "⏳ Ожидает проверки"
+                                                            !st.isOnline -> "🔴 Недоступен"
+                                                            st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
+                                                            else -> "🟢 Онлайн"
+                                                        }
+                                                        Text("$host  ·  $badge", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        if (st != null) {
+                                                            val totalPorts = st.portStatuses.size
+                                                            val openCount = st.openPorts.size
+                                                            val details = buildList {
+                                                                if (st.resolvedIp != null && !st.resolvedIp.equals(host, ignoreCase = true)) {
+                                                                    add("IP: ${st.resolvedIp}")
+                                                                }
+                                                                st.latencyMs?.let { add("${it} мс") }
+                                                                if (totalPorts > 0) {
+                                                                    val preview = if (openCount > 0) {
+                                                                        st.openPorts.take(6).joinToString(",") +
+                                                                            if (openCount > 6) "…" else ""
+                                                                    } else "нет открытых"
+                                                                    add("Порты: $openCount/$totalPorts ($preview)")
+                                                                }
+                                                                st.sslDaysRemaining?.let { add("SSL: $it дн.") }
+                                                            }.joinToString(" · ")
+                                                            Text(details, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                        }
                                                     }
-                                                    Text("$host  ·  $badge", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                                    if (st != null) {
-                                                        val details = buildList {
-                                                            st.resolvedIp?.let { add("IP: $it") }
-                                                            st.latencyMs?.let { add("${it} мс") }
-                                                            if (st.openPorts.isNotEmpty()) add("Порты: ${st.openPorts.joinToString(",")}")
-                                                            st.sslDaysRemaining?.let { add("SSL: $it дн.") }
-                                                        }.joinToString(" · ")
-                                                        Text(details, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(
+                                                            text = if (isExpanded) "▴ Свернуть" else "▾ Все порты",
+                                                            fontSize = 11.5.sp,
+                                                            color = DesktopColors.CslOrange
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        TextButton(onClick = { controller.removeWatchlistHost(host) }) {
+                                                            Text("✕", color = DesktopColors.StatusRed)
+                                                        }
                                                     }
                                                 }
-                                                TextButton(onClick = { controller.removeWatchlistHost(host) }) {
-                                                    Text("✕", color = DesktopColors.StatusRed)
+
+                                                if (isExpanded) {
+                                                    var labelDraft by remember(host, savedLabel) { mutableStateOf(savedLabel) }
+                                                    HorizontalDivider()
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        OutlinedTextField(
+                                                            value = labelDraft,
+                                                            onValueChange = { labelDraft = it },
+                                                            placeholder = { Text("Подпись узла (чей IP / клиент / роутер, напр. ООО Ромашка — MikroTik)") },
+                                                            singleLine = true,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        Button(
+                                                            onClick = { controller.updateWatchlistHostLabel(host, labelDraft) },
+                                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                                        ) {
+                                                            Text("💾 Сохранить подпись")
+                                                        }
+                                                    }
+
+                                                    if (st != null) {
+                                                        if (st.sslSubject != null || st.httpServerSummary != null) {
+                                                            Surface(
+                                                                shape = RoundedCornerShape(6.dp),
+                                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                                modifier = Modifier.fillMaxWidth()
+                                                            ) {
+                                                                Column(
+                                                                    modifier = Modifier.padding(8.dp),
+                                                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                                ) {
+                                                                    st.httpServerSummary?.let {
+                                                                        Text("🌐 Веб-ответ: $it", fontSize = 12.sp)
+                                                                    }
+                                                                    if (st.sslSubject != null) {
+                                                                        Text(
+                                                                            text = "🔒 SSL CN: ${st.sslSubject} · действует до ${st.sslExpiresFormatted ?: "—"} (${st.sslDaysRemaining ?: 0} дн.)" +
+                                                                                (st.sslIssuer?.takeIf { it.isNotBlank() }?.let { " · УЦ: $it" }.orEmpty()),
+                                                                            fontSize = 12.sp
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Text(
+                                                            text = "🔌 Все проверенные TCP-порты (открыто ${st.openPorts.size} из ${st.portStatuses.size}, проверка в ${st.checkedAtDisplay}):",
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                                            st.portStatuses.forEach { p ->
+                                                                Surface(
+                                                                    shape = RoundedCornerShape(5.dp),
+                                                                    color = if (p.isOpen) {
+                                                                        DesktopColors.StatusGreen.copy(alpha = 0.12f)
+                                                                    } else {
+                                                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                                                    },
+                                                                    modifier = Modifier.fillMaxWidth()
+                                                                ) {
+                                                                    Row(
+                                                                        modifier = Modifier
+                                                                            .fillMaxWidth()
+                                                                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                    ) {
+                                                                        Text(
+                                                                            text = "${if (p.isOpen) "🟢" else "⚪"} ${p.port}  ·  ${p.serviceName}",
+                                                                            fontSize = 12.sp,
+                                                                            fontFamily = FontFamily.Monospace,
+                                                                            fontWeight = if (p.isOpen) FontWeight.Bold else FontWeight.Normal
+                                                                        )
+                                                                        Text(
+                                                                            text = if (p.isOpen) {
+                                                                                "ОТКРЫТ${p.latencyMs?.let { " · $it мс" }.orEmpty()}"
+                                                                            } else {
+                                                                                "закрыт / фильтруется"
+                                                                            },
+                                                                            fontSize = 11.5.sp,
+                                                                            fontWeight = if (p.isOpen) FontWeight.Bold else FontWeight.Normal,
+                                                                            color = if (p.isOpen) DesktopColors.StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

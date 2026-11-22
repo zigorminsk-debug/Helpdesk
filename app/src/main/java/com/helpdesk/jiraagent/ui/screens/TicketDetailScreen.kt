@@ -638,11 +638,15 @@ fun TicketDetailScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "⏱ Таймер работ: $stopwatchDisplay",
+                                    text = "⏱ Работа: $stopwatchDisplay",
                                     fontWeight = FontWeight.Bold,
-                                    color = if (stopwatchEntry?.isRunning == true) CslOrange else MaterialTheme.colorScheme.onSurface
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (stopwatchEntry?.isRunning == true) CslOrange else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     TextButton(
                                         onClick = onToggleStopwatch,
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
@@ -650,7 +654,9 @@ fun TicketDetailScreen(
                                         Text(
                                             if (stopwatchEntry?.isRunning == true) "⏸ Пауза" else "▶ Старт",
                                             color = CslOrange,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            softWrap = false
                                         )
                                     }
                                     if (stopwatchEntry != null) {
@@ -658,7 +664,7 @@ fun TicketDetailScreen(
                                             onClick = onResetStopwatch,
                                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
                                         ) {
-                                            Text("Сброс", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("Сброс", color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                                         }
                                     }
                                 }

@@ -50,10 +50,13 @@ data class WatchlistHostStatus(
     val isAlive: Boolean,
     val latencyMs: Long?,
     val openPorts: List<Int> = emptyList(),
+    val portStatuses: List<TcpPortStatus> = emptyList(),
     val openPortsSummary: String,
     val sslSubject: String?,
+    val sslIssuer: String? = null,
     val sslExpiresFormatted: String?,
     val sslDaysRemaining: Long?,
+    val httpServerSummary: String? = null,
     val healthLevel: WatchlistHealthLevel,
     val statusSummary: String,
     val checkedAtDisplay: String
@@ -68,6 +71,15 @@ object SysadminToolboxEngine {
         "csl.by",
         "habr.com"
     )
+
+    fun normalizeHostKey(rawHost: String): String {
+        return rawHost.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore('/')
+            .trim()
+            .lowercase(Locale.ROOT)
+    }
 
     private val secureRandom = SecureRandom()
 
@@ -331,13 +343,27 @@ object SysadminToolboxEngine {
         val cleanedHosts = hosts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         cleanedHosts.map { host ->
             async(Dispatchers.IO) {
-                val rep = NetworkDiagnosticsTool.runDiagnostics(host)
-                val openPortNums = rep.portStatuses.filter { it.isOpen }.map { it.port }
-                val openPorts = rep.portStatuses.filter { it.isOpen }
+                val rep = NetworkDiagnosticsTool.runDiagnostics(
+                    rawHost = host,
+                    timeoutMs = 1900,
+                    portsToScan = NetworkDiagnosticsTool.WATCHLIST_PORTS
+                )
+                val sortedPortStatuses = rep.portStatuses.sortedWith(
+                    compareByDescending<TcpPortStatus> { it.isOpen }.thenBy { it.port }
+                )
+                val openPortNums = sortedPortStatuses.filter { it.isOpen }.map { it.port }
+                val openPorts = sortedPortStatuses.filter { it.isOpen }
                     .joinToString(", ") { "${it.port}/${it.serviceName}" }
                     .ifBlank { "нет открытых TCP" }
 
                 val ssl = rep.sslCertificate
+                val httpSummary = rep.httpProbe?.let { hp ->
+                    buildString {
+                        append("${hp.scheme.uppercase(Locale.ROOT)} ${hp.statusCode}")
+                        if (!hp.serverHeader.isNullOrBlank()) append(" · ${hp.serverHeader}")
+                        append(" (${hp.latencyMs} мс)")
+                    }
+                }
                 val level: WatchlistHealthLevel
                 val summary: String
 
@@ -369,15 +395,18 @@ object SysadminToolboxEngine {
                 }
 
                 WatchlistHostStatus(
-                    host = rep.targetHost,
+                    host = host,
                     resolvedIp = rep.resolvedIp,
                     isAlive = rep.isHostAlive,
                     latencyMs = rep.icmpLatencyMs,
                     openPorts = openPortNums,
+                    portStatuses = sortedPortStatuses,
                     openPortsSummary = openPorts,
                     sslSubject = ssl?.subjectCn,
+                    sslIssuer = ssl?.issuerCn,
                     sslExpiresFormatted = ssl?.expiresFormatted,
                     sslDaysRemaining = ssl?.daysRemaining,
+                    httpServerSummary = httpSummary,
                     healthLevel = level,
                     statusSummary = summary,
                     checkedAtDisplay = stamp

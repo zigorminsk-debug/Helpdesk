@@ -56,6 +56,7 @@ data class DesktopPersistedState(
     val clientDossierNotes: Map<String, String> = emptyMap(),
     val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
     val watchlistHosts: List<String> = SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS,
+    val watchlistLabels: Map<String, String> = emptyMap(),
     val ticketStopwatches: Map<String, TicketStopwatchEntry> = emptyMap(),
     val postponedTickets: List<PostponedTicket> = emptyList(),
     val repairItems: List<RepairEquipmentItem> = emptyList(),
@@ -172,6 +173,10 @@ class DesktopStorage {
                 watchlistHosts = (raw.watchlistHosts ?: SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
                     .mapNotNull { (it as String?)?.trim()?.takeIf(String::isNotEmpty) }
                     .ifEmpty { SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS },
+                watchlistLabels = (raw.watchlistLabels ?: emptyMap())
+                    .mapKeys { (k, _) -> SysadminToolboxEngine.normalizeHostKey(k) }
+                    .mapValues { (_, v) -> (v as String?)?.trim().orEmpty() }
+                    .filter { (k, v) -> k.isNotEmpty() && v.isNotEmpty() },
                 ticketStopwatches = raw.ticketStopwatches ?: emptyMap(),
                 postponedTickets = raw.postponedTickets ?: emptyList(),
                 repairItems = safeRepairs,

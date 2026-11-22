@@ -80,16 +80,45 @@ object NetworkDiagnosticsTool {
         445 to "SMB"
     )
 
+    val WATCHLIST_PORTS = listOf(
+        80 to "HTTP",
+        443 to "HTTPS",
+        22 to "SSH",
+        3389 to "RDP",
+        8291 to "WinBox (MikroTik)",
+        8080 to "HTTP-Alt",
+        8443 to "HTTPS-Alt",
+        445 to "SMB",
+        21 to "FTP",
+        25 to "SMTP",
+        587 to "SMTP-TLS",
+        993 to "IMAPS",
+        53 to "DNS",
+        1194 to "OpenVPN",
+        1723 to "PPTP VPN",
+        1433 to "MSSQL (1С)",
+        5432 to "PostgreSQL (1С)",
+        5060 to "SIP (АТС)",
+        8006 to "Proxmox"
+    )
+
     private val DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(ZoneId.of("Europe/Minsk"))
 
     suspend fun runDiagnostics(
         rawHost: String,
-        timeoutMs: Int = 2000
+        timeoutMs: Int = 2000,
+        portsToScan: List<Pair<Int, String>> = DEFAULT_PORTS
     ): HostDiagnosticReport = withContext(Dispatchers.IO) {
-        val cleanHost = rawHost.trim()
+        val withoutScheme = rawHost.trim()
             .removePrefix("https://")
             .removePrefix("http://")
             .substringBefore('/')
+            .trim()
+        val customPort = withoutScheme
+            .substringAfter(':', "")
+            .toIntOrNull()
+            ?.takeIf { it in 1..65535 }
+        val cleanHost = withoutScheme
             .substringBefore(':')
             .trim()
 
@@ -143,7 +172,13 @@ object NetworkDiagnosticsTool {
                 ok to (if (ok) rtt else null)
             }
 
-            val portsDeferred = DEFAULT_PORTS.map { (port, label) ->
+            val effectivePorts = if (customPort != null && portsToScan.none { it.first == customPort }) {
+                listOf(customPort to "Порт $customPort") + portsToScan
+            } else {
+                portsToScan
+            }
+
+            val portsDeferred = effectivePorts.map { (port, label) ->
                 async {
                     var open = false
                     val rtt = measureTimeMillis {

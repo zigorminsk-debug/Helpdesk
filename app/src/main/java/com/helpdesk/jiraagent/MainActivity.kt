@@ -230,6 +230,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val clientPassports by viewModel.clientPassports.collectAsStateWithLifecycle()
     val ticketStopwatches by viewModel.ticketStopwatches.collectAsStateWithLifecycle()
     val watchlistHosts by viewModel.watchlistHosts.collectAsStateWithLifecycle()
+    val watchlistLabels by viewModel.watchlistLabels.collectAsStateWithLifecycle()
     val watchlistStatuses by viewModel.watchlistStatuses.collectAsStateWithLifecycle()
     val isCheckingWatchlist by viewModel.isCheckingWatchlist.collectAsStateWithLifecycle()
     val knowledgeResults by viewModel.knowledgeArchiveResults.collectAsStateWithLifecycle()
@@ -390,9 +391,11 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     if (showToolboxDialog) {
         SysadminToolboxAndroidDialog(
             watchlistHosts = watchlistHosts,
+            watchlistLabels = watchlistLabels,
             watchlistStatuses = watchlistStatuses,
             isCheckingWatchlist = isCheckingWatchlist,
-            onAddHost = { viewModel.addWatchlistHost(it) },
+            onAddHost = { host, label -> viewModel.addWatchlistHost(host, label) },
+            onUpdateHostLabel = { host, label -> viewModel.updateWatchlistHostLabel(host, label) },
             onRemoveHost = { viewModel.removeWatchlistHost(it) },
             onRefreshHosts = { viewModel.refreshWatchlistHosts() },
             onDismiss = { showToolboxDialog = false }

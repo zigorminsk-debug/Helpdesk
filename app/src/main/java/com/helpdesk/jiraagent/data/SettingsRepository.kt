@@ -119,6 +119,9 @@ class SettingsRepository private constructor(context: Context) {
     private val _watchlistHosts = MutableStateFlow(loadWatchlistHosts())
     val watchlistHosts: StateFlow<List<String>> = _watchlistHosts.asStateFlow()
 
+    private val _watchlistLabels = MutableStateFlow(loadWatchlistLabels())
+    val watchlistLabels: StateFlow<Map<String, String>> = _watchlistLabels.asStateFlow()
+
     private val _ticketStopwatches = MutableStateFlow(loadTicketStopwatches())
     val ticketStopwatches: StateFlow<Map<String, TicketStopwatchEntry>> = _ticketStopwatches.asStateFlow()
 
@@ -355,6 +358,16 @@ class SettingsRepository private constructor(context: Context) {
         val clean = hosts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         _watchlistHosts.value = clean
         cachePrefs.edit().putString(KEY_WATCHLIST_HOSTS_JSON, gson.toJson(clean)).apply()
+    }
+
+    @Synchronized
+    fun saveWatchlistLabels(labels: Map<String, String>) {
+        val clean = labels
+            .mapKeys { (k, _) -> SysadminToolboxEngine.normalizeHostKey(k) }
+            .mapValues { (_, v) -> v.trim() }
+            .filter { (k, v) -> k.isNotEmpty() && v.isNotEmpty() }
+        _watchlistLabels.value = clean
+        cachePrefs.edit().putString(KEY_WATCHLIST_LABELS_JSON, gson.toJson(clean)).apply()
     }
 
     @Synchronized
@@ -914,6 +927,18 @@ class SettingsRepository private constructor(context: Context) {
         }.getOrDefault(SysadminToolboxEngine.DEFAULT_WATCHLIST_HOSTS)
     }
 
+    private fun loadWatchlistLabels(): Map<String, String> {
+        val json = cachePrefs.getString(KEY_WATCHLIST_LABELS_JSON, null) ?: return emptyMap()
+        return runCatching {
+            val type = object : TypeToken<Map<String, String>>() {}.type
+            gson.fromJson<Map<String, String>>(json, type)
+                ?.mapKeys { (k, _) -> SysadminToolboxEngine.normalizeHostKey(k) }
+                ?.mapValues { (_, v) -> v.trim() }
+                ?.filter { (k, v) -> k.isNotEmpty() && v.isNotEmpty() }
+                ?: emptyMap()
+        }.getOrDefault(emptyMap())
+    }
+
     private fun loadTicketStopwatches(): Map<String, TicketStopwatchEntry> {
         val json = cachePrefs.getString(KEY_TICKET_STOPWATCHES_JSON, null) ?: return emptyMap()
         return runCatching {
@@ -1144,6 +1169,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_CONFLUENCE_TOKEN = "confluence_wiki_pat_token"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
+        private const val KEY_WATCHLIST_LABELS_JSON = "watchlist_labels_json"
         private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"
     }
 }

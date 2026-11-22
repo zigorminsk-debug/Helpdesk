@@ -174,6 +174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val clientDossierNotes: StateFlow<Map<String, String>> = repository.clientDossierNotes
     val clientPassports: StateFlow<Map<String, ClientTechPassport>> = repository.clientPassports
     val watchlistHosts: StateFlow<List<String>> = repository.watchlistHosts
+    val watchlistLabels: StateFlow<Map<String, String>> = repository.watchlistLabels
     val ticketStopwatches: StateFlow<Map<String, TicketStopwatchEntry>> = repository.ticketStopwatches
     val pendingCallSession: StateFlow<PendingCallSession?> = repository.pendingCallSession
     val repairItems: StateFlow<List<RepairEquipmentItem>> = repository.repairItems
@@ -2512,21 +2513,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Sysadmin Toolbox Watchlist ---
 
-    fun addWatchlistHost(rawHost: String) {
+    fun addWatchlistHost(rawHost: String, label: String = "") {
         val clean = rawHost.trim()
         if (clean.isEmpty()) return
         val current = repository.watchlistHosts.value
-        if (current.none { it.equals(clean, ignoreCase = true) }) {
+        val normKey = SysadminToolboxEngine.normalizeHostKey(clean)
+        if (current.none { SysadminToolboxEngine.normalizeHostKey(it) == normKey }) {
             repository.saveWatchlistHosts(current + clean)
+        }
+        val cleanLabel = label.trim()
+        if (cleanLabel.isNotEmpty() && normKey.isNotEmpty()) {
+            val updatedLabels = repository.watchlistLabels.value.toMutableMap()
+            updatedLabels[normKey] = cleanLabel
+            repository.saveWatchlistLabels(updatedLabels)
         }
         refreshWatchlistHosts()
     }
 
+    fun updateWatchlistHostLabel(host: String, label: String) {
+        val normKey = SysadminToolboxEngine.normalizeHostKey(host)
+        if (normKey.isEmpty()) return
+        val updated = repository.watchlistLabels.value.toMutableMap()
+        val cleanLabel = label.trim()
+        if (cleanLabel.isEmpty()) {
+            updated.remove(normKey)
+        } else {
+            updated[normKey] = cleanLabel
+        }
+        repository.saveWatchlistLabels(updated)
+    }
+
     fun removeWatchlistHost(host: String) {
+        val normKey = SysadminToolboxEngine.normalizeHostKey(host)
         repository.saveWatchlistHosts(
-            repository.watchlistHosts.value.filterNot { it.equals(host, ignoreCase = true) }
+            repository.watchlistHosts.value.filterNot {
+                SysadminToolboxEngine.normalizeHostKey(it) == normKey || it.equals(host, ignoreCase = true)
+            }
         )
-        _watchlistStatuses.update { list -> list.filterNot { it.host.equals(host, ignoreCase = true) } }
+        val updatedLabels = repository.watchlistLabels.value.toMutableMap()
+        updatedLabels.remove(normKey)
+        repository.saveWatchlistLabels(updatedLabels)
+        _watchlistStatuses.update { list ->
+            list.filterNot {
+                SysadminToolboxEngine.normalizeHostKey(it.host) == normKey || it.host.equals(host, ignoreCase = true)
+            }
+        }
     }
 
     fun refreshWatchlistHosts() {

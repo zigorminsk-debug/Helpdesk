@@ -1,8 +1,10 @@
 package com.helpdesk.jiraagent.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -95,14 +97,23 @@ fun ShiftAnalyticsDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     ShiftReportPeriod.entries.forEach { p ->
                         FilterChip(
                             selected = period == p,
                             onClick = { period = p },
-                            label = { Text(p.title, style = MaterialTheme.typography.labelSmall) }
+                            label = {
+                                Text(
+                                    p.title,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
                         )
                     }
                 }
@@ -136,15 +147,17 @@ fun ShiftAnalyticsDialog(
                     Button(
                         onClick = { onExportPdf(summary) },
                         colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("📄 PDF", style = MaterialTheme.typography.labelMedium)
+                        Text("📄 PDF", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         onClick = { onExportCsv(summary) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("📊 CSV (Excel)", style = MaterialTheme.typography.labelMedium)
+                        Text("📊 CSV", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                     }
                 }
 

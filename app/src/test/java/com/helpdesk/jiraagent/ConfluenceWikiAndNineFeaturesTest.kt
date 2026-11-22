@@ -3,6 +3,7 @@ package com.helpdesk.jiraagent
 import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluenceHtmlParser
+import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
@@ -275,5 +276,14 @@ class ConfluenceWikiAndNineFeaturesTest {
         val text = String(csvBytes, Charsets.UTF_8)
         assertTrue(text.contains("CSL-37901"))
         assertTrue(text.contains("ООО Сейлзмодерн"))
+    }
+
+    @Test
+    fun `Watchlist normalizes host keys for IP labels and covers full sysadmin TCP port list`() {
+        assertEquals("93.84.112.45", SysadminToolboxEngine.normalizeHostKey("  https://93.84.112.45/login  "))
+        assertEquals("vpn.client.by:8443", SysadminToolboxEngine.normalizeHostKey("HTTP://VPN.Client.BY:8443/"))
+        val portNumbers = NetworkDiagnosticsTool.WATCHLIST_PORTS.map { it.first }
+        assertTrue(portNumbers.containsAll(listOf(22, 80, 443, 445, 1194, 1433, 3389, 5060, 5432, 8006, 8291, 8443)))
+        assertTrue(portNumbers.size >= 18)
     }
 }
