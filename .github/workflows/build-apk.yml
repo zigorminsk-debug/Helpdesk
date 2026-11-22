@@ -166,8 +166,7 @@ jobs:
           Copy-Item $builtSetup "dist-win\$versionedName" -Force
 
           $hash = (Get-FileHash "dist-win\setup.exe" -Algorithm SHA256).Hash.ToLower()
-          "exe_sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "versioned_exe_name=$versionedName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          [System.IO.File]::AppendAllLines($env:GITHUB_OUTPUT, @("exe_sha256=$hash", "versioned_exe_name=$versionedName"))
           Write-Host "Собран setup.exe ($((Get-Item 'dist-win\setup.exe').Length) байт), хеш: $hash"
 
       - name: Загрузка setup.exe в артефакты GitHub Actions
@@ -201,6 +200,7 @@ jobs:
       - name: Публикация единого GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           VERSION_NAME="${{ needs.build-apk.outputs.version_name }}"
           VERSION_CODE="${{ needs.build-apk.outputs.version_code }}"
@@ -210,6 +210,14 @@ jobs:
           EXE_SHA="${{ needs.build-windows.outputs.exe_sha256 }}"
           TAG="v${VERSION_NAME}"
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+
+          APK_FILE=$(find release-assets -type f -name "${APK_NAME}" | head -n 1)
+          SETUP_FILE=$(find release-assets -type f -name "setup.exe" | head -n 1)
+          VERSIONED_EXE_FILE=$(find release-assets -type f -name "${EXE_NAME}" | head -n 1)
+          ls -la release-assets
+          test -n "$APK_FILE"
+          test -n "$SETUP_FILE"
+          test -n "$VERSIONED_EXE_FILE"
 
           cat <<EOF > release-notes.md
           Автоматическая сборка **Help-CSL v${VERSION_NAME}** (\`versionCode=${VERSION_CODE}\`) для **Windows 10/11 (\`setup.exe\`)** и **Android (\`.apk\`)** из ветки \`${GITHUB_REF_NAME}\` (коммит \`${SHORT_SHA}\`).
@@ -230,9 +238,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           gh release create "$TAG" \
-            "release-assets/${APK_NAME}" \
-            "release-assets/setup.exe" \
-            "release-assets/${EXE_NAME}" \
+            "$APK_FILE" \
+            "$SETUP_FILE" \
+            "$VERSIONED_EXE_FILE" \
+            --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "Help-CSL ${TAG} (Android APK + Windows setup.exe)" \
             --notes-file release-notes.md
