@@ -1897,7 +1897,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendTicketToRepairIntake(ticket: HelpdeskTicket, scannedSerial: String = "") {
         val engineerName = syncStatus.value.connectedUser ?: appSettings.value.usernameOrEmail
-        val firstPhone = ticket.phoneMatches.firstOrNull()?.e164Number.orEmpty()
+        val firstPhone = ticket.phoneNumbers.firstOrNull()?.e164.orEmpty()
         val lowerSummary = "${ticket.summary} ${ticket.description}".lowercase()
         val guessedCategory = when {
             lowerSummary.contains("ноутбук") || lowerSummary.contains("laptop") -> "Ноутбук"
@@ -1959,7 +1959,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (commentRes.isFailure && (commentRes.exceptionOrNull() as? JiraApiException)?.isNetworkError == true) {
                     repository.enqueueOfflineAction(
                         OfflineQueuedAction(
-                            type = QueuedActionType.COMMENT,
+                            type = QueuedActionType.ADD_COMMENT,
                             ticketKey = saved.linkedTicketKey,
                             commentText = note,
                             internalComment = true
