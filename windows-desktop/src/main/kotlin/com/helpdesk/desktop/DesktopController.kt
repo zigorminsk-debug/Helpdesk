@@ -81,6 +81,7 @@ data class DesktopUiState(
     // Client history & S/N search
     val clientHistoryForKey: String? = null,
     val clientHistoryTickets: List<HelpdeskTicket> = emptyList(),
+    val isLoadingClientHistory: Boolean = false,
     val serialSearchResults: List<HelpdeskTicket> = emptyList(),
     val isSearchingSerial: Boolean = false,
     val diagnosticReport: HostDiagnosticReport? = null,
@@ -193,12 +194,36 @@ class DesktopController(
     }
 
     fun selectTicket(ticketKey: String?) {
-        _state.update {
-            it.copy(
+        _state.update { st ->
+            val previewFromHistory = if (ticketKey != null && st.tickets.none { it.key == ticketKey }) {
+                st.clientHistoryTickets.firstOrNull { it.key == ticketKey }
+                    ?: st.serialSearchResults.firstOrNull { it.key == ticketKey }
+            } else {
+                null
+            }
+            val nextTickets = if (previewFromHistory != null) {
+                listOf(previewFromHistory) + st.tickets
+            } else {
+                st.tickets
+            }
+            val selectedObj = nextTickets.firstOrNull { it.key == ticketKey }
+            val reporterClean = selectedObj?.reporterName?.trim().orEmpty()
+            val localMatches = if (ticketKey != null && reporterClean.length >= 2) {
+                nextTickets.filter {
+                    !it.key.equals(ticketKey, ignoreCase = true) &&
+                        it.isClientTicket &&
+                        it.reporterName.equals(reporterClean, ignoreCase = true)
+                }.sortedByDescending { it.createdEpochMillis }
+            } else {
+                emptyList()
+            }
+            st.copy(
+                tickets = nextTickets,
                 selectedTicketKey = ticketKey,
                 diagnosticReport = null,
-                clientHistoryForKey = null,
-                clientHistoryTickets = emptyList()
+                clientHistoryForKey = ticketKey,
+                clientHistoryTickets = localMatches,
+                isLoadingClientHistory = ticketKey != null && st.settings.isConfigured
             )
         }
         if (ticketKey != null && _state.value.settings.isConfigured) {
@@ -211,14 +236,45 @@ class DesktopController(
                             reporterName = fresh.reporterName,
                             excludeTicketKey = fresh.key,
                             settings = cur.settings,
-                            filterSettings = cur.filterSettings
+                            filterSettings = cur.filterSettings,
+                            reporterLoginOrEmail = fresh.reporterLoginOrEmail
                         ).onSuccess { history ->
                             _state.update { st ->
                                 if (st.selectedTicketKey == fresh.key) {
-                                    st.copy(clientHistoryForKey = fresh.key, clientHistoryTickets = history)
+                                    val localMatches = st.tickets.filter {
+                                        !it.key.equals(fresh.key, ignoreCase = true) &&
+                                            it.isClientTicket &&
+                                            it.reporterName.equals(fresh.reporterName.trim(), ignoreCase = true)
+                                    }
+                                    val merged = (history + localMatches)
+                                        .distinctBy { it.key.uppercase() }
+                                        .sortedByDescending { it.createdEpochMillis }
+                                    st.copy(
+                                        clientHistoryForKey = fresh.key,
+                                        clientHistoryTickets = merged,
+                                        isLoadingClientHistory = false
+                                    )
+                                } else st
+                            }
+                        }.onFailure {
+                            _state.update { st ->
+                                if (st.selectedTicketKey == fresh.key) {
+                                    st.copy(isLoadingClientHistory = false)
                                 } else st
                             }
                         }
+                    } else {
+                        _state.update { st ->
+                            if (st.selectedTicketKey == fresh.key) {
+                                st.copy(isLoadingClientHistory = false)
+                            } else st
+                        }
+                    }
+                }.onFailure {
+                    _state.update { st ->
+                        if (st.selectedTicketKey == ticketKey) {
+                            st.copy(isLoadingClientHistory = false)
+                        } else st
                     }
                 }
             }

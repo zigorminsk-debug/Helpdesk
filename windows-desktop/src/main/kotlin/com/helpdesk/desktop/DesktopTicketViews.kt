@@ -2,12 +2,15 @@ package com.helpdesk.desktop
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -43,6 +46,9 @@ import kotlinx.coroutines.withContext
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import javax.imageio.ImageIO
 import javax.imageio.metadata.IIOMetadataNode
 import javax.swing.JFileChooser
@@ -1109,35 +1115,149 @@ private fun DesktopTicketInspector(
             }
         }
 
-        // 5. Client's Previous Tickets History
-        if (state.clientHistoryForKey == ticket.key && state.clientHistoryTickets.isNotEmpty()) {
+        // 5. Client's Complete Tickets History (with Scrollbar, Filter & Expand)
+        if (state.clientHistoryForKey == ticket.key && (state.isLoadingClientHistory || state.clientHistoryTickets.isNotEmpty())) {
+            var historyFilterQuery by remember(ticket.key) { mutableStateOf("") }
+            var historyExpandedHeight by remember(ticket.key) { mutableStateOf(false) }
+
+            val filteredHistory = remember(state.clientHistoryTickets, historyFilterQuery) {
+                val q = historyFilterQuery.trim()
+                if (q.isEmpty()) {
+                    state.clientHistoryTickets
+                } else {
+                    state.clientHistoryTickets.filter { prev ->
+                        prev.key.contains(q, ignoreCase = true) ||
+                            prev.summary.contains(q, ignoreCase = true) ||
+                            prev.status.contains(q, ignoreCase = true) ||
+                            (prev.assigneeName?.contains(q, ignoreCase = true) == true)
+                    }
+                }
+            }
+
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(
-                        "🗂 Прошлые заявки клиента «${ticket.reporterName}» (${state.clientHistoryTickets.size})",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                    state.clientHistoryTickets.take(5).forEach { prev ->
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            val countLabel = if (historyFilterQuery.isNotBlank()) {
+                                "${filteredHistory.size} из ${state.clientHistoryTickets.size}"
+                            } else {
+                                "${state.clientHistoryTickets.size}"
+                            }
+                            Text(
+                                "🗂 Прошлые заявки клиента «${ticket.reporterName}» ($countLabel)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (state.isLoadingClientHistory) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = DesktopColors.CslOrange
+                                )
+                            }
+                        }
+
+                        if (state.clientHistoryTickets.size > 5) {
+                            TextButton(
+                                onClick = { historyExpandedHeight = !historyExpandedHeight },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    if (historyExpandedHeight) "↕ Компактно" else "↕ Развернуть список",
+                                    fontSize = 11.5.sp,
+                                    color = DesktopColors.CslOrange
+                                )
+                            }
+                        }
+                    }
+
+                    if (state.clientHistoryTickets.size > 5) {
+                        OutlinedTextField(
+                            value = historyFilterQuery,
+                            onValueChange = { historyFilterQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    "🔍 Поиск по истории клиента (номер CSL, тема, статус, исполнитель)...",
+                                    fontSize = 12.sp
+                                )
+                            },
+                            trailingIcon = {
+                                if (historyFilterQuery.isNotBlank()) {
+                                    TextButton(
+                                        onClick = { historyFilterQuery = "" },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("✕", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        )
+                    }
+
+                    if (filteredHistory.isEmpty()) {
+                        Text(
+                            text = if (state.isLoadingClientHistory) {
+                                "Загрузка всей истории заявок клиента из Jira..."
+                            } else {
+                                "По запросу «$historyFilterQuery» прошлых заявок не найдено."
+                            },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    } else if (filteredHistory.size <= 5) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            filteredHistory.forEach { prev ->
+                                ClientHistoryTicketRow(
+                                    prev = prev,
+                                    onClick = { controller.selectTicket(prev.key) }
+                                )
+                            }
+                        }
+                    } else {
+                        val historyListState = rememberLazyListState()
+                        val viewportHeight = if (historyExpandedHeight) 460.dp else 235.dp
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { controller.selectTicket(prev.key) }
-                                .padding(vertical = 3.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .height(viewportHeight)
                         ) {
-                            Text(
-                                "${prev.key} · ${prev.summary}",
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                            LazyColumn(
+                                state = historyListState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(end = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(filteredHistory, key = { it.key }) { prev ->
+                                    ClientHistoryTicketRow(
+                                        prev = prev,
+                                        onClick = { controller.selectTicket(prev.key) }
+                                    )
+                                }
+                            }
+                            VerticalScrollbar(
+                                adapter = rememberScrollbarAdapter(historyListState),
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
                             )
-                            Text(prev.status, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -1691,4 +1811,73 @@ private fun PostponedTicketsDialog(
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
+}
+
+private val HISTORY_DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+
+@Composable
+private fun ClientHistoryTicketRow(
+    prev: HelpdeskTicket,
+    onClick: () -> Unit
+) {
+    val dateLabel = remember(prev.createdEpochMillis) {
+        if (prev.createdEpochMillis > 0L) {
+            runCatching {
+                Instant.ofEpochMilli(prev.createdEpochMillis)
+                    .atZone(ZoneId.of("Europe/Minsk"))
+                    .format(HISTORY_DATE_FMT)
+            }.getOrDefault("")
+        } else ""
+    }
+
+    Surface(
+        shape = RoundedCornerShape(7.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(7.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 9.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = prev.key,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = DesktopColors.CslOrange
+                )
+                Text(
+                    text = prev.summary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            val rightMeta = buildString {
+                if (dateLabel.isNotEmpty()) {
+                    append(dateLabel)
+                    append(" · ")
+                }
+                append(prev.status)
+            }
+            Text(
+                text = rightMeta,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
 }

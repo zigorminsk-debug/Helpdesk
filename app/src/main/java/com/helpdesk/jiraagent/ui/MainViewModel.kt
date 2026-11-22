@@ -421,7 +421,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.reporterName.equals(reporterClean, ignoreCase = true)
             }
             .sortedByDescending { it.createdEpochMillis }
-            .take(5)
 
         _clientHistoryState.value = ClientHistoryUiState(
             isLoading = appSettings.value.isConfigured && !ticket.key.startsWith("DEMO-"),
@@ -437,12 +436,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 reporterName = reporterClean,
                 excludeTicketKey = ticket.key,
                 settings = settings,
-                filterSettings = filterSettings.value
+                filterSettings = filterSettings.value,
+                reporterLoginOrEmail = ticket.reporterLoginOrEmail
             ).onSuccess { remoteItems ->
                 val merged = (remoteItems + localMatches)
                     .distinctBy { it.key.uppercase() }
                     .sortedByDescending { it.createdEpochMillis }
-                    .take(5)
                 if (_selectedTicketKey.value.equals(ticket.key, ignoreCase = true)) {
                     _clientHistoryState.value = ClientHistoryUiState(
                         isLoading = false,

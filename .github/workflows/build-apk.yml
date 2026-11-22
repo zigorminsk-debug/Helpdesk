@@ -113,7 +113,7 @@ jobs:
           $versionCode = 1000 + [int]$env:GITHUB_RUN_NUMBER
           $versionName = "1.0.$($env:GITHUB_RUN_NUMBER)"
           Write-Host "Сборка Help-CSL Windows v$versionName (versionCode=$versionCode)"
-          .\gradlew.bat -p windows-desktop createDistributable `
+          .\gradlew.bat -p windows-desktop test createDistributable `
             "-PversionCode=$versionCode" `
             "-PversionName=$versionName" `
             --no-daemon 2>&1 | Tee-Object -FilePath windows-build.log

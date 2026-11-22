@@ -35,6 +35,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -112,6 +114,9 @@ import com.helpdesk.jiraagent.util.NavigatorLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun QuickReplyMacrosBar(
@@ -1109,6 +1114,8 @@ private fun ZoomableImageDialog(
     }
 }
 
+private val ANDROID_HISTORY_DATE_FMT = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+
 @Composable
 fun ClientHistoryCard(
     clientName: String,
@@ -1119,6 +1126,22 @@ fun ClientHistoryCard(
     if (!historyState.isLoading && historyState.items.isEmpty()) return
 
     var expanded by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable(historyState.forTicketKey) { mutableStateOf("") }
+    var tallViewport by rememberSaveable(historyState.forTicketKey) { mutableStateOf(false) }
+
+    val filteredItems = remember(historyState.items, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            historyState.items
+        } else {
+            historyState.items.filter { item ->
+                item.key.contains(q, ignoreCase = true) ||
+                    item.summary.contains(q, ignoreCase = true) ||
+                    item.status.contains(q, ignoreCase = true) ||
+                    (item.assigneeName?.contains(q, ignoreCase = true) == true)
+            }
+        }
+    }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -1141,8 +1164,13 @@ fun ClientHistoryCard(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Column(modifier = Modifier.weight(1f)) {
+                    val countText = if (searchQuery.isNotBlank()) {
+                        "${filteredItems.size} из ${historyState.items.size}"
+                    } else {
+                        "${historyState.items.size}"
+                    }
                     Text(
-                        text = "Прошлые обращения клиента (${historyState.items.size})",
+                        text = "Прошлые обращения клиента ($countText)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = CslOrange
@@ -1169,51 +1197,118 @@ fun ClientHistoryCard(
                     modifier = Modifier.padding(top = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    historyState.items.forEach { item ->
-                        Surface(
-                            onClick = { onOpenTicket(item.key) },
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    if (historyState.items.size > 5) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = item.key,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = CslOrange
-                                    )
-                                    Text(
-                                        text = item.status,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("Поиск по истории клиента...") },
+                                trailingIcon = {
+                                    if (searchQuery.isNotBlank()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Очистить")
+                                        }
+                                    }
                                 }
-                                Text(
-                                    text = item.summary,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                item.assigneeName?.let { who ->
-                                    Text(
-                                        text = "Исполнитель: $who",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                            )
+                            TextButton(onClick = { tallViewport = !tallViewport }) {
+                                Text(if (tallViewport) "Компактно" else "Развернуть")
+                            }
+                        }
+                    }
+
+                    if (filteredItems.isEmpty()) {
+                        Text(
+                            text = if (historyState.isLoading) {
+                                "Загрузка всей истории обращений из Jira..."
+                            } else {
+                                "По запросу «$searchQuery» заявок не найдено"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else if (filteredItems.size <= 5) {
+                        filteredItems.forEach { item ->
+                            AndroidClientHistoryItemRow(item = item, onOpenTicket = onOpenTicket)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(if (tallViewport) 480.dp else 280.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(filteredItems, key = { it.key }) { item ->
+                                AndroidClientHistoryItemRow(item = item, onOpenTicket = onOpenTicket)
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AndroidClientHistoryItemRow(
+    item: HelpdeskTicket,
+    onOpenTicket: (String) -> Unit
+) {
+    val dateLabel = remember(item.createdEpochMillis) {
+        if (item.createdEpochMillis > 0L) {
+            runCatching {
+                Instant.ofEpochMilli(item.createdEpochMillis)
+                    .atZone(ZoneId.of("Europe/Minsk"))
+                    .format(ANDROID_HISTORY_DATE_FMT)
+            }.getOrDefault("")
+        } else ""
+    }
+
+    Surface(
+        onClick = { onOpenTicket(item.key) },
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = item.key,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+                Text(
+                    text = if (dateLabel.isNotEmpty()) "$dateLabel · ${item.status}" else item.status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                text = item.summary,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium
+            )
+            item.assigneeName?.let { who ->
+                Text(
+                    text = "Исполнитель: $who",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

@@ -53,6 +53,8 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("org.apache.pdfbox:pdfbox:2.0.32")
+
+    testImplementation(kotlin("test"))
 }
 
 compose.desktop {

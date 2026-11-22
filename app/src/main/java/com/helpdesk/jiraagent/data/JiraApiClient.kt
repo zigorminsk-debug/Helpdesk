@@ -2134,19 +2134,27 @@ class JiraApiClient {
     }
 
     /**
-     * Searches Jira for up to 6 recent historical tickets from the same client/organization.
+     * Searches Jira across pages for the complete ticket history of the given client/organization
+     * (up to 500 historical issues, sorted newest-first).
      */
     suspend fun fetchClientHistory(
         reporterName: String,
         excludeTicketKey: String,
         settings: AppSettings,
-        filterSettings: FilterSettings
+        filterSettings: FilterSettings,
+        reporterLoginOrEmail: String = ""
     ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanReporter = reporterName.trim()
                 .replace("\"", "")
                 .replace("\\", "")
             if (cleanReporter.length < 2) return@runCatching emptyList()
+
+            val primaryLogin = reporterLoginOrEmail
+                .split('|')
+                .map { it.trim().replace("\"", "").replace("\\", "") }
+                .firstOrNull { it.length >= 2 && !it.equals(cleanReporter, ignoreCase = true) }
+                .orEmpty()
 
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
             val preferCloud = isCloudTarget(settings, baseUrl)
@@ -2156,15 +2164,25 @@ class JiraApiClient {
                 ?.let { "project in ($it) AND " }
                 .orEmpty()
 
-            val jqlCandidates = listOf(
-                "${projectClause}key != \"${excludeTicketKey.replace("\"", "")}\" AND reporter = \"$cleanReporter\" ORDER BY created DESC",
-                "${projectClause}key != \"${excludeTicketKey.replace("\"", "")}\" AND text ~ \"$cleanReporter\" ORDER BY created DESC"
-            )
+            val safeExclude = excludeTicketKey.replace("\"", "")
+            val jqlCandidates = buildList {
+                add("${projectClause}key != \"$safeExclude\" AND reporter = \"$cleanReporter\" ORDER BY created DESC")
+                if (primaryLogin.isNotEmpty()) {
+                    add("${projectClause}key != \"$safeExclude\" AND reporter = \"$primaryLogin\" ORDER BY created DESC")
+                }
+                add("${projectClause}key != \"$safeExclude\" AND text ~ \"$cleanReporter\" ORDER BY created DESC")
+            }
 
             for (jql in jqlCandidates) {
                 val list = runCatching {
-                    val json = executeSearchWithFallback(baseUrl, jql, 8, preferCloud, settings)
-                    JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
+                    executePaginatedHistorySearch(
+                        baseUrl = baseUrl,
+                        jql = jql,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        filterSettings = filterSettings,
+                        maxTotal = 500
+                    )
                         .filterNot {
                             it.key.equals(excludeTicketKey, ignoreCase = true) ||
                                 AdminChatCodec.isAdminChatStorageIssue(
@@ -2176,14 +2194,160 @@ class JiraApiClient {
                         }
                         .filter {
                             it.reporterName.contains(cleanReporter, ignoreCase = true) ||
-                                cleanReporter.contains(it.reporterName, ignoreCase = true)
+                                cleanReporter.contains(it.reporterName, ignoreCase = true) ||
+                                (primaryLogin.isNotEmpty() && it.reporterLoginOrEmail.contains(primaryLogin, ignoreCase = true))
                         }
-                        .take(5)
+                        .distinctBy { it.key.uppercase(Locale.ROOT) }
+                        .sortedByDescending { it.createdEpochMillis }
                 }.getOrNull()
                 if (!list.isNullOrEmpty()) return@runCatching list
             }
             emptyList()
         }
+    }
+
+    private fun executePaginatedHistorySearch(
+        baseUrl: String,
+        jql: String,
+        preferCloud: Boolean,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        maxTotal: Int = 500
+    ): List<HelpdeskTicket> {
+        return if (preferCloud) {
+            try {
+                executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+            } catch (e: JiraApiException) {
+                if (e.httpCode == 404 || e.httpCode == 405 || e.httpCode == 410) {
+                    executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                } else {
+                    throw e
+                }
+            }
+        } else {
+            try {
+                executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+            } catch (e: JiraApiException) {
+                if (e.httpCode == 404 || e.httpCode == 410) {
+                    executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                } else {
+                    throw e
+                }
+            }
+        }
+    }
+
+    private fun executePaginatedV2HistorySearch(
+        baseUrl: String,
+        jql: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        maxTotal: Int
+    ): List<HelpdeskTicket> {
+        val fieldsCsv = "summary,status,priority,issuetype,project,reporter,creator,assignee,created,updated,labels"
+        val encodedJql = URLEncoder.encode(jql, "UTF-8")
+        val collected = mutableListOf<HelpdeskTicket>()
+        var startAt = 0
+        val pageSize = 100
+
+        while (collected.size < maxTotal) {
+            val batchSize = minOf(pageSize, maxTotal - collected.size)
+            val url = "$baseUrl/rest/api/2/search?jql=$encodedJql&startAt=$startAt&maxResults=$batchSize&fields=$fieldsCsv"
+            val req = Request.Builder().url(url).get().applyAuth(settings).build()
+            val bodyStr = try {
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val str = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) throw mapHttpError(resp.code, str)
+                    str
+                }
+            } catch (e: Exception) {
+                throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+
+            val root = JsonParser.parseString(bodyStr).asJsonObject
+            val issuesArr = root.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray
+            if (issuesArr == null || issuesArr.size() == 0) break
+
+            val pageTickets = JiraJsonParser.parseSearchResponse(bodyStr, settings, filterSettings)
+            collected.addAll(pageTickets)
+
+            val total = root.get("total")?.takeIf { it.isJsonPrimitive }?.asInt ?: issuesArr.size()
+            startAt += issuesArr.size()
+            if (startAt >= total) break
+        }
+        return collected
+    }
+
+    private fun executePaginatedCloudHistorySearch(
+        baseUrl: String,
+        jql: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        maxTotal: Int
+    ): List<HelpdeskTicket> {
+        val fieldsList = listOf(
+            "summary", "status", "priority", "issuetype", "project",
+            "reporter", "creator", "assignee", "created", "updated", "labels"
+        )
+        val collected = mutableListOf<HelpdeskTicket>()
+        var nextPageToken: String? = null
+        var startAt = 0
+        var useClassicEndpoint = false
+        val pageSize = 100
+
+        while (collected.size < maxTotal) {
+            val batchSize = minOf(pageSize, maxTotal - collected.size)
+            val payload = JsonObject().apply {
+                addProperty("jql", jql)
+                addProperty("maxResults", batchSize)
+                add("fields", JsonArray().apply { fieldsList.forEach { add(it) } })
+                if (useClassicEndpoint) {
+                    addProperty("startAt", startAt)
+                } else if (!nextPageToken.isNullOrBlank()) {
+                    addProperty("nextPageToken", nextPageToken)
+                }
+            }
+            val bodyBytes = payload.toString().toRequestBody(jsonMediaType)
+            val targetUrl = if (useClassicEndpoint) "$baseUrl/rest/api/3/search" else "$baseUrl/rest/api/3/search/jql"
+
+            val bodyStr = try {
+                val req = Request.Builder().url(targetUrl).post(bodyBytes).applyAuth(settings).build()
+                clientFor(settings).newCall(req).execute().use { resp ->
+                    val str = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        str
+                    } else if (!useClassicEndpoint && (resp.code == 404 || resp.code == 405 || resp.code == 410)) {
+                        useClassicEndpoint = true
+                        ""
+                    } else {
+                        throw mapHttpError(resp.code, str)
+                    }
+                }
+            } catch (e: Exception) {
+                throw wrapNetworkException(e, settings.trustSelfSignedSsl)
+            }
+
+            if (bodyStr.isEmpty() && useClassicEndpoint) continue
+
+            val root = JsonParser.parseString(bodyStr).asJsonObject
+            val issuesArr = root.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray
+            if (issuesArr == null || issuesArr.size() == 0) break
+
+            val pageTickets = JiraJsonParser.parseSearchResponse(bodyStr, settings, filterSettings)
+            collected.addAll(pageTickets)
+
+            if (useClassicEndpoint) {
+                val total = root.get("total")?.takeIf { it.isJsonPrimitive }?.asInt ?: issuesArr.size()
+                startAt += issuesArr.size()
+                if (startAt >= total) break
+            } else {
+                val isLast = root.get("isLast")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+                val token = root.get("nextPageToken")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                if (isLast || token == null) break
+                nextPageToken = token
+            }
+        }
+        return collected
     }
 
     suspend fun sendAdminChatMessage(

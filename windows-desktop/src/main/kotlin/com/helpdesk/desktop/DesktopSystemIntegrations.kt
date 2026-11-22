@@ -452,11 +452,19 @@ object DesktopPdfGenerator {
 
                 var y = ph - 118f
                 drawTextSafe(cs, fontBold, 10.5f, Color(71, 85, 105), 36f, y, "Заказчик (Клиент):")
-                drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, ticket.reporterName.take(66))
+                drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, ticket.reporterName.ifBlank { "Не указан" }.take(66))
                 y -= 20f
                 drawTextSafe(cs, fontBold, 10.5f, Color(71, 85, 105), 36f, y, "Заявка / Тема:")
-                drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, "${ticket.key} — ${ticket.summary}".take(66))
-                y -= 20f
+                val summaryLines = wrapWords("${ticket.key} — ${ticket.summary}", 62).take(2)
+                if (summaryLines.isEmpty()) {
+                    drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, ticket.key)
+                    y -= 20f
+                } else {
+                    summaryLines.forEachIndexed { idx, line ->
+                        drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, line)
+                        y -= if (idx == summaryLines.lastIndex) 20f else 15f
+                    }
+                }
                 if (serialNumber.isNotBlank()) {
                     drawTextSafe(cs, fontBold, 10.5f, Color(71, 85, 105), 36f, y, "Оборудование (S/N):")
                     drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 185f, y, serialNumber.take(66))
@@ -466,32 +474,109 @@ object DesktopPdfGenerator {
                 y -= 12f
                 drawTextSafe(cs, fontBold, 12f, Color(247, 99, 27), 36f, y, "Перечень выполненных работ:")
                 y -= 18f
-                for (work in performedWorks) {
-                    drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 42f, y, "✓  $work")
-                    y -= 17f
+                for (work in performedWorks.map { it.trim() }.filter { it.isNotEmpty() }) {
+                    val wrappedWork = wrapWords(work, 78).take(6)
+                    wrappedWork.forEachIndexed { idx, line ->
+                        if (idx == 0) {
+                            drawVectorCheckmark(cs, 42f, y)
+                        }
+                        drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 56f, y, line)
+                        y -= 16f
+                    }
+                    y -= 3f
+                    if (y < 210f) break
                 }
 
-                if (extraNotes.isNotBlank()) {
-                    y -= 10f
+                if (extraNotes.isNotBlank() && y >= 210f) {
+                    y -= 8f
                     drawTextSafe(cs, fontBold, 12f, Color(247, 99, 27), 36f, y, "Комментарий инженера:")
                     y -= 18f
                     for (line in wrapWords(extraNotes, 82).take(6)) {
+                        if (y < 180f) break
                         drawTextSafe(cs, fontRegular, 10.5f, Color(15, 23, 42), 42f, y, line)
                         y -= 15f
                     }
                 }
 
                 val sigY = 120f
+                cs.setLineWidth(1f)
                 cs.setStrokingColor(Color(203, 213, 225))
                 cs.moveTo(36f, sigY + 45f)
                 cs.lineTo(pw - 36f, sigY + 45f)
                 cs.stroke()
-                drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 36f, sigY + 22f, "Инженер: ${engineerName.ifBlank { "Help-CSL" }}")
-                drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 310f, sigY + 22f, "Заказчик: ${ticket.reporterName.take(34)}")
+
+                drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 36f, sigY + 22f, "Сервисный инженер:")
+                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 36f, sigY + 6f, engineerName.ifBlank { "Инженер Help-CSL" }.take(38))
+                cs.moveTo(36f, sigY - 22f)
+                cs.lineTo(240f, sigY - 22f)
+                cs.stroke()
+
+                drawTextSafe(cs, fontBold, 10.5f, Color(15, 23, 42), 310f, sigY + 22f, "Представитель Заказчика:")
+                drawTextSafe(cs, fontRegular, 10f, Color(15, 23, 42), 310f, sigY + 6f, ticket.reporterName.ifBlank { "Заказчик" }.take(38))
+                cs.moveTo(310f, sigY - 22f)
+                cs.lineTo(545f, sigY - 22f)
+                cs.stroke()
             }
             doc.save(outFile)
         }
         return outFile
+    }
+
+    private fun drawVectorCheckmark(cs: PDPageContentStream, x: Float, baselineY: Float) {
+        cs.setStrokingColor(Color(247, 99, 27))
+        cs.setLineWidth(1.5f)
+        cs.moveTo(x, baselineY + 3.5f)
+        cs.lineTo(x + 3.2f, baselineY + 0.5f)
+        cs.lineTo(x + 8.5f, baselineY + 7.2f)
+        cs.stroke()
+        cs.setLineWidth(1f)
+    }
+
+    private fun canEncodeGlyph(font: PDFont, s: String): Boolean {
+        return try {
+            font.encode(s)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun sanitizeForFont(font: PDFont, raw: String): String {
+        val cleaned = raw
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("\t", " ")
+            .replace('\u00A0', ' ')
+
+        if (canEncodeGlyph(font, cleaned)) return cleaned
+
+        val sb = StringBuilder(cleaned.length)
+        var i = 0
+        while (i < cleaned.length) {
+            val cp = cleaned.codePointAt(i)
+            val charCount = Character.charCount(cp)
+            val token = String(Character.toChars(cp))
+            if (cp >= 0x20 && canEncodeGlyph(font, token)) {
+                sb.append(token)
+            } else {
+                val fallback = when (cp) {
+                    0x2713, 0x2714, 0x2611 -> "+"
+                    0x2715, 0x2716, 0x2717, 0x2718 -> "x"
+                    0x2014, 0x2013, 0x2212 -> "-"
+                    0x00AB, 0x00BB, 0x201C, 0x201D, 0x201E -> "\""
+                    0x2018, 0x2019 -> "'"
+                    0x00B7, 0x2022 -> "-"
+                    0x2116 -> "No."
+                    0x2026 -> "..."
+                    else -> ""
+                }
+                if (fallback.isNotEmpty() && canEncodeGlyph(font, fallback)) {
+                    sb.append(fallback)
+                }
+            }
+            i += charCount
+        }
+        return sb.toString()
     }
 
     private fun drawTextSafe(
@@ -503,22 +588,35 @@ object DesktopPdfGenerator {
         y: Float,
         text: String
     ) {
-        val sanitized = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+        val safeText = sanitizeForFont(font, text)
+        if (safeText.isEmpty()) return
         runCatching {
             cs.setNonStrokingColor(color)
             cs.beginText()
-            cs.setFont(font, size)
-            cs.newLineAtOffset(x, y)
-            cs.showText(sanitized)
-            cs.endText()
+            try {
+                cs.setFont(font, size)
+                cs.newLineAtOffset(x, y)
+                cs.showText(safeText)
+            } finally {
+                runCatching { cs.endText() }
+            }
         }
     }
 
     private fun wrapWords(text: String, maxCols: Int): List<String> {
-        val words = text.replace("\r", "").replace("\n", " ").split(" ")
+        val words = text.replace("\r", "").replace("\n", " ").split(" ").filter { it.isNotEmpty() }
         val lines = mutableListOf<String>()
         var cur = StringBuilder()
-        for (w in words) {
+        for (rawWord in words) {
+            var w = rawWord
+            while (w.length > maxCols) {
+                if (cur.isNotEmpty()) {
+                    lines.add(cur.toString())
+                    cur = StringBuilder()
+                }
+                lines.add(w.substring(0, maxCols))
+                w = w.substring(maxCols)
+            }
             if (cur.isEmpty()) cur.append(w)
             else if (cur.length + 1 + w.length <= maxCols) cur.append(' ').append(w)
             else {
