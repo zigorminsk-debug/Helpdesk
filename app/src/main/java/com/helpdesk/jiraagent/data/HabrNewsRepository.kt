@@ -635,9 +635,9 @@ object HabrNewsRepository {
             }
 
             val publishedIso = obj.optStr("timePublished")
-            val publishedEpoch = publishedIso?.let {
-                runCatching { Instant.parse(it).toEpochMilli() }
-                    .recoverCatching { ZonedDateTime.parse(it).toInstant().toEpochMilli() }
+            val publishedEpoch = publishedIso?.let { iso ->
+                runCatching { Instant.parse(iso).toEpochMilli() }
+                    .recoverCatching { ZonedDateTime.parse(iso).toInstant().toEpochMilli() }
                     .getOrNull()
             } ?: fallbackItem.publishedAtEpochMillis
             val publishedLabel = HabrRssParser.formatMinskDate(publishedEpoch).ifBlank { fallbackItem.publishedLabel }

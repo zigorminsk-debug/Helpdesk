@@ -994,7 +994,7 @@ private fun DesktopHabrArticleReader(
                                 is HabrArticleBlock.CodeBlock -> {
                                     var codeCopied by remember(block.code) { mutableStateOf(false) }
                                     Surface(
-                                        color = DesktopColors.CslNavy,
+                                        color = DesktopColors.CslNavySurface,
                                         shape = RoundedCornerShape(10.dp),
                                         border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.35f)),
                                         modifier = Modifier.fillMaxWidth()
