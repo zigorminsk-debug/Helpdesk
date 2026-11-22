@@ -13,6 +13,8 @@ import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
+import com.helpdesk.jiraagent.model.ClientDirectoryCodec
+import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
@@ -118,6 +120,79 @@ class SettingsRepository private constructor(context: Context) {
     )
     val resolvedRepairRoomKey: StateFlow<String> = _resolvedRepairRoomKey.asStateFlow()
 
+    private val _clientDirectory = MutableStateFlow(loadInitialClientDirectory())
+    val clientDirectory: StateFlow<List<ClientDirectoryEntry>> = _clientDirectory.asStateFlow()
+
+    @Synchronized
+    fun mergeClientDirectoryEntries(incoming: List<ClientDirectoryEntry>) {
+        if (incoming.isEmpty()) return
+        val merged = ClientDirectoryCodec.mergeEntries(
+            existing = _clientDirectory.value,
+            incoming = incoming,
+            filterSettings = _filterSettings.value
+        )
+        if (merged != _clientDirectory.value) {
+            _clientDirectory.value = merged
+            prefs.edit().putString(KEY_CLIENT_DIRECTORY_JSON, gson.toJson(merged)).apply()
+        }
+    }
+
+    private fun extractEntriesFromTickets(ticketsList: List<HelpdeskTicket>): List<ClientDirectoryEntry> =
+        ticketsList.mapNotNull { t ->
+            if (!t.isClientTicket) return@mapNotNull null
+            if (AdminChatCodec.isAdminChatStorageIssue(t.key, t.summary, t.labels, _resolvedChatRoomKey.value)) {
+                return@mapNotNull null
+            }
+            val cleanName = t.reporterName.trim()
+            if (!ClientDirectoryCodec.isValidClientName(cleanName, _filterSettings.value)) {
+                return@mapNotNull null
+            }
+            ClientDirectoryEntry(
+                name = cleanName,
+                phone = t.phoneNumbers.firstOrNull()?.e164,
+                source = "Helpdesk",
+                lastSeenEpochMs = t.updatedEpochMillis.coerceAtLeast(t.createdEpochMillis)
+            )
+        }
+
+    private fun extractEntriesFromRepairs(itemsList: List<RepairEquipmentItem>): List<ClientDirectoryEntry> =
+        itemsList.mapNotNull { item ->
+            if (item.isDeleted) return@mapNotNull null
+            val cleanName = item.clientName.trim()
+            if (!ClientDirectoryCodec.isValidClientName(cleanName, _filterSettings.value)) {
+                return@mapNotNull null
+            }
+            ClientDirectoryEntry(
+                name = cleanName,
+                phone = item.clientPhone.trim().ifEmpty { null },
+                source = "В ремонт",
+                lastSeenEpochMs = item.updatedAtEpochMs
+            )
+        }
+
+    private fun loadInitialClientDirectory(): List<ClientDirectoryEntry> {
+        val persisted = runCatching {
+            val raw = prefs.getString(KEY_CLIENT_DIRECTORY_JSON, null)
+            if (raw.isNullOrBlank()) emptyList()
+            else {
+                val type = object : TypeToken<List<ClientDirectoryEntry>>() {}.type
+                gson.fromJson<List<ClientDirectoryEntry>>(raw, type).orEmpty()
+                    .mapNotNull { e ->
+                        val n = (e.name as String?)?.trim().orEmpty()
+                        if (n.isEmpty()) null else e.copy(name = n)
+                    }
+            }
+        }.getOrDefault(emptyList())
+
+        val fromTickets = extractEntriesFromTickets(_tickets.value)
+        val fromRepairs = extractEntriesFromRepairs(_repairItems.value)
+        return ClientDirectoryCodec.mergeEntries(
+            existing = persisted,
+            incoming = fromTickets + fromRepairs,
+            filterSettings = _filterSettings.value
+        )
+    }
+
     @Synchronized
     fun setResolvedRepairRoomKey(issueKey: String) {
         val clean = issueKey.trim().uppercase(Locale.ROOT)
@@ -145,6 +220,18 @@ class SettingsRepository private constructor(context: Context) {
         val merged = (current.filterNot { it.id == stamped.id } + stamped)
             .sortedByDescending { it.updatedAtEpochMs }
         persistRepairItems(merged)
+        if (!stamped.isDeleted && stamped.clientName.isNotBlank()) {
+            mergeClientDirectoryEntries(
+                listOf(
+                    ClientDirectoryEntry(
+                        name = stamped.clientName,
+                        phone = stamped.clientPhone.trim().ifEmpty { null },
+                        source = "В ремонт",
+                        lastSeenEpochMs = stamped.updatedAtEpochMs
+                    )
+                )
+            )
+        }
         return stamped
     }
 
@@ -170,6 +257,7 @@ class SettingsRepository private constructor(context: Context) {
         }
         val merged = RepairEquipmentCodec.mergeItems(_repairItems.value, remoteEvents)
         persistRepairItems(merged)
+        mergeClientDirectoryEntries(extractEntriesFromRepairs(merged))
         return merged.filter { it.pendingRemoteSync }
     }
 
@@ -497,6 +585,7 @@ class SettingsRepository private constructor(context: Context) {
 
     private fun updateTicketsCache(list: List<HelpdeskTicket>) {
         _tickets.value = list
+        runCatching { mergeClientDirectoryEntries(extractEntriesFromTickets(list)) }
         runCatching {
             val trimmed = list.take(60)
             cachePrefs.edit().putString(KEY_CACHED_TICKETS_JSON, gson.toJson(trimmed)).apply()
@@ -960,5 +1049,6 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_STALE_REMINDED_KEYS = "stale_reminded_ticket_keys"
         private const val KEY_REPAIR_ITEMS_JSON = "repair_equipment_items_json"
         private const val KEY_RESOLVED_REPAIR_ROOM_KEY = "resolved_repair_room_key"
+        private const val KEY_CLIENT_DIRECTORY_JSON = "client_directory_entries_json"
     }
 }

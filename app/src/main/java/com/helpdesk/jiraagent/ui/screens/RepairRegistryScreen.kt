@@ -37,6 +37,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowDropUp
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Clear
@@ -92,6 +94,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.ClientDirectoryCodec
+import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
@@ -134,6 +138,8 @@ private val RepairDeletedRed = Color(0xFFDC2626)
 @Composable
 fun RepairRegistryScreen(
     items: List<RepairEquipmentItem>,
+    clientDirectory: List<ClientDirectoryEntry>,
+    isLoadingClientDirectory: Boolean,
     appSettings: AppSettings,
     engineerDisplayName: String,
     isSyncing: Boolean,
@@ -144,6 +150,7 @@ fun RepairRegistryScreen(
     onDeleteItem: (RepairEquipmentItem, reason: String) -> Unit,
     onRestoreItem: (RepairEquipmentItem) -> Unit,
     onSyncNow: () -> Unit,
+    onRefreshClients: () -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
     onAttachPdfToTicket: (ticketKey: String, pdfBytes: ByteArray, fileName: String, note: String) -> Unit
 ) {
@@ -240,6 +247,10 @@ fun RepairRegistryScreen(
             initial = draft,
             isNewIntake = isCreatingNew,
             defaultEngineer = engineerDisplayName,
+            clientDirectory = clientDirectory,
+            isLoadingClientDirectory = isLoadingClientDirectory,
+            isJiraConfigured = appSettings.isConfigured,
+            onRefreshClients = onRefreshClients,
             onDismiss = { editingItem = null },
             onSave = { updated, postTicketNote ->
                 onSaveItem(updated, postTicketNote)
@@ -926,6 +937,10 @@ fun RepairEquipmentEditorDialog(
     initial: RepairEquipmentItem,
     isNewIntake: Boolean,
     defaultEngineer: String,
+    clientDirectory: List<ClientDirectoryEntry> = emptyList(),
+    isLoadingClientDirectory: Boolean = false,
+    isJiraConfigured: Boolean = false,
+    onRefreshClients: () -> Unit = {},
     onDismiss: () -> Unit,
     onSave: (RepairEquipmentItem, postNoteToLinkedTicket: Boolean) -> Unit,
     onDelete: ((reason: String) -> Unit)? = null,
@@ -936,6 +951,9 @@ fun RepairEquipmentEditorDialog(
     var model by remember(initial) { mutableStateOf(initial.deviceModel) }
     var serial by remember(initial) { mutableStateOf(initial.serialNumber) }
     var clientName by remember(initial) { mutableStateOf(initial.clientName) }
+    var showClientPicker by remember(initial) { mutableStateOf(false) }
+    var showAllClientsInPicker by remember(initial) { mutableStateOf(false) }
+    var browseAllClientsMode by remember(initial) { mutableStateOf(false) }
     var clientPhone by remember(initial) { mutableStateOf(initial.clientPhone) }
     var linkedTicketKey by remember(initial) { mutableStateOf(initial.linkedTicketKey) }
     var accessories by remember(initial) { mutableStateOf(initial.accessories) }
@@ -1195,13 +1213,214 @@ fun RepairEquipmentEditorDialog(
                     }
                 )
 
+                val effectiveFilterQuery = if (browseAllClientsMode) "" else clientName
+                val clientSuggestions = remember(clientDirectory, effectiveFilterQuery) {
+                    ClientDirectoryCodec.filterSuggestions(clientDirectory, effectiveFilterQuery, limit = 120)
+                }
+                val normalizedTypedClient = remember(clientName) {
+                    ClientDirectoryCodec.normalizeKey(clientName)
+                }
+                val isKnownClient = remember(clientDirectory, normalizedTypedClient) {
+                    normalizedTypedClient.isNotEmpty() &&
+                        clientDirectory.any { ClientDirectoryCodec.normalizeKey(it.name) == normalizedTypedClient }
+                }
+
                 OutlinedTextField(
                     value = clientName,
-                    onValueChange = { clientName = it },
-                    label = { Text("Клиент / Организация *") },
+                    onValueChange = { typed ->
+                        clientName = typed
+                        browseAllClientsMode = false
+                        showAllClientsInPicker = false
+                        showClientPicker = typed.trim().isNotEmpty() && clientDirectory.isNotEmpty()
+                    },
+                    label = {
+                        val suffix = if (clientDirectory.isNotEmpty()) " (${clientDirectory.size})" else ""
+                        Text("Клиент / Организация *$suffix")
+                    },
+                    placeholder = { Text("Выберите из Helpdesk или введите нового…") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (clientName.isNotEmpty()) {
+                                IconButton(
+                                    onClick = {
+                                        clientName = ""
+                                        browseAllClientsMode = true
+                                        showClientPicker = clientDirectory.isNotEmpty()
+                                    },
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "Очистить клиента",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            if (isJiraConfigured) {
+                                IconButton(
+                                    onClick = onRefreshClients,
+                                    enabled = !isLoadingClientDirectory,
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Sync,
+                                        contentDescription = "Подгрузить клиентов из Helpdesk",
+                                        tint = if (isLoadingClientDirectory) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        } else {
+                                            CslOrange
+                                        },
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = {
+                                    val nextOpen = !showClientPicker
+                                    showClientPicker = nextOpen
+                                    if (nextOpen) {
+                                        browseAllClientsMode = true
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (showClientPicker) {
+                                        Icons.Default.ArrowDropUp
+                                    } else {
+                                        Icons.Default.ArrowDropDown
+                                    },
+                                    contentDescription = "Список клиентов из Helpdesk",
+                                    tint = CslOrange
+                                )
+                            }
+                        }
+                    }
                 )
+
+                if (isLoadingClientDirectory) {
+                    Text(
+                        text = "Подгрузка списка клиентов и организаций из Helpdesk…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CslOrange
+                    )
+                } else if (clientName.trim().length >= 2 && !isKnownClient) {
+                    Text(
+                        text = "➕ Новый клиент «${clientName.trim()}» — автоматически добавится в список при сохранении",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CslSuccessGreen
+                    )
+                }
+
+                if (showClientPicker && clientSuggestions.isNotEmpty()) {
+                    val displayLimit = if (showAllClientsInPicker) 80 else 10
+                    val visibleSlice = clientSuggestions.take(displayLimit)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.55f)),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(CslMidnight)
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Справочник клиентов Helpdesk (${clientSuggestions.size})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "Скрыть",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CslOrange,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { showClientPicker = false }
+                                )
+                            }
+                            visibleSlice.forEachIndexed { idx, entry ->
+                                if (idx > 0) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            clientName = entry.name
+                                            if (clientPhone.isBlank() && !entry.phone.isNullOrBlank()) {
+                                                clientPhone = entry.phone
+                                            }
+                                            showClientPicker = false
+                                            browseAllClientsMode = false
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = entry.name,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (!entry.phone.isNullOrBlank()) {
+                                            Text(
+                                                text = entry.phone,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    if (!entry.source.isNullOrBlank()) {
+                                        Surface(
+                                            color = CslOrange.copy(alpha = 0.14f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = entry.source,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = CslOrange,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            if (!showAllClientsInPicker && clientSuggestions.size > displayLimit) {
+                                HorizontalDivider()
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showAllClientsInPicker = true }
+                                        .padding(vertical = 7.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Показать ещё (${clientSuggestions.size - displayLimit})",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = CslOrange
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (showClientPicker && clientDirectory.isEmpty() && !isLoadingClientDirectory) {
+                    Text(
+                        text = "Список пока пуст — он заполнится клиентами из Helpdesk и введёнными вами организациями.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

@@ -28,6 +28,7 @@ import com.helpdesk.jiraagent.util.PdfServiceActGenerator
 import com.helpdesk.jiraagent.util.ServiceActInput
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
@@ -135,6 +136,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val clientDossierNotes: StateFlow<Map<String, String>> = repository.clientDossierNotes
     val pendingCallSession: StateFlow<PendingCallSession?> = repository.pendingCallSession
     val repairItems: StateFlow<List<RepairEquipmentItem>> = repository.repairItems
+    val clientDirectory: StateFlow<List<ClientDirectoryEntry>> = repository.clientDirectory
+
+    private val _isLoadingClientDirectory = MutableStateFlow(false)
+    val isLoadingClientDirectory: StateFlow<Boolean> = _isLoadingClientDirectory.asStateFlow()
 
     private val _isSyncingRepair = MutableStateFlow(false)
     val isSyncingRepair: StateFlow<Boolean> = _isSyncingRepair.asStateFlow()
@@ -221,6 +226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (repository.appSettings.value.isConfigured) {
             syncRepairRegistry()
+            refreshClientsDirectory(manual = false)
         }
     }
 
@@ -2031,6 +2037,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun syncRepairRegistry() {
         val settings = appSettings.value
         if (!settings.isConfigured || _isSyncingRepair.value) return
+        if (!_isLoadingClientDirectory.value) {
+            refreshClientsDirectory(manual = false)
+        }
         viewModelScope.launch {
             _isSyncingRepair.value = true
             _repairSyncError.value = null
@@ -2061,6 +2070,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _repairSyncError.value = err.message
             }
             _isSyncingRepair.value = false
+        }
+    }
+
+    fun refreshClientsDirectory(manual: Boolean = false) {
+        val settings = appSettings.value
+        if (!settings.isConfigured || _isLoadingClientDirectory.value) return
+        viewModelScope.launch {
+            _isLoadingClientDirectory.value = true
+            apiClient.fetchHelpdeskClientsDirectory(settings, filterSettings.value)
+                .onSuccess { fetched ->
+                    repository.mergeClientDirectoryEntries(fetched)
+                    if (manual) {
+                        Toast.makeText(
+                            appContext,
+                            "Справочник клиентов обновлён (${repository.clientDirectory.value.size})",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                .onFailure { err ->
+                    if (manual) {
+                        Toast.makeText(
+                            appContext,
+                            err.message ?: "Не удалось загрузить клиентов из Helpdesk",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            _isLoadingClientDirectory.value = false
         }
     }
 

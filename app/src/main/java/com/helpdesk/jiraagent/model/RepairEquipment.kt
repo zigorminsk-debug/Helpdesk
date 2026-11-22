@@ -213,3 +213,126 @@ object RepairEquipmentCodec {
         }
     }
 }
+
+data class ClientDirectoryEntry(
+    val name: String = "",
+    val phone: String? = null,
+    val source: String? = null,
+    val lastSeenEpochMs: Long = 0L
+)
+
+object ClientDirectoryCodec {
+
+    private val WHITESPACE_REGEX = Regex("\\s+")
+    private val WORD_SPLIT_REGEX = Regex("[\\s\"'«»().,/-]+")
+
+    fun normalizeKey(rawName: String): String =
+        rawName.trim().replace(WHITESPACE_REGEX, " ").lowercase(Locale.ROOT)
+
+    fun isValidClientName(
+        rawName: String,
+        filterSettings: FilterSettings = FilterSettings()
+    ): Boolean {
+        val clean = rawName.trim().replace(WHITESPACE_REGEX, " ")
+        if (clean.length < 2) return false
+        val low = clean.lowercase(Locale.ROOT)
+        if (low == "клиент" || low == "unknown" || low == "не указан" || low == "клиент не указан") {
+            return false
+        }
+        if (low.contains(AdminChatCodec.ADMIN_CHAT_MARKER.lowercase(Locale.ROOT)) ||
+            low.contains(RepairEquipmentCodec.REPAIR_REGISTRY_MARKER.lowercase(Locale.ROOT))
+        ) {
+            return false
+        }
+        val excludedTokens = filterSettings.excludedReporters
+            .split(',', ';', '\n')
+            .map { it.trim().lowercase(Locale.ROOT) }
+            .filter { it.length >= 3 }
+        if (excludedTokens.any { token -> low == token || low.contains(token) }) {
+            return false
+        }
+        return true
+    }
+
+    fun mergeEntries(
+        existing: List<ClientDirectoryEntry>,
+        incoming: List<ClientDirectoryEntry>,
+        filterSettings: FilterSettings = FilterSettings()
+    ): List<ClientDirectoryEntry> {
+        val byKey = LinkedHashMap<String, ClientDirectoryEntry>()
+
+        fun putOne(entry: ClientDirectoryEntry, isIncoming: Boolean) {
+            val cleanName = entry.name.trim().replace(WHITESPACE_REGEX, " ")
+            if (!isValidClientName(cleanName, filterSettings)) return
+            val key = cleanName.lowercase(Locale.ROOT)
+            val cleanPhone = entry.phone?.trim()?.takeIf { it.isNotEmpty() }
+            val cleanSource = entry.source?.trim()?.takeIf { it.isNotEmpty() }
+            val prev = byKey[key]
+            if (prev == null) {
+                byKey[key] = ClientDirectoryEntry(
+                    name = cleanName,
+                    phone = cleanPhone,
+                    source = cleanSource,
+                    lastSeenEpochMs = entry.lastSeenEpochMs
+                )
+            } else {
+                val preferNewName = isIncoming && (
+                    cleanSource == "В ремонт" ||
+                        (prev.name == prev.name.lowercase(Locale.ROOT) && cleanName != cleanName.lowercase(Locale.ROOT))
+                    )
+                val chosenPhone = if (isIncoming && cleanPhone != null && entry.lastSeenEpochMs >= prev.lastSeenEpochMs) {
+                    cleanPhone
+                } else {
+                    prev.phone ?: cleanPhone
+                }
+                byKey[key] = ClientDirectoryEntry(
+                    name = if (preferNewName) cleanName else prev.name,
+                    phone = chosenPhone,
+                    source = cleanSource ?: prev.source,
+                    lastSeenEpochMs = maxOf(prev.lastSeenEpochMs, entry.lastSeenEpochMs)
+                )
+            }
+        }
+
+        for (e in existing) putOne(e, isIncoming = false)
+        for (i in incoming) putOne(i, isIncoming = true)
+
+        return byKey.values
+            .sortedWith(
+                compareByDescending<ClientDirectoryEntry> { it.lastSeenEpochMs }
+                    .thenBy { it.name.lowercase(Locale.ROOT) }
+            )
+            .take(1000)
+    }
+
+    fun filterSuggestions(
+        entries: List<ClientDirectoryEntry>,
+        rawQuery: String,
+        limit: Int = 50
+    ): List<ClientDirectoryEntry> {
+        val q = rawQuery.trim().lowercase(Locale.ROOT)
+        if (q.isEmpty()) {
+            return entries.take(limit)
+        }
+        val qDigits = q.filter { it.isDigit() }
+        return entries.mapNotNull { entry ->
+            val lowName = entry.name.lowercase(Locale.ROOT)
+            val lowPhone = entry.phone.orEmpty().lowercase(Locale.ROOT)
+            val phoneDigits = lowPhone.filter { it.isDigit() }
+            val words = lowName.split(WORD_SPLIT_REGEX).filter { it.isNotEmpty() }
+            val rank = when {
+                lowName.startsWith(q) -> 0
+                words.any { it.startsWith(q) } -> 1
+                lowName.contains(q) -> 2
+                qDigits.length >= 3 && phoneDigits.contains(qDigits) -> 3
+                else -> return@mapNotNull null
+            }
+            rank to entry
+        }.sortedWith(
+            compareBy<Pair<Int, ClientDirectoryEntry>> { it.first }
+                .thenByDescending { it.second.lastSeenEpochMs }
+                .thenBy { it.second.name.lowercase(Locale.ROOT) }
+        ).map { it.second }
+            .take(limit)
+    }
+}

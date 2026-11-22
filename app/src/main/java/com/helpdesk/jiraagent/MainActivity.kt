@@ -210,6 +210,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val serialSearchState by viewModel.serialSearchState.collectAsStateWithLifecycle()
     val isBatchBusy by viewModel.isBatchBusy.collectAsStateWithLifecycle()
     val repairItems by viewModel.repairItems.collectAsStateWithLifecycle()
+    val clientDirectory by viewModel.clientDirectory.collectAsStateWithLifecycle()
+    val isLoadingClientDirectory by viewModel.isLoadingClientDirectory.collectAsStateWithLifecycle()
     val isSyncingRepair by viewModel.isSyncingRepair.collectAsStateWithLifecycle()
     val repairSyncError by viewModel.repairSyncError.collectAsStateWithLifecycle()
     val pendingRepairDraft by viewModel.pendingRepairDraftFromTicket.collectAsStateWithLifecycle()
@@ -788,6 +790,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     Box(modifier = Modifier.weight(1f)) {
                         RepairRegistryScreen(
                             items = repairItems,
+                            clientDirectory = clientDirectory,
+                            isLoadingClientDirectory = isLoadingClientDirectory,
                             appSettings = appSettings,
                             engineerDisplayName = engineerName,
                             isSyncing = isSyncingRepair,
@@ -804,6 +808,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                                 viewModel.restoreRepairEquipmentItem(item)
                             },
                             onSyncNow = { viewModel.syncRepairRegistry() },
+                            onRefreshClients = { viewModel.refreshClientsDirectory(manual = true) },
                             onOpenLinkedTicket = { key -> viewModel.openTicket(key) },
                             onAttachPdfToTicket = { key, bytes, name, note ->
                                 viewModel.attachRepairPdfToTicket(key, bytes, name, note)

@@ -9,6 +9,8 @@ import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AdminChatRoomSnapshot
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
+import com.helpdesk.jiraagent.model.ClientDirectoryCodec
+import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.JiraServerType
@@ -2444,6 +2446,176 @@ class JiraApiClient {
                 settings = settings,
                 internalOnly = true
             )
+        }
+    }
+
+    /**
+     * Fetches the client & organization directory from Jira Helpdesk:
+     * 1) Jira Service Management `/rest/servicedeskapi/organization` (up to 200 organizations),
+     * 2) Recent Helpdesk issues (client reporters + JSM `Organizations` / company custom fields + phones).
+     */
+    suspend fun fetchHelpdeskClientsDirectory(
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<List<ClientDirectoryEntry>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            val collected = mutableListOf<ClientDirectoryEntry>()
+
+            // 1. Best-effort JSM Organizations API (/rest/servicedeskapi/organization)
+            runCatching {
+                var start = 0
+                repeat(2) {
+                    val url = "$baseUrl/rest/servicedeskapi/organization?start=$start&limit=100"
+                    val req = Request.Builder()
+                        .url(url)
+                        .get()
+                        .applyAuth(settings)
+                        .header("X-ExperimentalApi", "opt-in")
+                        .build()
+                    val fetchMore = clientFor(settings).newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use false
+                        val root = JsonParser.parseString(resp.body?.string().orEmpty()).asJsonObject
+                        val values = root.getAsJsonArray("values") ?: return@use false
+                        for (el in values) {
+                            if (!el.isJsonObject) continue
+                            val orgName = el.asJsonObject.takeString("name")?.trim().orEmpty()
+                            if (ClientDirectoryCodec.isValidClientName(orgName, filterSettings)) {
+                                collected.add(
+                                    ClientDirectoryEntry(
+                                        name = orgName,
+                                        source = "JSM",
+                                        lastSeenEpochMs = 100L
+                                    )
+                                )
+                            }
+                        }
+                        val isLast = root.get("isLast")?.let { it.isJsonPrimitive && it.asBoolean } ?: true
+                        !isLast && values.size() >= 100
+                    }
+                    if (!fetchMore) return@runCatching
+                    start += 100
+                }
+            }
+
+            // 2. Historical & recent Helpdesk tickets (reporters + custom Organization fields + phones)
+            val projectKeys = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+            val jql = if (projectKeys.isNotEmpty()) {
+                val quoted = projectKeys.joinToString(", ") { "\"$it\"" }
+                "project in ($quoted) ORDER BY updated DESC"
+            } else {
+                "ORDER BY updated DESC"
+            }
+            val searchJson = executeSearchWithFallback(baseUrl, jql, 100, preferCloud, settings)
+            val parsedTickets = JiraJsonParser.parseSearchResults(searchJson, settings, filterSettings)
+            val ticketByKey = HashMap<String, HelpdeskTicket>(parsedTickets.size)
+
+            for (rawTicket in parsedTickets) {
+                if (AdminChatCodec.isAdminChatStorageIssue(rawTicket.key, rawTicket.summary, rawTicket.labels)) {
+                    continue
+                }
+                val eval = TicketFilterEngine.evaluate(rawTicket, filterSettings, settings.usernameOrEmail)
+                val evaluated = rawTicket.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
+                ticketByKey[evaluated.key.uppercase(Locale.ROOT)] = evaluated
+                if (evaluated.isClientTicket &&
+                    ClientDirectoryCodec.isValidClientName(evaluated.reporterName, filterSettings)
+                ) {
+                    collected.add(
+                        ClientDirectoryEntry(
+                            name = evaluated.reporterName,
+                            phone = evaluated.phoneNumbers.firstOrNull()?.e164,
+                            source = "Helpdesk",
+                            lastSeenEpochMs = evaluated.updatedEpochMillis.coerceAtLeast(evaluated.createdEpochMillis)
+                        )
+                    )
+                }
+            }
+
+            // Extract JSM `Organizations` / company custom fields from the raw search JSON
+            runCatching {
+                val root = JsonParser.parseString(searchJson).asJsonObject
+                val namesObj = root.getAsJsonObject("names")
+                val orgFieldKeys = mutableSetOf<String>()
+                namesObj?.entrySet()?.forEach { (fieldId, labelEl) ->
+                    if (labelEl.isJsonPrimitive) {
+                        val labelLow = labelEl.asString.lowercase(Locale.ROOT)
+                        if (labelLow.contains("organization") ||
+                            labelLow.contains("организац") ||
+                            labelLow.contains("компан") ||
+                            labelLow.contains("контрагент")
+                        ) {
+                            orgFieldKeys.add(fieldId)
+                        }
+                    }
+                }
+                if (orgFieldKeys.isNotEmpty()) {
+                    val issuesArr = root.getAsJsonArray("issues")
+                    issuesArr?.forEach { issueEl ->
+                        if (!issueEl.isJsonObject) return@forEach
+                        val issueObj = issueEl.asJsonObject
+                        val keyUpper = issueObj.takeString("key")?.uppercase(Locale.ROOT).orEmpty()
+                        val matchedTicket = ticketByKey[keyUpper]
+                        if (matchedTicket != null && !matchedTicket.isClientTicket) return@forEach
+                        val phone = matchedTicket?.phoneNumbers?.firstOrNull()?.e164
+                        val stamp = matchedTicket?.updatedEpochMillis?.coerceAtLeast(matchedTicket.createdEpochMillis) ?: 500L
+                        val fieldsObj = issueObj.getAsJsonObject("fields") ?: return@forEach
+
+                        for (fKey in orgFieldKeys) {
+                            val rawVal = fieldsObj.get(fKey) ?: continue
+                            when {
+                                rawVal.isJsonArray -> rawVal.asJsonArray.forEach { item ->
+                                    val orgName = when {
+                                        item.isJsonPrimitive -> item.asString
+                                        item.isJsonObject -> item.asJsonObject.takeString("name")
+                                            ?: item.asJsonObject.takeString("value")
+                                        else -> null
+                                    }?.trim().orEmpty()
+                                    if (ClientDirectoryCodec.isValidClientName(orgName, filterSettings)) {
+                                        collected.add(
+                                            ClientDirectoryEntry(
+                                                name = orgName,
+                                                phone = phone,
+                                                source = "Helpdesk",
+                                                lastSeenEpochMs = stamp
+                                            )
+                                        )
+                                    }
+                                }
+                                rawVal.isJsonObject -> {
+                                    val orgName = (rawVal.asJsonObject.takeString("name")
+                                        ?: rawVal.asJsonObject.takeString("value"))?.trim().orEmpty()
+                                    if (ClientDirectoryCodec.isValidClientName(orgName, filterSettings)) {
+                                        collected.add(
+                                            ClientDirectoryEntry(
+                                                name = orgName,
+                                                phone = phone,
+                                                source = "Helpdesk",
+                                                lastSeenEpochMs = stamp
+                                            )
+                                        )
+                                    }
+                                }
+                                rawVal.isJsonPrimitive -> {
+                                    val orgName = rawVal.asString.trim()
+                                    if (ClientDirectoryCodec.isValidClientName(orgName, filterSettings)) {
+                                        collected.add(
+                                            ClientDirectoryEntry(
+                                                name = orgName,
+                                                phone = phone,
+                                                source = "Helpdesk",
+                                                lastSeenEpochMs = stamp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ClientDirectoryCodec.mergeEntries(emptyList(), collected, filterSettings)
         }
     }
 

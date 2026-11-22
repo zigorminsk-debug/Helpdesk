@@ -10,6 +10,8 @@ import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.ClientDirectoryCodec
+import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
@@ -358,5 +360,36 @@ class SysadminImprovementsTest {
                 labels = listOf(RepairEquipmentCodec.REPAIR_REGISTRY_LABEL)
             )
         )
+    }
+
+    @Test
+    fun `client directory loads Helpdesk clients filters bots and grows as new clients are entered`() {
+        val helpdeskClients = listOf(
+            ClientDirectoryEntry(name = "ООО Сейлзмодерн", phone = "+375291112233", source = "Helpdesk", lastSeenEpochMs = 1_000L),
+            ClientDirectoryEntry(name = "ЖКХ Минского района", phone = "+375296543210", source = "JSM", lastSeenEpochMs = 900L),
+            ClientDirectoryEntry(name = "zabbix", phone = null, source = "Helpdesk", lastSeenEpochMs = 2_000L),
+            ClientDirectoryEntry(name = "Клиент", phone = null, source = "Helpdesk", lastSeenEpochMs = 2_000L)
+        )
+        val initialDir = ClientDirectoryCodec.mergeEntries(emptyList(), helpdeskClients, FilterSettings())
+        // zabbix & generic placeholder are excluded
+        assertEquals(2, initialDir.size)
+
+        // Adding a brand-new client in «В ремонт» + updating phone on existing client
+        val newlyEntered = listOf(
+            ClientDirectoryEntry(name = "ИП Ковалёв А.С.", phone = "+375447778899", source = "В ремонт", lastSeenEpochMs = 5_000L),
+            ClientDirectoryEntry(name = "ооо сейлзмодерн", phone = "+375299990000", source = "В ремонт", lastSeenEpochMs = 4_000L)
+        )
+        val grownDir = ClientDirectoryCodec.mergeEntries(initialDir, newlyEntered, FilterSettings())
+        assertEquals(3, grownDir.size)
+
+        // Word-boundary prefix search ("сейлз" matches "ООО Сейлзмодерн" first with updated phone)
+        val suggestions = ClientDirectoryCodec.filterSuggestions(grownDir, "сейлз")
+        assertEquals(1, suggestions.size)
+        assertEquals("+375299990000", suggestions.first().phone)
+
+        // Newly added client is immediately searchable
+        val newMatch = ClientDirectoryCodec.filterSuggestions(grownDir, "ковал")
+        assertEquals(1, newMatch.size)
+        assertEquals("ИП Ковалёв А.С.", newMatch.first().name)
     }
 }
