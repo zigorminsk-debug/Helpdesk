@@ -2183,10 +2183,9 @@ class DesktopController(
         _state.update { st ->
             val updated = st.watchlistLabels.toMutableMap()
             if (cleanLabel.isEmpty()) updated.remove(normKey) else updated[normKey] = cleanLabel
-            st.copy(watchlistLabels = updated)
+            st.copy(watchlistLabels = updated, statusBanner = "Подпись узла сохранена")
         }
         persistCurrentState()
-        showToast("Подпись узла сохранена")
     }
 
     fun removeWatchlistHost(host: String) {

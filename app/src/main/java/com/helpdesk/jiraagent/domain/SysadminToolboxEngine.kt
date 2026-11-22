@@ -74,11 +74,11 @@ object SysadminToolboxEngine {
 
     fun normalizeHostKey(rawHost: String): String {
         return rawHost.trim()
+            .lowercase(Locale.ROOT)
             .removePrefix("https://")
             .removePrefix("http://")
             .substringBefore('/')
             .trim()
-            .lowercase(Locale.ROOT)
     }
 
     private val secureRandom = SecureRandom()

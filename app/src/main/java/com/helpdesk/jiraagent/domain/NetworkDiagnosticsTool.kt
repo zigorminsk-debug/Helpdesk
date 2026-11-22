@@ -110,8 +110,7 @@ object NetworkDiagnosticsTool {
         portsToScan: List<Pair<Int, String>> = DEFAULT_PORTS
     ): HostDiagnosticReport = withContext(Dispatchers.IO) {
         val withoutScheme = rawHost.trim()
-            .removePrefix("https://")
-            .removePrefix("http://")
+            .replace(Regex("^https?://", RegexOption.IGNORE_CASE), "")
             .substringBefore('/')
             .trim()
         val customPort = withoutScheme
