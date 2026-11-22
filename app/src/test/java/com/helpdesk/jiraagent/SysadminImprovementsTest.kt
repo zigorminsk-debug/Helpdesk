@@ -18,6 +18,7 @@ import com.helpdesk.jiraagent.model.QueuedActionType
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
+import com.helpdesk.jiraagent.model.RepairSubTab
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.service.HelpCslCallScreeningService
 import org.junit.Assert.assertEquals
@@ -325,6 +326,29 @@ class SysadminImprovementsTest {
         assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "REM-1001"))
         assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "CSL-37368"))
         assertTrue(RepairEquipmentCodec.matchesSearch(merged.first(), "сейлзмодерн"))
+
+        // Soft-delete preserves item in RepairSubTab.DELETED with deletedBy & deleteReason audit trail
+        val deletedEvent = remoteV2.copy(
+            isDeleted = true,
+            deletedBy = "Игорь Петров (igor)",
+            deletedAtEpochMs = 3_500L,
+            deleteReason = "Дубликат",
+            updatedAtEpochMs = 3_500L
+        )
+        val decodedDeleted = RepairEquipmentCodec.decodeEntryComment(
+            RepairEquipmentCodec.encodeEntryComment(deletedEvent)
+        )
+        assertNotNull(decodedDeleted)
+        val afterDelete = RepairEquipmentCodec.mergeItems(merged, listOf(decodedDeleted!!))
+        assertEquals(1, afterDelete.size)
+        val deletedCard = afterDelete.first()
+        assertTrue(deletedCard.isDeleted)
+        assertEquals("Игорь Петров (igor)", deletedCard.deletedBy)
+        assertEquals("Дубликат", deletedCard.deleteReason)
+        assertFalse(RepairSubTab.ACTIVE.matchesItem(deletedCard))
+        assertFalse(RepairSubTab.READY.matchesItem(deletedCard))
+        assertTrue(RepairSubTab.DELETED.matchesItem(deletedCard))
+        assertTrue(RepairEquipmentCodec.matchesSearch(deletedCard, "игорь петров"))
 
         // Storage hub issue is treated as internal storage issue (excluded from client queues & alerts)
         assertTrue(

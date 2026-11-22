@@ -129,6 +129,8 @@ private fun statusAccentColor(status: RepairStatus): Color = when (status) {
     RepairStatus.ISSUED -> Color(0xFF64748B)
 }
 
+private val RepairDeletedRed = Color(0xFFDC2626)
+
 @Composable
 fun RepairRegistryScreen(
     items: List<RepairEquipmentItem>,
@@ -139,13 +141,13 @@ fun RepairRegistryScreen(
     prefillDraftFromTicket: RepairEquipmentItem?,
     onConsumePrefillDraft: () -> Unit,
     onSaveItem: (RepairEquipmentItem, postNoteToLinkedTicket: Boolean) -> Unit,
-    onDeleteItem: (RepairEquipmentItem) -> Unit,
+    onDeleteItem: (RepairEquipmentItem, reason: String) -> Unit,
+    onRestoreItem: (RepairEquipmentItem) -> Unit,
     onSyncNow: () -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
     onAttachPdfToTicket: (ticketKey: String, pdfBytes: ByteArray, fileName: String, note: String) -> Unit
 ) {
     val context = LocalContext.current
-    val visibleItems = remember(items) { items.filterNot { it.isDeleted } }
 
     var selectedSubTab by remember { mutableStateOf(RepairSubTab.ACTIVE) }
     var searchQuery by remember { mutableStateOf("") }
@@ -166,12 +168,12 @@ fun RepairRegistryScreen(
     val launchBarcodeSearch = rememberSafeBarcodeScanner(
         prompt = "Наведите камеру на S/N или QR техники для поиска в ремонте"
     ) { scanned ->
-        val found = visibleItems.firstOrNull {
+        val found = items.firstOrNull {
             it.serialNumber.equals(scanned, ignoreCase = true) ||
                 it.intakeNumber.equals(scanned, ignoreCase = true)
         }
         if (found != null) {
-            selectedSubTab = RepairSubTab.entries.firstOrNull { it.matches(found.status) }
+            selectedSubTab = RepairSubTab.entries.firstOrNull { it.matchesItem(found) }
                 ?: RepairSubTab.ACTIVE
             searchQuery = scanned
         } else {
@@ -179,20 +181,26 @@ fun RepairRegistryScreen(
         }
     }
 
-    val activeCount = remember(visibleItems) { visibleItems.count { RepairSubTab.ACTIVE.matches(it.status) } }
-    val waitingCount = remember(visibleItems) { visibleItems.count { RepairSubTab.WAITING.matches(it.status) } }
-    val readyCount = remember(visibleItems) { visibleItems.count { RepairSubTab.READY.matches(it.status) } }
-    val issuedCount = remember(visibleItems) { visibleItems.count { RepairSubTab.ISSUED.matches(it.status) } }
-    val pendingSyncCount = remember(visibleItems) { visibleItems.count { it.pendingRemoteSync } }
+    val activeCount = remember(items) { items.count { RepairSubTab.ACTIVE.matchesItem(it) } }
+    val waitingCount = remember(items) { items.count { RepairSubTab.WAITING.matchesItem(it) } }
+    val readyCount = remember(items) { items.count { RepairSubTab.READY.matchesItem(it) } }
+    val issuedCount = remember(items) { items.count { RepairSubTab.ISSUED.matchesItem(it) } }
+    val deletedCount = remember(items) { items.count { RepairSubTab.DELETED.matchesItem(it) } }
+    val pendingSyncCount = remember(items) { items.count { it.pendingRemoteSync } }
 
-    val filteredItems = remember(visibleItems, selectedSubTab, searchQuery) {
-        visibleItems.filter { item ->
+    val filteredItems = remember(items, selectedSubTab, searchQuery) {
+        val matching = items.filter { item ->
             val tabMatches = if (searchQuery.isNotBlank()) {
                 true
             } else {
-                selectedSubTab.matches(item.status)
+                selectedSubTab.matchesItem(item)
             }
             tabMatches && RepairEquipmentCodec.matchesSearch(item, searchQuery)
+        }
+        if (selectedSubTab == RepairSubTab.DELETED) {
+            matching.sortedByDescending { it.deletedAtEpochMs ?: it.updatedAtEpochMs }
+        } else {
+            matching
         }
     }
 
@@ -236,13 +244,22 @@ fun RepairRegistryScreen(
             onSave = { updated, postTicketNote ->
                 onSaveItem(updated, postTicketNote)
                 editingItem = null
-                selectedSubTab = RepairSubTab.entries.firstOrNull { it.matches(updated.status) }
+                selectedSubTab = RepairSubTab.entries.firstOrNull { it.matchesItem(updated) }
                     ?: RepairSubTab.ACTIVE
             },
-            onDelete = if (!isCreatingNew) {
-                {
-                    onDeleteItem(draft)
+            onDelete = if (!isCreatingNew && !draft.isDeleted) {
+                { reason ->
+                    onDeleteItem(draft, reason)
                     editingItem = null
+                }
+            } else null,
+            onRestore = if (!isCreatingNew && draft.isDeleted) {
+                {
+                    onRestoreItem(draft)
+                    editingItem = null
+                    selectedSubTab = RepairSubTab.entries.firstOrNull {
+                        it.matchesItem(draft.copy(isDeleted = false))
+                    } ?: RepairSubTab.ACTIVE
                 }
             } else null
         )
@@ -402,11 +419,12 @@ fun RepairRegistryScreen(
             )
         }
 
-        // Compact 4-subtab row (fits 100% of screens without text clipping)
+        // Compact 5-subtab scrollable strip (В работе, Ждёт ЗЧ, Готово, Выдано, Удалённые — zero clipping)
         val chipFontSize = with(LocalDensity.current) { 11.dp.toSp() }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 10.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -414,23 +432,24 @@ fun RepairRegistryScreen(
                 RepairSubTab.ACTIVE to activeCount,
                 RepairSubTab.WAITING to waitingCount,
                 RepairSubTab.READY to readyCount,
-                RepairSubTab.ISSUED to issuedCount
+                RepairSubTab.ISSUED to issuedCount,
+                RepairSubTab.DELETED to deletedCount
             )
             for ((tab, count) in tabCounts) {
                 val isSelected = selectedSubTab == tab && searchQuery.isBlank()
+                val selectedBg = if (tab == RepairSubTab.DELETED) RepairDeletedRed else CslOrange
                 Surface(
                     modifier = Modifier
-                        .weight(1f)
                         .clip(RoundedCornerShape(8.dp))
                         .clickable {
                             searchQuery = ""
                             selectedSubTab = tab
                         },
-                    color = if (isSelected) CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                    color = if (isSelected) selectedBg else MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Box(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 7.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -464,29 +483,35 @@ fun RepairRegistryScreen(
                         modifier = Modifier.size(44.dp)
                     )
                     Text(
-                        text = if (searchQuery.isNotBlank()) {
-                            "По запросу «$searchQuery» техника не найдена"
-                        } else {
-                            "В разделе «${selectedSubTab.label}» пока нет техники"
+                        text = when {
+                            searchQuery.isNotBlank() -> "По запросу «$searchQuery» техника не найдена"
+                            selectedSubTab == RepairSubTab.DELETED -> "В разделе «Удалённые» записей нет"
+                            else -> "В разделе «${selectedSubTab.label}» пока нет техники"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "Нажмите «+ Принять», отсканируйте S/N камерой или отправьте оборудование в ремонт прямо из карточки заявки Jira.",
+                        text = if (selectedSubTab == RepairSubTab.DELETED) {
+                            "При удалении любая позиция не исчезает бесследно, а сохраняется здесь с записью кто и когда её удалил."
+                        } else {
+                            "Нажмите «+ Принять», отсканируйте S/N камерой или отправьте оборудование в ремонт прямо из карточки заявки Jira."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Button(
-                        onClick = {
-                            isCreatingNew = true
-                            editingItem = RepairEquipmentItem(assignedEngineer = engineerDisplayName)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Занести технику в ремонт", color = Color.White, fontWeight = FontWeight.Bold)
+                    if (selectedSubTab != RepairSubTab.DELETED) {
+                        Button(
+                            onClick = {
+                                isCreatingNew = true
+                                editingItem = RepairEquipmentItem(assignedEngineer = engineerDisplayName)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Занести технику в ремонт", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -523,7 +548,8 @@ fun RepairRegistryScreen(
                             ).show()
                         },
                         onOpenLinkedTicket = onOpenLinkedTicket,
-                        onOpenPdfDialog = { pdfTargetItem = item }
+                        onOpenPdfDialog = { pdfTargetItem = item },
+                        onRestore = { onRestoreItem(item) }
                     )
                 }
             }
@@ -538,10 +564,12 @@ private fun RepairEquipmentCard(
     onEdit: () -> Unit,
     onQuickChangeStatus: (RepairStatus) -> Unit,
     onOpenLinkedTicket: (String) -> Unit,
-    onOpenPdfDialog: () -> Unit
+    onOpenPdfDialog: () -> Unit,
+    onRestore: () -> Unit
 ) {
     val context = LocalContext.current
-    val statusColor = statusAccentColor(item.status)
+    val statusColor = if (item.isDeleted) RepairDeletedRed else statusAccentColor(item.status)
+    val pillTitle = if (item.isDeleted) "Удалено" else item.status.shortTitle
     val normalizedPhone = remember(item.clientPhone, appSettings.phoneRegion, appSettings.customCountryCode) {
         if (item.clientPhone.isBlank()) null
         else PhoneNumberNormalizer.normalizeSingle(
@@ -558,7 +586,10 @@ private fun RepairEquipmentCard(
             .clickable { onEdit() },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        border = BorderStroke(
+            1.dp,
+            if (item.isDeleted) RepairDeletedRed.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant
+        )
     ) {
         Column(
             modifier = Modifier
@@ -593,7 +624,7 @@ private fun RepairEquipmentCard(
                     border = BorderStroke(1.dp, statusColor.copy(alpha = 0.5f))
                 ) {
                     Text(
-                        text = item.status.shortTitle,
+                        text = pillTitle,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = statusColor,
@@ -601,6 +632,45 @@ private fun RepairEquipmentCard(
                         maxLines = 1,
                         softWrap = false
                     )
+                }
+            }
+
+            // Audit trail banner for deleted items («Кто удалил» + дата/время + причина)
+            if (item.isDeleted) {
+                val who = item.deletedBy?.trim().orEmpty().ifBlank { "Неизвестно" }
+                val whenDeleted = formatRepairTimestamp(item.deletedAtEpochMs ?: item.updatedAtEpochMs)
+                val reason = item.deleteReason?.trim().orEmpty()
+                Surface(
+                    color = RepairDeletedRed.copy(alpha = 0.10f),
+                    shape = RoundedCornerShape(7.dp),
+                    border = BorderStroke(1.dp, RepairDeletedRed.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = buildString {
+                                append("🗑 Удалил: ")
+                                append(who)
+                                if (whenDeleted.isNotBlank()) {
+                                    append(" · ")
+                                    append(whenDeleted)
+                                }
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = RepairDeletedRed
+                        )
+                        if (reason.isNotBlank()) {
+                            Text(
+                                text = "Причина: $reason",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
             }
 
@@ -696,7 +766,7 @@ private fun RepairEquipmentCard(
                 }
             }
 
-            // Bottom Compact Action Row (Next Status, Waiting Parts toggle, Contact buttons, PDF, Edit)
+            // Bottom Compact Action Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -704,18 +774,16 @@ private fun RepairEquipmentCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                item.status.nextLogicalStatus()?.let { nextStatus ->
+                if (item.isDeleted) {
                     Button(
-                        onClick = { onQuickChangeStatus(nextStatus) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = statusAccentColor(nextStatus)
-                        ),
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
+                        onClick = onRestore,
+                        colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(30.dp),
                         shape = RoundedCornerShape(7.dp)
                     ) {
                         Text(
-                            text = "→ ${nextStatus.shortTitle}",
+                            text = "↩ Восстановить",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
@@ -723,43 +791,64 @@ private fun RepairEquipmentCard(
                             softWrap = false
                         )
                     }
-                }
+                } else {
+                    item.status.nextLogicalStatus()?.let { nextStatus ->
+                        Button(
+                            onClick = { onQuickChangeStatus(nextStatus) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = statusAccentColor(nextStatus)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
+                            modifier = Modifier.height(30.dp),
+                            shape = RoundedCornerShape(7.dp)
+                        ) {
+                            Text(
+                                text = "→ ${nextStatus.shortTitle}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
 
-                if (item.status != RepairStatus.WAITING_PARTS && item.status != RepairStatus.ISSUED) {
+                    if (item.status != RepairStatus.WAITING_PARTS && item.status != RepairStatus.ISSUED) {
+                        OutlinedButton(
+                            onClick = { onQuickChangeStatus(RepairStatus.WAITING_PARTS) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.height(30.dp),
+                            shape = RoundedCornerShape(7.dp)
+                        ) {
+                            Text(
+                                text = "⏳ Ждёт ЗЧ",
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
                     OutlinedButton(
-                        onClick = { onQuickChangeStatus(RepairStatus.WAITING_PARTS) },
+                        onClick = onOpenPdfDialog,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         modifier = Modifier.height(30.dp),
                         shape = RoundedCornerShape(7.dp)
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.PictureAsPdf,
+                            contentDescription = null,
+                            tint = CslOrange,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "⏳ Ждёт ЗЧ",
+                            text = "PDF",
                             style = MaterialTheme.typography.labelSmall,
                             maxLines = 1,
                             softWrap = false
                         )
                     }
-                }
-
-                OutlinedButton(
-                    onClick = onOpenPdfDialog,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    modifier = Modifier.height(30.dp),
-                    shape = RoundedCornerShape(7.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PictureAsPdf,
-                        contentDescription = null,
-                        tint = CslOrange,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "PDF",
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        softWrap = false
-                    )
                 }
 
                 OutlinedButton(
@@ -839,7 +928,8 @@ fun RepairEquipmentEditorDialog(
     defaultEngineer: String,
     onDismiss: () -> Unit,
     onSave: (RepairEquipmentItem, postNoteToLinkedTicket: Boolean) -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: ((reason: String) -> Unit)? = null,
+    onRestore: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var category by remember(initial) { mutableStateOf(initial.deviceCategory.ifBlank { "Ноутбук" }) }
@@ -861,6 +951,7 @@ fun RepairEquipmentEditorDialog(
         mutableStateOf(isNewIntake && initial.linkedTicketKey.isNotBlank())
     }
     var confirmDelete by remember { mutableStateOf(false) }
+    var deleteReasonDraft by remember { mutableStateOf("") }
 
     val launchSerialScan = rememberSafeBarcodeScanner(
         prompt = "Наведите камеру на S/N или инвентарный штрихкод техники"
@@ -903,21 +994,53 @@ fun RepairEquipmentEditorDialog(
     }
 
     if (confirmDelete && onDelete != null) {
+        val quickReasons = listOf("Ошибочный ввод", "Дубликат", "Отказ клиента")
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Удалить карточку ремонта?", fontWeight = FontWeight.Bold) },
+            title = { Text("Переместить в «Удалённые»?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Запись ${initial.intakeNumber} (${model.ifBlank { category }}) будет удалена из журнала ремонта.")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Запись ${initial.intakeNumber} (${model.ifBlank { category }}) НЕ удаляется бесследно — она попадёт в раздел «Удалённые» с записью кто удалил (${defaultEngineer.ifBlank { "текущий инженер" }}) и временем.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        for (qr in quickReasons) {
+                            FilterChip(
+                                selected = deleteReasonDraft == qr,
+                                onClick = {
+                                    deleteReasonDraft = if (deleteReasonDraft == qr) "" else qr
+                                },
+                                label = { Text(qr, style = MaterialTheme.typography.labelSmall) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = RepairDeletedRed,
+                                    selectedLabelColor = Color.White
+                                )
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = deleteReasonDraft,
+                        onValueChange = { deleteReasonDraft = it },
+                        label = { Text("Причина удаления (необязательно)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
+                        val reason = deleteReasonDraft
                         confirmDelete = false
-                        onDelete()
+                        onDelete(reason)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = RepairDeletedRed)
                 ) {
-                    Text("Удалить", color = Color.White)
+                    Text("В удалённые", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -959,6 +1082,44 @@ fun RepairEquipmentEditorDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (initial.isDeleted) {
+                    val who = initial.deletedBy?.trim().orEmpty().ifBlank { "Неизвестно" }
+                    val whenDel = formatRepairTimestamp(initial.deletedAtEpochMs ?: initial.updatedAtEpochMs)
+                    Surface(
+                        color = RepairDeletedRed.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, RepairDeletedRed.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "🗑 В удалённых · Удалил: $who${if (whenDel.isNotBlank()) " ($whenDel)" else ""}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = RepairDeletedRed
+                            )
+                            if (!initial.deleteReason.isNullOrBlank()) {
+                                Text(
+                                    text = "Причина: ${initial.deleteReason}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (onRestore != null) {
+                                Button(
+                                    onClick = onRestore,
+                                    colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("↩ Восстановить позицию из удалённых", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Status selector
                 Text(
                     text = "Статус ремонта:",
@@ -1182,32 +1343,41 @@ fun RepairEquipmentEditorDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (model.isBlank() && reportedDefect.isBlank()) {
-                        Toast.makeText(context, "Укажите модель или неисправность оборудования", Toast.LENGTH_SHORT).show()
-                        return@Button
-                    }
-                    val saved = initial.copy(
-                        deviceCategory = category.trim().ifBlank { "Другое" },
-                        deviceModel = model.trim(),
-                        serialNumber = serial.trim(),
-                        clientName = clientName.trim(),
-                        clientPhone = clientPhone.trim(),
-                        linkedTicketKey = linkedTicketKey.trim().uppercase(),
-                        accessories = accessories.trim(),
-                        externalCondition = externalCondition.trim(),
-                        reportedDefect = reportedDefect.trim(),
-                        repairNotes = repairNotes.trim(),
-                        shelfLocation = shelfLocation.trim(),
-                        assignedEngineer = assignedEngineer.trim(),
-                        status = status
-                    )
-                    onSave(saved, postNoteToTicket && saved.linkedTicketKey.isNotBlank())
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
-            ) {
-                Text("Сохранить", color = Color.White, fontWeight = FontWeight.Bold)
+            if (initial.isDeleted && onRestore != null) {
+                Button(
+                    onClick = onRestore,
+                    colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                ) {
+                    Text("↩ Восстановить", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                Button(
+                    onClick = {
+                        if (model.isBlank() && reportedDefect.isBlank()) {
+                            Toast.makeText(context, "Укажите модель или неисправность оборудования", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        val saved = initial.copy(
+                            deviceCategory = category.trim().ifBlank { "Другое" },
+                            deviceModel = model.trim(),
+                            serialNumber = serial.trim(),
+                            clientName = clientName.trim(),
+                            clientPhone = clientPhone.trim(),
+                            linkedTicketKey = linkedTicketKey.trim().uppercase(),
+                            accessories = accessories.trim(),
+                            externalCondition = externalCondition.trim(),
+                            reportedDefect = reportedDefect.trim(),
+                            repairNotes = repairNotes.trim(),
+                            shelfLocation = shelfLocation.trim(),
+                            assignedEngineer = assignedEngineer.trim(),
+                            status = status
+                        )
+                        onSave(saved, postNoteToTicket && saved.linkedTicketKey.isNotBlank())
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                ) {
+                    Text("Сохранить", color = Color.White, fontWeight = FontWeight.Bold)
+                }
             }
         },
         dismissButton = {

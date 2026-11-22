@@ -1972,12 +1972,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteRepairEquipmentItem(item: RepairEquipmentItem) {
-        val deleted = repository.upsertRepairItem(item.copy(isDeleted = true))
-        Toast.makeText(appContext, "Карточка ${deleted.intakeNumber} удалена", Toast.LENGTH_SHORT).show()
+    private fun resolveCurrentEngineerAuditLabel(): String {
+        val display = syncStatus.value.connectedUser?.trim().orEmpty()
+        val login = appSettings.value.usernameOrEmail.trim()
+        return when {
+            display.isNotEmpty() && login.isNotEmpty() && !display.equals(login, ignoreCase = true) ->
+                "$display ($login)"
+            display.isNotEmpty() -> display
+            login.isNotEmpty() -> login
+            else -> "Локальный инженер"
+        }
+    }
+
+    fun deleteRepairEquipmentItem(item: RepairEquipmentItem, reason: String = "") {
+        val now = System.currentTimeMillis()
+        val whoDeleted = resolveCurrentEngineerAuditLabel()
+        val deleted = repository.upsertRepairItem(
+            item.copy(
+                isDeleted = true,
+                deletedBy = whoDeleted,
+                deletedAtEpochMs = now,
+                deleteReason = reason.trim().ifEmpty { null }
+            )
+        )
+        Toast.makeText(
+            appContext,
+            "Перемещено в «Удалённые»: ${deleted.intakeNumber} (удалил: $whoDeleted)",
+            Toast.LENGTH_LONG
+        ).show()
         if (appSettings.value.isConfigured) {
             viewModelScope.launch {
                 syncSingleRepairItemAndPull(deleted)
+            }
+        }
+    }
+
+    fun restoreRepairEquipmentItem(item: RepairEquipmentItem) {
+        val restored = repository.upsertRepairItem(
+            item.copy(
+                isDeleted = false,
+                deletedBy = null,
+                deletedAtEpochMs = null,
+                deleteReason = null
+            )
+        )
+        Toast.makeText(
+            appContext,
+            "Карточка ${restored.intakeNumber} восстановлена из «Удалённых»",
+            Toast.LENGTH_SHORT
+        ).show()
+        if (appSettings.value.isConfigured) {
+            viewModelScope.launch {
+                syncSingleRepairItemAndPull(restored)
             }
         }
     }

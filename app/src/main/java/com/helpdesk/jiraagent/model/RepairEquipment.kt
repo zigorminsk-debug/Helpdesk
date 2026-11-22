@@ -33,15 +33,21 @@ enum class RepairSubTab(val label: String) {
     ACTIVE("В работе"),
     WAITING("Ждёт ЗЧ"),
     READY("Готово"),
-    ISSUED("Выдано");
+    ISSUED("Выдано"),
+    DELETED("Удалённые");
 
-    fun matches(status: RepairStatus): Boolean = when (this) {
-        ACTIVE -> status == RepairStatus.RECEIVED ||
-            status == RepairStatus.DIAGNOSTICS ||
-            status == RepairStatus.IN_REPAIR
-        WAITING -> status == RepairStatus.WAITING_PARTS
-        READY -> status == RepairStatus.READY
-        ISSUED -> status == RepairStatus.ISSUED
+    fun matchesItem(item: RepairEquipmentItem): Boolean {
+        if (this == DELETED) return item.isDeleted
+        if (item.isDeleted) return false
+        return when (this) {
+            ACTIVE -> item.status == RepairStatus.RECEIVED ||
+                item.status == RepairStatus.DIAGNOSTICS ||
+                item.status == RepairStatus.IN_REPAIR
+            WAITING -> item.status == RepairStatus.WAITING_PARTS
+            READY -> item.status == RepairStatus.READY
+            ISSUED -> item.status == RepairStatus.ISSUED
+            DELETED -> false
+        }
     }
 }
 
@@ -65,6 +71,9 @@ data class RepairEquipmentItem(
     val updatedAtEpochMs: Long = System.currentTimeMillis(),
     val issuedAtEpochMs: Long? = null,
     val isDeleted: Boolean = false,
+    val deletedBy: String? = null,
+    val deletedAtEpochMs: Long? = null,
+    val deleteReason: String? = null,
     val pendingRemoteSync: Boolean = true
 )
 
@@ -196,7 +205,9 @@ object RepairEquipmentCodec {
             item.repairNotes,
             item.accessories,
             item.assignedEngineer,
-            item.shelfLocation
+            item.shelfLocation,
+            item.deletedBy.orEmpty(),
+            item.deleteReason.orEmpty()
         ).any { field ->
             field.lowercase(Locale.ROOT).contains(q)
         }

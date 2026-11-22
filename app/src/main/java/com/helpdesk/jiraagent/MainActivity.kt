@@ -797,7 +797,12 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             onSaveItem = { item, postNote ->
                                 viewModel.saveRepairEquipmentItem(item, postNote)
                             },
-                            onDeleteItem = { item -> viewModel.deleteRepairEquipmentItem(item) },
+                            onDeleteItem = { item, reason ->
+                                viewModel.deleteRepairEquipmentItem(item, reason)
+                            },
+                            onRestoreItem = { item ->
+                                viewModel.restoreRepairEquipmentItem(item)
+                            },
                             onSyncNow = { viewModel.syncRepairRegistry() },
                             onOpenLinkedTicket = { key -> viewModel.openTicket(key) },
                             onAttachPdfToTicket = { key, bytes, name, note ->
