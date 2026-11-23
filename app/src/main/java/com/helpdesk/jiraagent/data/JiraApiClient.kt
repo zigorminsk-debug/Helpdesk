@@ -24,6 +24,8 @@ import com.helpdesk.jiraagent.model.TicketStage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -38,6 +40,7 @@ import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -198,8 +201,15 @@ class JiraApiClient {
     }
 
     /**
-     * Fetches active (Новые + В работе) and recently closed (Закрытые) tickets from Jira
-     * concurrently, compatible with both Jira Cloud v3 `/search/jql` and Server/DC v2 `/search`.
+     * Fetches active (Новые + В работе) and recently closed (Закрытые) tickets from Jira,
+     * compatible with Jira Service Management queues, Jira Server/DC v2, and Jira Cloud v3.
+     *
+     * Uses a 3-layer active discovery strategy so real client tickets in "В работе" and
+     * "Ожидание поддержки" (even weeks/months old) are NEVER drowned out by thousands of
+     * unclosed automated Zabbix / Backup Error issues:
+     *  1. Dedicated server-verified `IN_PROGRESS` status IDs query (`В работе`, `Ожидание клиента`, etc.).
+     *  2. Jira Service Management active human queues (`В работе`, `Ремонт техники`, etc., skipping `Zabbix`/`BACKUP ERRORS`).
+     *  3. Noise-filtered + latest `statusCategory != Done` JQL pass for brand-new & service-tab items.
      */
     suspend fun fetchRecentTickets(
         settings: AppSettings,
@@ -210,24 +220,116 @@ class JiraApiClient {
             val baseUrl = normalizeBaseUrl(settings.serverUrl)
             val preferCloud = isCloudTarget(settings, baseUrl)
 
+            val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
+            fun appendTickets(items: List<HelpdeskTicket>) {
+                for (ticket in items) {
+                    if (!AdminChatCodec.isAdminChatStorageIssue(
+                            issueKey = ticket.key,
+                            summary = ticket.summary,
+                            labels = ticket.labels,
+                            configuredChatKey = settings.adminChatIssueKey
+                        )
+                    ) {
+                        mergedByKey[ticket.key] = ticket
+                    }
+                }
+            }
+
+            val hasCustomFullJql = filterSettings.customJqlCondition.let {
+                it.contains("ORDER BY", ignoreCase = true) || it.contains("statusCategory", ignoreCase = true)
+            }
+
+            // 1. Always pull all tickets strictly in "В работе" (IN_PROGRESS) statuses first so active work
+            //    from any date (e.g. weeks ago) is 100% present even if thousands of automated emails exist.
+            if (!hasCustomFullJql) {
+                val inProgressIds = discoverServerInProgressStatusIds(baseUrl, preferCloud, settings)
+                val inProgressJql = TicketFilterEngine.buildInProgressJql(filterSettings, inProgressIds)
+                if (inProgressJql != null) {
+                    runCatching {
+                        val inProgJson = executeSearchWithFallback(
+                            baseUrl = baseUrl,
+                            jql = inProgressJql,
+                            maxResults = 60,
+                            preferCloud = preferCloud,
+                            settings = settings,
+                            fieldsSpec = "*all,-worklog",
+                            expandNames = true
+                        )
+                        appendTickets(JiraJsonParser.parseSearchResponse(inProgJson, settings, filterSettings))
+                    }
+                }
+            }
+
+            // 2. Discover & pull Jira Service Management human queues (e.g. "В работе", "Ремонт техники")
+            //    so client tickets in "Ожидание поддержки" & "В работе" match JSM's exact queue view.
+            var jsmFetchedAny = false
+            if (!hasCustomFullJql) {
+                val jsmQueues = discoverJsmActiveClientQueues(baseUrl, settings, filterSettings)
+                for (queue in jsmQueues) {
+                    val queueTickets = fetchIssuesFromJsmQueue(
+                        baseUrl = baseUrl,
+                        preferCloud = preferCloud,
+                        queue = queue,
+                        settings = settings,
+                        filterSettings = filterSettings
+                    )
+                    if (queueTickets.isNotEmpty()) {
+                        jsmFetchedAny = true
+                        appendTickets(queueTickets)
+                    }
+                }
+            }
+
+            // 3. Noise-filtered active JQL (when JSM queues are absent) + latest raw active pass
+            if (!hasCustomFullJql && !jsmFetchedAny) {
+                val noiseFilteredJql = TicketFilterEngine.buildNoiseFilteredActiveJql(filterSettings)
+                if (noiseFilteredJql != null) {
+                    runCatching {
+                        val cleanActiveJson = executeSearchWithFallback(
+                            baseUrl = baseUrl,
+                            jql = noiseFilteredJql,
+                            maxResults = maxResults,
+                            preferCloud = preferCloud,
+                            settings = settings,
+                            fieldsSpec = "*all,-worklog",
+                            expandNames = true
+                        )
+                        appendTickets(JiraJsonParser.parseSearchResponse(cleanActiveJson, settings, filterSettings))
+                    }
+                }
+            }
+
             val activeJql = TicketFilterEngine.buildActiveJql(filterSettings)
+            val rawActiveLimit = if (mergedByKey.isNotEmpty() && !hasCustomFullJql) 30 else maxResults
+            try {
+                val activeJson = executeSearchWithFallback(
+                    baseUrl = baseUrl,
+                    jql = activeJql,
+                    maxResults = rawActiveLimit,
+                    preferCloud = preferCloud,
+                    settings = settings,
+                    fieldsSpec = "*all,-worklog",
+                    expandNames = true
+                )
+                for (ticket in JiraJsonParser.parseSearchResponse(activeJson, settings, filterSettings)) {
+                    if (!AdminChatCodec.isAdminChatStorageIssue(
+                            issueKey = ticket.key,
+                            summary = ticket.summary,
+                            labels = ticket.labels,
+                            configuredChatKey = settings.adminChatIssueKey
+                        )
+                    ) {
+                        mergedByKey.putIfAbsent(ticket.key, ticket)
+                    }
+                }
+            } catch (e: Exception) {
+                // Only fail the whole refresh if earlier active layers also yielded nothing (e.g. offline / 401)
+                if (mergedByKey.isEmpty()) throw e
+            }
+
+            // 4. Recently closed tickets for the "Закрытые" tab
             val closedJql = TicketFilterEngine.buildClosedJql(filterSettings)
-
-            // Fetch active tickets FIRST with 100% of link bandwidth (avoids doubling Jira DB/JSON load over 4G+)
-            val activeJson = executeSearchWithFallback(
-                baseUrl = baseUrl,
-                jql = activeJql,
-                maxResults = maxResults,
-                preferCloud = preferCloud,
-                settings = settings,
-                fieldsSpec = "*all,-worklog",
-                expandNames = true
-            )
-            val activeTickets = JiraJsonParser.parseSearchResponse(activeJson, settings, filterSettings)
-
-            val closedTickets = if (closedJql == null) {
-                emptyList()
-            } else {
+            if (closedJql != null) {
                 runCatching {
                     val closedJson = executeSearchWithFallback(
                         baseUrl = baseUrl,
@@ -238,35 +340,215 @@ class JiraApiClient {
                         fieldsSpec = "*all,-worklog,-comment",
                         expandNames = true
                     )
-                    JiraJsonParser.parseSearchResponse(closedJson, settings, filterSettings)
-                }.getOrDefault(emptyList())
+                    for (ticket in JiraJsonParser.parseSearchResponse(closedJson, settings, filterSettings)) {
+                        if (!AdminChatCodec.isAdminChatStorageIssue(
+                                issueKey = ticket.key,
+                                summary = ticket.summary,
+                                labels = ticket.labels,
+                                configuredChatKey = settings.adminChatIssueKey
+                            )
+                        ) {
+                            mergedByKey.putIfAbsent(ticket.key, ticket)
+                        }
+                    }
+                }
             }
 
-            val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
-            for (ticket in activeTickets) {
-                if (!AdminChatCodec.isAdminChatStorageIssue(
-                        issueKey = ticket.key,
-                        summary = ticket.summary,
-                        labels = ticket.labels,
-                        configuredChatKey = settings.adminChatIssueKey
-                    )
-                ) {
-                    mergedByKey[ticket.key] = ticket
-                }
-            }
-            for (ticket in closedTickets) {
-                if (!AdminChatCodec.isAdminChatStorageIssue(
-                        issueKey = ticket.key,
-                        summary = ticket.summary,
-                        labels = ticket.labels,
-                        configuredChatKey = settings.adminChatIssueKey
-                    )
-                ) {
-                    mergedByKey.putIfAbsent(ticket.key, ticket)
-                }
-            }
-            mergedByKey.values.toList()
+            mergedByKey.values
+                .sortedByDescending { it.createdEpochMillis }
         }
+    }
+
+    private fun discoverServerInProgressStatusIds(
+        baseUrl: String,
+        preferCloud: Boolean,
+        settings: AppSettings
+    ): List<String> {
+        val now = System.currentTimeMillis()
+        inProgressStatusCache[baseUrl]?.let { cached ->
+            if (now - cached.fetchedAtMs < METADATA_CACHE_TTL_MS) {
+                return cached.statusIds
+            }
+        }
+        val fetched = runCatching {
+            val apiVer = if (preferCloud) "3" else "2"
+            val req = Request.Builder()
+                .url("$baseUrl/rest/api/$apiVer/status")
+                .get()
+                .applyAuth(settings)
+                .build()
+            val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+            if (code !in 200..299) return@runCatching null
+            val arr = JsonParser.parseString(bodyStr).asJsonArray
+            val ids = mutableListOf<String>()
+            for (el in arr) {
+                if (!el.isJsonObject) continue
+                val obj = el.asJsonObject
+                val id = obj.takeString("id")?.trim().orEmpty()
+                if (id.isEmpty() || !id.all(Char::isDigit)) continue
+                val name = obj.takeString("name").orEmpty()
+                val catKey = obj.getAsJsonObject("statusCategory")?.takeString("key").orEmpty()
+                if (TicketStage.fromJiraStatus(name, catKey) == TicketStage.IN_PROGRESS) {
+                    ids.add(id)
+                }
+            }
+            ids.distinct()
+        }.getOrNull()
+
+        if (fetched != null) {
+            inProgressStatusCache[baseUrl] = CachedStatusIds(fetched, now)
+            return fetched
+        }
+        return inProgressStatusCache[baseUrl]?.statusIds ?: emptyList()
+    }
+
+    private fun discoverJsmActiveClientQueues(
+        baseUrl: String,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): List<DiscoveredJsmQueue> {
+        val allowedProjects = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+            .map { it.uppercase(Locale.ROOT) }
+            .toSet()
+        val cacheKey = "$baseUrl|${allowedProjects.sorted().joinToString(",")}"
+        val now = System.currentTimeMillis()
+        jsmQueuesCache[cacheKey]?.let { cached ->
+            if (now - cached.fetchedAtMs < METADATA_CACHE_TTL_MS) {
+                return cached.queues
+            }
+        }
+
+        val discovered = runCatching {
+            val sdReq = Request.Builder()
+                .url("$baseUrl/rest/servicedeskapi/servicedesk?limit=50")
+                .get()
+                .header("X-ExperimentalApi", "opt-in")
+                .applyAuth(settings)
+                .build()
+            val (sdCode, sdBody) = executeIdempotentCallWithRetry(settings, sdReq)
+            if (sdCode !in 200..299) {
+                if (sdCode == 404 || sdCode == 403 || sdCode == 401) {
+                    return@runCatching emptyList<DiscoveredJsmQueue>()
+                }
+                return@runCatching null
+            }
+
+            val sdValues = JsonParser.parseString(sdBody).asJsonObject.getAsJsonArray("values")
+                ?: return@runCatching emptyList<DiscoveredJsmQueue>()
+
+            val matchingDesks = mutableListOf<Pair<String, String>>()
+            for (el in sdValues) {
+                if (!el.isJsonObject) continue
+                val o = el.asJsonObject
+                val sdId = o.takeString("id")?.trim().orEmpty()
+                val projKey = o.takeString("projectKey")?.trim().orEmpty()
+                if (sdId.isEmpty()) continue
+                if (allowedProjects.isEmpty() || projKey.uppercase(Locale.ROOT) in allowedProjects) {
+                    matchingDesks.add(sdId to projKey)
+                }
+            }
+
+            val resultQueues = mutableListOf<DiscoveredJsmQueue>()
+            for ((sdId, projKey) in matchingDesks.take(3)) {
+                val qReq = Request.Builder()
+                    .url("$baseUrl/rest/servicedeskapi/servicedesk/${URLEncoder.encode(sdId, "UTF-8")}/queue?limit=50")
+                    .get()
+                    .header("X-ExperimentalApi", "opt-in")
+                    .applyAuth(settings)
+                    .build()
+                val (qCode, qBody) = executeIdempotentCallWithRetry(settings, qReq)
+                if (qCode !in 200..299) continue
+                val qValues = JsonParser.parseString(qBody).asJsonObject.getAsJsonArray("values") ?: continue
+                for (qEl in qValues) {
+                    if (!qEl.isJsonObject) continue
+                    val qObj = qEl.asJsonObject
+                    val qId = qObj.takeString("id")?.trim().orEmpty()
+                    val qName = qObj.takeString("name")?.trim().orEmpty()
+                    val qJql = qObj.takeString("jql")?.trim().orEmpty()
+                    if (qId.isNotEmpty() && TicketFilterEngine.isHumanActiveSupportQueueName(qName)) {
+                        resultQueues.add(
+                            DiscoveredJsmQueue(
+                                serviceDeskId = sdId,
+                                projectKey = projKey,
+                                queueId = qId,
+                                queueName = qName,
+                                rawJql = qJql
+                            )
+                        )
+                    }
+                }
+            }
+            // Prioritize "В работе" first so the main queue always runs first
+            resultQueues.sortedBy { q ->
+                if (q.queueName.trim().equals("В работе", ignoreCase = true)) 0 else 1
+            }.take(4)
+        }.getOrNull()
+
+        if (discovered != null) {
+            jsmQueuesCache[cacheKey] = CachedJsmQueues(discovered, now)
+            return discovered
+        }
+        return jsmQueuesCache[cacheKey]?.queues ?: emptyList()
+    }
+
+    private fun fetchIssuesFromJsmQueue(
+        baseUrl: String,
+        preferCloud: Boolean,
+        queue: DiscoveredJsmQueue,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): List<HelpdeskTicket> {
+        // Primary path: execute the queue's JQL via `/search` with `expand=names` for full custom phone fields
+        if (queue.rawJql.isNotBlank()) {
+            val scopedJql = TicketFilterEngine.scopeJsmQueueJql(queue.rawJql, queue.projectKey)
+            val viaJql = runCatching {
+                val json = executeSearchWithFallback(
+                    baseUrl = baseUrl,
+                    jql = scopedJql,
+                    maxResults = 60,
+                    preferCloud = preferCloud,
+                    settings = settings,
+                    fieldsSpec = "*all,-worklog",
+                    expandNames = true
+                )
+                JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
+            }.getOrNull()
+            if (viaJql != null) {
+                return viaJql
+            }
+        }
+
+        // Fallback path: evaluate queue directly via JSM `/queue/{queueId}/issue` and hydrate keys via `/search`
+        return runCatching {
+            val encodedSd = URLEncoder.encode(queue.serviceDeskId, "UTF-8")
+            val encodedQ = URLEncoder.encode(queue.queueId, "UTF-8")
+            val req = Request.Builder()
+                .url("$baseUrl/rest/servicedeskapi/servicedesk/$encodedSd/queue/$encodedQ/issue?limit=50")
+                .get()
+                .header("X-ExperimentalApi", "opt-in")
+                .applyAuth(settings)
+                .build()
+            val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+            if (code !in 200..299) return@runCatching emptyList()
+            val values = JsonParser.parseString(bodyStr).asJsonObject.getAsJsonArray("values")
+                ?: return@runCatching emptyList()
+            val keys = values.mapNotNull { el ->
+                if (el.isJsonObject) el.asJsonObject.takeString("key")?.trim()?.takeIf { it.isNotEmpty() } else null
+            }.distinct()
+            if (keys.isEmpty()) return@runCatching emptyList()
+
+            val keyJql = "key in (${keys.joinToString(", ") { "\"${it.replace("\"", "")}\"" }}) ORDER BY created DESC"
+            val hydratedJson = executeSearchWithFallback(
+                baseUrl = baseUrl,
+                jql = keyJql,
+                maxResults = keys.size.coerceAtLeast(10),
+                preferCloud = preferCloud,
+                settings = settings,
+                fieldsSpec = "*all,-worklog",
+                expandNames = true
+            )
+            JiraJsonParser.parseSearchResponse(hydratedJson, settings, filterSettings)
+        }.getOrDefault(emptyList())
     }
 
     private fun executeSearchWithFallback(
@@ -1847,52 +2129,61 @@ class JiraApiClient {
         filterSettings: FilterSettings,
         cachedRoomKey: String = ""
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val baseUrl = normalizeBaseUrl(settings.serverUrl)
-            val preferCloud = isCloudTarget(settings, baseUrl)
+        roomResolveMutex.withLock {
+            runCatching {
+                val baseUrl = normalizeBaseUrl(settings.serverUrl)
+                val preferCloud = isCloudTarget(settings, baseUrl)
 
-            // 1. Explicit room key configured manually in settings
-            val manualKey = settings.adminChatIssueKey.trim().uppercase(Locale.ROOT)
-            if (manualKey.isNotEmpty()) {
-                if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
-                    return@runCatching manualKey
-                } else {
-                    throw JiraApiException("Задача комнаты чата $manualKey не найдена или недоступна")
+                // 1. Explicit room key configured manually in settings
+                val manualKey = settings.adminChatIssueKey.trim().uppercase(Locale.ROOT)
+                if (manualKey.isNotEmpty()) {
+                    if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
+                        resolvedChatRoomCache[baseUrl] = manualKey
+                        return@runCatching manualKey
+                    } else {
+                        throw JiraApiException("Задача комнаты чата $manualKey не найдена или недоступна")
+                    }
                 }
-            }
 
-            // 2. Previously discovered room key cached locally
-            val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
-            if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
-                return@runCatching localCached
-            }
-
-            // 3. Search Jira for an existing shared Help-CSL Admin Chat room issue (oldest wins)
-            val searchQueries = listOf(
-                """summary ~ "${AdminChatCodec.ADMIN_CHAT_MARKER}" ORDER BY created ASC""",
-                """labels = "${AdminChatCodec.ADMIN_CHAT_LABEL}" ORDER BY created ASC"""
-            )
-            for (jql in searchQueries) {
-                val foundKey = runCatching {
-                    val json = executeSearchWithFallback(
-                        baseUrl = baseUrl,
-                        jql = jql,
-                        maxResults = 5,
-                        preferCloud = preferCloud,
-                        settings = settings,
-                        fieldsSpec = "key,summary,labels",
-                        expandNames = false
-                    )
-                    val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
-                    arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
-                }.getOrNull()
-                if (!foundKey.isNullOrBlank()) {
-                    return@runCatching foundKey.uppercase(Locale.ROOT)
+                // 2. Previously discovered room key cached locally or in-process
+                val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
+                    .ifEmpty { resolvedChatRoomCache[baseUrl].orEmpty() }
+                if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
+                    resolvedChatRoomCache[baseUrl] = localCached
+                    return@runCatching localCached
                 }
-            }
 
-            // 4. None exists yet -> automatically create the shared room issue and close it so it stays out of queues
-            createSharedAdminChatRoomIssue(baseUrl, preferCloud, settings, filterSettings)
+                // 3. Search Jira for an existing shared Help-CSL Admin Chat room issue (oldest wins)
+                val searchQueries = listOf(
+                    """summary ~ "${AdminChatCodec.ADMIN_CHAT_MARKER}" ORDER BY created ASC""",
+                    """labels = "${AdminChatCodec.ADMIN_CHAT_LABEL}" ORDER BY created ASC"""
+                )
+                for (jql in searchQueries) {
+                    val foundKey = runCatching {
+                        val json = executeSearchWithFallback(
+                            baseUrl = baseUrl,
+                            jql = jql,
+                            maxResults = 5,
+                            preferCloud = preferCloud,
+                            settings = settings,
+                            fieldsSpec = "key,summary,labels",
+                            expandNames = false
+                        )
+                        val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                        arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
+                    }.getOrNull()
+                    if (!foundKey.isNullOrBlank()) {
+                        val upper = foundKey.uppercase(Locale.ROOT)
+                        resolvedChatRoomCache[baseUrl] = upper
+                        return@runCatching upper
+                    }
+                }
+
+                // 4. None exists yet -> automatically create the shared room issue and close it so it stays out of queues
+                val created = createSharedAdminChatRoomIssue(baseUrl, preferCloud, settings, filterSettings)
+                resolvedChatRoomCache[baseUrl] = created
+                created
+            }
         }
     }
 
@@ -2711,47 +3002,55 @@ class JiraApiClient {
         filterSettings: FilterSettings,
         cachedRoomKey: String = ""
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val baseUrl = normalizeBaseUrl(settings.serverUrl)
-            val preferCloud = isCloudTarget(settings, baseUrl)
+        roomResolveMutex.withLock {
+            runCatching {
+                val baseUrl = normalizeBaseUrl(settings.serverUrl)
+                val preferCloud = isCloudTarget(settings, baseUrl)
 
-            val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
-            if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
-                return@runCatching localCached
-            }
-
-            val searchQueries = listOf(
-                """summary ~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}" ORDER BY created ASC""",
-                """labels = "${RepairEquipmentCodec.REPAIR_REGISTRY_LABEL}" ORDER BY created ASC"""
-            )
-            for (jql in searchQueries) {
-                val foundKey = runCatching {
-                    val json = executeSearchWithFallback(
-                        baseUrl = baseUrl,
-                        jql = jql,
-                        maxResults = 5,
-                        preferCloud = preferCloud,
-                        settings = settings,
-                        fieldsSpec = "key,summary,labels",
-                        expandNames = false
-                    )
-                    val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
-                    arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
-                }.getOrNull()
-                if (!foundKey.isNullOrBlank()) {
-                    return@runCatching foundKey.uppercase(Locale.ROOT)
+                val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
+                    .ifEmpty { resolvedRepairRoomCache[baseUrl].orEmpty() }
+                if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
+                    resolvedRepairRoomCache[baseUrl] = localCached
+                    return@runCatching localCached
                 }
-            }
 
-            createSharedSystemStorageIssue(
-                baseUrl = baseUrl,
-                preferCloud = preferCloud,
-                settings = settings,
-                filterSettings = filterSettings,
-                summaryText = RepairEquipmentCodec.REPAIR_REGISTRY_SUMMARY,
-                descriptionText = RepairEquipmentCodec.REPAIR_REGISTRY_DESCRIPTION,
-                labelText = RepairEquipmentCodec.REPAIR_REGISTRY_LABEL
-            )
+                val searchQueries = listOf(
+                    """summary ~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}" ORDER BY created ASC""",
+                    """labels = "${RepairEquipmentCodec.REPAIR_REGISTRY_LABEL}" ORDER BY created ASC"""
+                )
+                for (jql in searchQueries) {
+                    val foundKey = runCatching {
+                        val json = executeSearchWithFallback(
+                            baseUrl = baseUrl,
+                            jql = jql,
+                            maxResults = 5,
+                            preferCloud = preferCloud,
+                            settings = settings,
+                            fieldsSpec = "key,summary,labels",
+                            expandNames = false
+                        )
+                        val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                        arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
+                    }.getOrNull()
+                    if (!foundKey.isNullOrBlank()) {
+                        val upper = foundKey.uppercase(Locale.ROOT)
+                        resolvedRepairRoomCache[baseUrl] = upper
+                        return@runCatching upper
+                    }
+                }
+
+                val created = createSharedSystemStorageIssue(
+                    baseUrl = baseUrl,
+                    preferCloud = preferCloud,
+                    settings = settings,
+                    filterSettings = filterSettings,
+                    summaryText = RepairEquipmentCodec.REPAIR_REGISTRY_SUMMARY,
+                    descriptionText = RepairEquipmentCodec.REPAIR_REGISTRY_DESCRIPTION,
+                    labelText = RepairEquipmentCodec.REPAIR_REGISTRY_LABEL
+                )
+                resolvedRepairRoomCache[baseUrl] = created
+                created
+            }
         }
     }
 
@@ -3471,6 +3770,32 @@ class JiraApiClient {
         private val PHONE_FIELD_HINTS = listOf(
             "phone", "телефон", "тел.", "тел ", "мобил", "контакт", "номер связи", "mobile", "callback"
         )
+
+        private const val METADATA_CACHE_TTL_MS = 30L * 60_000L
+
+        private data class CachedStatusIds(
+            val statusIds: List<String>,
+            val fetchedAtMs: Long
+        )
+
+        private data class DiscoveredJsmQueue(
+            val serviceDeskId: String,
+            val projectKey: String,
+            val queueId: String,
+            val queueName: String,
+            val rawJql: String
+        )
+
+        private data class CachedJsmQueues(
+            val queues: List<DiscoveredJsmQueue>,
+            val fetchedAtMs: Long
+        )
+
+        private val inProgressStatusCache = ConcurrentHashMap<String, CachedStatusIds>()
+        private val jsmQueuesCache = ConcurrentHashMap<String, CachedJsmQueues>()
+        private val resolvedChatRoomCache = ConcurrentHashMap<String, String>()
+        private val resolvedRepairRoomCache = ConcurrentHashMap<String, String>()
+        private val roomResolveMutex = Mutex()
 
         private val jiraConnectionPool = okhttp3.ConnectionPool(8, 60, TimeUnit.SECONDS)
 

@@ -312,4 +312,127 @@ class ZabbixIntegrationTest {
             acceptThread.join(1000L)
         }
     }
+
+    @Test
+    fun jiraClientFindsInProgressAndJsmQueueTicketsDespiteAutomatedFlood() = runBlocking {
+        val running = AtomicBoolean(true)
+        val serverSocket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+
+        val acceptThread = thread(start = true, isDaemon = true) {
+            while (running.get()) {
+                val sock = runCatching { serverSocket.accept() }.getOrNull() ?: break
+                thread(start = true, isDaemon = true) {
+                    sock.use { clientSock ->
+                        clientSock.soTimeout = 3000
+                        val packet = readHttpPacket(clientSock.getInputStream()) ?: return@use
+                        val pathAndQuery = java.net.URLDecoder.decode(packet.requestLine, "UTF-8")
+                        val json = when {
+                            pathAndQuery.contains("/rest/api/2/status") -> """
+                                [
+                                  {"id":"10001","name":"Ожидание поддержки","statusCategory":{"key":"indeterminate"}},
+                                  {"id":"3","name":"В работе","statusCategory":{"key":"indeterminate"}},
+                                  {"id":"6","name":"Готово","statusCategory":{"key":"done"}}
+                                ]
+                            """.trimIndent()
+                            pathAndQuery.contains("/rest/servicedeskapi/servicedesk/1/queue") -> """
+                                {
+                                  "values": [
+                                    {"id":"10","name":"ALL","jql":"resolution = Unresolved"},
+                                    {"id":"12","name":"В работе","jql":"resolution = Unresolved AND reporter != zabbix"},
+                                    {"id":"15","name":"BACKUP ERRORS","jql":"summary ~ backup"},
+                                    {"id":"16","name":"Zabbix","jql":"reporter = zabbix"}
+                                  ]
+                                }
+                            """.trimIndent()
+                            pathAndQuery.contains("/rest/servicedeskapi/servicedesk") -> """
+                                {"values":[{"id":"1","projectKey":"CSL","projectName":"Helpdesk"}]}
+                            """.trimIndent()
+                            pathAndQuery.contains("status in (3)") -> """
+                                {
+                                  "issues": [
+                                    {
+                                      "id": "501",
+                                      "key": "CSL-501",
+                                      "fields": {
+                                        "summary": "Ремонт принтера",
+                                        "status": {"name":"В работе","statusCategory":{"key":"indeterminate"}},
+                                        "project": {"key":"CSL","name":"Helpdesk"},
+                                        "reporter": {"displayName":"ЖЭУ 9","name":"jeu9"},
+                                        "created": "2026-10-22T10:00:00.000+0300",
+                                        "updated": "2026-11-19T12:00:00.000+0300"
+                                      }
+                                    }
+                                  ]
+                                }
+                            """.trimIndent()
+                            pathAndQuery.contains("reporter != zabbix") -> """
+                                {
+                                  "issues": [
+                                    {
+                                      "id": "502",
+                                      "key": "CSL-502",
+                                      "fields": {
+                                        "summary": "Настройка 1С",
+                                        "status": {"name":"Ожидание поддержки","statusCategory":{"key":"indeterminate"}},
+                                        "project": {"key":"CSL","name":"Helpdesk"},
+                                        "reporter": {"displayName":"Молинтекс","name":"molintex"},
+                                        "created": "2026-11-19T09:00:00.000+0300",
+                                        "updated": "2026-11-19T09:00:00.000+0300"
+                                      }
+                                    }
+                                  ]
+                                }
+                            """.trimIndent()
+                            else -> """
+                                {
+                                  "issues": [
+                                    {
+                                      "id": "999",
+                                      "key": "CSL-999",
+                                      "fields": {
+                                        "summary": "BACKUP ERROR srv-01",
+                                        "status": {"name":"Ожидание поддержки","statusCategory":{"key":"indeterminate"}},
+                                        "project": {"key":"CSL","name":"Helpdesk"},
+                                        "reporter": {"displayName":"zabbix","name":"zabbix"},
+                                        "created": "2026-11-23T08:00:00.000+0300",
+                                        "updated": "2026-11-23T08:00:00.000+0300"
+                                      }
+                                    }
+                                  ]
+                                }
+                            """.trimIndent()
+                        }
+                        val out = clientSock.getOutputStream()
+                        val bytes = json.toByteArray(StandardCharsets.UTF_8)
+                        val hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+                        out.write(hdr.toByteArray(StandardCharsets.UTF_8))
+                        out.write(bytes)
+                        out.flush()
+                    }
+                }
+            }
+        }
+
+        try {
+            val port = serverSocket.localPort
+            val jira = JiraApiClient()
+            val settings = AppSettings(
+                serverUrl = "http://127.0.0.1:$port",
+                serverType = JiraServerType.SERVER_DC,
+                usernameOrEmail = "agent",
+                passwordOrToken = "secret"
+            )
+            val tickets = jira.fetchRecentTickets(settings, FilterSettings()).getOrThrow()
+            val inProgress = tickets.filter { it.isClientTicket && it.stage == com.helpdesk.jiraagent.model.TicketStage.IN_PROGRESS }
+            val newClient = tickets.filter { it.isClientTicket && it.stage == com.helpdesk.jiraagent.model.TicketStage.NEW }
+            assertEquals(1, inProgress.size)
+            assertEquals("CSL-501", inProgress.first().key)
+            assertEquals(1, newClient.size)
+            assertEquals("CSL-502", newClient.first().key)
+        } finally {
+            running.set(false)
+            runCatching { serverSocket.close() }
+            acceptThread.join(1000L)
+        }
+    }
 }

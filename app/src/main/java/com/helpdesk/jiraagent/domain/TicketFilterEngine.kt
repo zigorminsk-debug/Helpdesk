@@ -3,6 +3,8 @@ package com.helpdesk.jiraagent.domain
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.RepairEquipmentCodec
+import java.util.Locale
 
 data class FilterEvaluation(
     val isClientTicket: Boolean,
@@ -10,6 +12,24 @@ data class FilterEvaluation(
 )
 
 object TicketFilterEngine {
+
+    private val CLOSED_QUEUE_HINTS = listOf(
+        "готов", "решен", "закрыт", "выполн", "заверш", "отмен", "отклон",
+        "done", "closed", "resolved", "completed", "cancelled", "canceled"
+    )
+
+    private val NOISE_OR_NON_TICKET_QUEUE_HINTS = listOf(
+        "zabbix", "backup", "бэкап", "резервн", "raid", "monitoring", "мониторинг",
+        "alert", "prometheus", "grafana", "nagios", "cron", "chat", "чат",
+        "закуп", "назначенные мне", "assigned to me"
+    )
+
+    private val ACTIVE_SUPPORT_QUEUE_HINTS = listOf(
+        "в работе", "ожидан", "новые", "открыт", "очеред", "обращен", "заявк",
+        "инцидент", "поддержк", "ремонт", "заправ", "принтер", "техник", "клиент",
+        "свободн", "неназначен", "активн", "open", "in progress", "waiting",
+        "support", "queue", "triage", "unassigned", "incident", "service request", "helpdesk"
+    )
 
     /**
      * Builds the active (Новые + В работе) JQL query compatible with both Jira Server/DC and Jira Cloud.
@@ -26,6 +46,103 @@ object TicketFilterEngine {
         clauses.add("statusCategory != Done")
         val wherePart = clauses.joinToString(" AND ")
         return "$wherePart ORDER BY created DESC"
+    }
+
+    /**
+     * Builds a dedicated JQL query for tickets strictly in "В работе" (IN_PROGRESS) statuses
+     * using server-verified numeric status IDs, so active work-in-progress tickets (even weeks old)
+     * are never drowned out by thousands of automated Zabbix / Backup tickets sitting in initial status.
+     */
+    fun buildInProgressJql(
+        filter: FilterSettings,
+        inProgressStatusIds: List<String>
+    ): String? {
+        val cleanIds = inProgressStatusIds.map { it.trim() }.filter { it.isNotEmpty() && it.all(Char::isDigit) }.distinct()
+        if (cleanIds.isEmpty()) return null
+
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return null
+        }
+
+        val clauses = buildBaseClauses(filter).toMutableList()
+        clauses.add("status in (${cleanIds.joinToString(", ")})")
+        clauses.add("""summary !~ "${AdminChatCodec.ADMIN_CHAT_MARKER}"""")
+        clauses.add("""summary !~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}"""")
+        val wherePart = clauses.joinToString(" AND ")
+        return "$wherePart ORDER BY updated DESC"
+    }
+
+    /**
+     * Builds an active JQL query that pre-filters internal storage rooms and obvious monitoring/backup
+     * noise on the Jira server side so older client tickets in "Ожидание поддержки" are not pushed
+     * past maxResults when automated alerts flood the project.
+     */
+    fun buildNoiseFilteredActiveJql(filter: FilterSettings): String? {
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return null
+        }
+
+        val clauses = buildBaseClauses(filter).toMutableList()
+        clauses.add("statusCategory != Done")
+        clauses.add("""summary !~ "${AdminChatCodec.ADMIN_CHAT_MARKER}"""")
+        clauses.add("""summary !~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}"""")
+        if (filter.clientOnlyFilterEnabled) {
+            val allExcluded = (splitCsv(filter.excludedReporters) + splitCsv(filter.excludedLabelsAndKeywords))
+                .map { it.lowercase(Locale.ROOT) }
+            if (allExcluded.any { it.contains("zabbix") }) {
+                clauses.add("""summary !~ "zabbix"""")
+            }
+            clauses.add("""summary !~ "BACKUP ERROR"""")
+            clauses.add("""summary !~ "RAID PROBLEM"""")
+        }
+        val wherePart = clauses.joinToString(" AND ")
+        return "$wherePart ORDER BY created DESC"
+    }
+
+    /**
+     * Identifies active human client queues in Jira Service Management (e.g. "В работе", "Ремонт техники")
+     * while skipping unfiltered ("ALL"), closed ("Готовые Заявки", "Выполнено"), and automated ("Zabbix", "BACKUP ERRORS") queues.
+     */
+    fun isHumanActiveSupportQueueName(queueName: String): Boolean {
+        val norm = queueName.trim().lowercase(Locale.ROOT).replace('ё', 'е')
+        if (norm.isEmpty()) return false
+        if (norm == "all" || norm == "все" || norm == "все заявки" || norm == "all issues" || norm == "all open") {
+            return false
+        }
+        if (CLOSED_QUEUE_HINTS.any { norm.contains(it) }) {
+            return false
+        }
+        if (NOISE_OR_NON_TICKET_QUEUE_HINTS.any { norm.contains(it) }) {
+            return false
+        }
+        return ACTIVE_SUPPORT_QUEUE_HINTS.any { norm.contains(it) }
+    }
+
+    /**
+     * Scopes a Jira Service Management queue JQL string to [projectKey] (preserving operator precedence
+     * and existing ORDER BY clauses) so it can be executed safely via `/rest/api/2/search`.
+     */
+    fun scopeJsmQueueJql(rawQueueJql: String, projectKey: String): String {
+        val trimmed = rawQueueJql.trim()
+        val orderRegex = Regex("\\bORDER\\s+BY\\b", RegexOption.IGNORE_CASE)
+        val orderMatch = orderRegex.find(trimmed)
+        val wherePart = if (orderMatch != null) trimmed.substring(0, orderMatch.range.first).trim() else trimmed
+        val orderPart = if (orderMatch != null) trimmed.substring(orderMatch.range.first).trim() else "ORDER BY created DESC"
+
+        val cleanKey = projectKey.trim().replace("\"", "")
+        val scopedWhere = when {
+            cleanKey.isEmpty() -> wherePart
+            wherePart.isEmpty() -> """project = "$cleanKey""""
+            Regex("\\bproject\\b", RegexOption.IGNORE_CASE).containsMatchIn(wherePart) -> wherePart
+            else -> """project = "$cleanKey" AND ($wherePart)"""
+        }
+        return if (scopedWhere.isEmpty()) orderPart else "$scopedWhere $orderPart"
     }
 
     /**

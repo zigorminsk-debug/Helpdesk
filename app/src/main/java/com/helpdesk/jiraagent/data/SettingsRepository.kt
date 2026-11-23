@@ -587,13 +587,16 @@ class SettingsRepository private constructor(context: Context) {
         }
 
         val sortedChronologically = adjustedPolled.sortedBy { it.createdEpochMillis }
+        val nowMs = System.currentTimeMillis()
+        val maxAlertAgeMs = 24L * 3600_000L
 
         // Outside RB working days / hours (09:00–17:30): silence notifications & sound,
         // and defer brand-new client tickets until the next RB working window opens.
         if (!isNotificationWindowOpen) {
             for (ticket in sortedChronologically) {
                 val isUnseen = seenKeys.add(ticket.key)
-                if (isUnseen && ticket.isClientTicket && ticket.stage == TicketStage.NEW) {
+                val isFreshNew = ticket.createdEpochMillis <= 0L || (nowMs - ticket.createdEpochMillis) <= maxAlertAgeMs
+                if (isUnseen && ticket.isClientTicket && ticket.stage == TicketStage.NEW && isFreshNew) {
                     deferredKeys.add(ticket.key)
                 }
             }
@@ -606,8 +609,9 @@ class SettingsRepository private constructor(context: Context) {
         for (ticket in sortedChronologically) {
             val wasDeferred = deferredKeys.remove(ticket.key)
             val isUnseen = seenKeys.add(ticket.key)
-            if (ticket.isClientTicket && ticket.stage != TicketStage.CLOSED) {
-                if (isUnseen || (wasDeferred && ticket.stage == TicketStage.NEW)) {
+            val isFreshNew = ticket.createdEpochMillis <= 0L || (nowMs - ticket.createdEpochMillis) <= maxAlertAgeMs
+            if (ticket.isClientTicket && ticket.stage == TicketStage.NEW) {
+                if ((isUnseen && isFreshNew) || wasDeferred) {
                     newClientTickets.add(ticket)
                 }
             }

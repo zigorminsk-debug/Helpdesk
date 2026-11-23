@@ -181,4 +181,38 @@ class TicketFilterAndParserTest {
             TicketFilterEngine.buildClosedJql(filter)
         )
     }
+
+    @Test
+    fun selectsOnlyHumanActiveSupportJsmQueuesAndBuildsInProgressJql() {
+        assertTrue(TicketFilterEngine.isHumanActiveSupportQueueName("В работе"))
+        assertTrue(TicketFilterEngine.isHumanActiveSupportQueueName("Ремонт техники"))
+        assertTrue(TicketFilterEngine.isHumanActiveSupportQueueName("Заправки и ремонт принтеров"))
+
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("ALL"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Готовые Заявки"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("RAID PROBLEM"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("BACKUP ERRORS"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Zabbix"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Закупки"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Назначенные мне"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Решенные за неделю"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Chat"))
+        assertFalse(TicketFilterEngine.isHumanActiveSupportQueueName("Выполнено"))
+
+        val inProgJql = TicketFilterEngine.buildInProgressJql(
+            filter = FilterSettings(projectKeys = "CSL"),
+            inProgressStatusIds = listOf("3", "10002")
+        )
+        assertTrue(inProgJql!!.contains("status in (3, 10002)"))
+        assertTrue(inProgJql.endsWith("ORDER BY updated DESC"))
+
+        val scoped = TicketFilterEngine.scopeJsmQueueJql(
+            rawQueueJql = "resolution = Unresolved AND reporter != zabbix ORDER BY created DESC",
+            projectKey = "CSL"
+        )
+        assertEquals(
+            """project = "CSL" AND (resolution = Unresolved AND reporter != zabbix) ORDER BY created DESC""",
+            scoped
+        )
+    }
 }

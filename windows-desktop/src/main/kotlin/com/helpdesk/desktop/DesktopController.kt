@@ -894,10 +894,13 @@ class DesktopController(
                             baselineInitialized = true
                         } else {
                             val chronological = fetched.sortedBy { it.createdEpochMillis }
+                            val nowEpochMs = System.currentTimeMillis()
+                            val maxAlertAgeMs = 24L * 3600_000L
                             if (!allowAlertsNow) {
                                 for (t in chronological) {
                                     val isUnseen = notifiedTicketKeys.add(t.key)
-                                    if (isUnseen && t.isClientTicket && t.stage != TicketStage.CLOSED) {
+                                    val isFreshNew = t.createdEpochMillis <= 0L || (nowEpochMs - t.createdEpochMillis) <= maxAlertAgeMs
+                                    if (isUnseen && t.isClientTicket && t.stage == TicketStage.NEW && isFreshNew) {
                                         deferredTicketKeys.add(t.key)
                                     }
                                 }
@@ -905,8 +908,9 @@ class DesktopController(
                                 for (t in chronological) {
                                     val wasDeferred = deferredTicketKeys.remove(t.key)
                                     val isUnseen = notifiedTicketKeys.add(t.key)
-                                    if (t.isClientTicket && t.stage != TicketStage.CLOSED) {
-                                        if (isUnseen || (wasDeferred && t.stage == TicketStage.NEW)) {
+                                    val isFreshNew = t.createdEpochMillis <= 0L || (nowEpochMs - t.createdEpochMillis) <= maxAlertAgeMs
+                                    if (t.isClientTicket && t.stage == TicketStage.NEW) {
+                                        if ((isUnseen && isFreshNew) || wasDeferred) {
                                             freshNewClientTickets.add(t)
                                         }
                                     }
