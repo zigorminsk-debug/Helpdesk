@@ -15,6 +15,7 @@ import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.AppThemeMode
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
@@ -494,6 +495,7 @@ class SettingsRepository private constructor(context: Context) {
             .putString(KEY_PHONE_REGION, newSettings.phoneRegion.name)
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
+            .putString(KEY_THEME_MODE, newSettings.themeMode.name)
             .apply()
 
         if (serverChanged) {
@@ -1431,7 +1433,8 @@ class SettingsRepository private constructor(context: Context) {
             customPhoneFieldNames = prefs.getString(
                 KEY_CUSTOM_PHONE_FIELDS,
                 "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
-            ).orEmpty()
+            ).orEmpty(),
+            themeMode = enumOrDefault(prefs.getString(KEY_THEME_MODE, null), AppThemeMode.SYSTEM)
         )
     }
 
@@ -1583,6 +1586,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_PHONE_REGION = "phone_region"
         private const val KEY_CUSTOM_COUNTRY_CODE = "custom_country_code"
         private const val KEY_CUSTOM_PHONE_FIELDS = "custom_phone_fields"
+        private const val KEY_THEME_MODE = "app_theme_mode"
 
         private const val KEY_CLIENT_ONLY = "filter_client_only"
         private const val KEY_EXCLUDE_SUBTASKS = "filter_exclude_subtasks"

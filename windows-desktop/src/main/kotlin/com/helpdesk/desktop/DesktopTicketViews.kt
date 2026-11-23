@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -231,10 +232,10 @@ fun DesktopTicketsWorkspace(
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White,
+                        focusedContainerColor = DesktopColors.CardBg,
+                        unfocusedContainerColor = DesktopColors.CardBg,
                         focusedBorderColor = DesktopColors.CslOrange,
-                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                        unfocusedBorderColor = DesktopColors.BorderStrong
                     ),
                     leadingIcon = {
                         Text("🔎", fontSize = 14.sp)
@@ -245,20 +246,20 @@ fun DesktopTicketsWorkspace(
                             fontSize = 12.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            color = Color(0xFF64748B)
+                            color = DesktopColors.TextMuted
                         )
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             Surface(
                                 shape = CircleShape,
-                                color = Color(0xFFE2E8F0),
+                                color = DesktopColors.BorderSubtle,
                                 modifier = Modifier
                                     .size(22.dp)
                                     .clickable { searchQuery = "" }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Text("✕", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334155))
+                                    Text("✕", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = DesktopColors.TextSecondary)
                                 }
                             }
                         }
@@ -300,13 +301,14 @@ fun DesktopTicketsWorkspace(
                         modifier: Modifier = Modifier,
                         onClick: () -> Unit
                     ) {
+                        val activeBg = if (LocalDesktopDarkTheme.current) DesktopColors.CslOrange else DesktopColors.CslMidnight
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (active) DesktopColors.CslMidnight else Color.White,
-                            contentColor = if (active) Color.White else Color(0xFF1E293B),
+                            color = if (active) activeBg else DesktopColors.CardBg,
+                            contentColor = if (active) Color.White else DesktopColors.TextPrimary,
                             border = BorderStroke(
                                 1.dp,
-                                if (active) DesktopColors.CslMidnight else Color(0xFFCBD5E1)
+                                if (active) activeBg else DesktopColors.BorderStrong
                             ),
                             modifier = modifier
                                 .height(34.dp)
@@ -378,9 +380,10 @@ fun DesktopTicketsWorkspace(
                 Spacer(Modifier.height(8.dp))
 
                 // 3. Modern Segmented Queue Control
+                val closedTabAccent = if (LocalDesktopDarkTheme.current) DesktopColors.StatusGreen else Color(0xFF0F172A)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFFE2E8F0).copy(alpha = 0.7f),
+                    color = DesktopColors.BorderSubtle.copy(alpha = 0.75f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -392,13 +395,13 @@ fun DesktopTicketsWorkspace(
                         listOf(
                             Triple(TicketQueueTab.NEW, newCount, DesktopColors.CslOrange),
                             Triple(TicketQueueTab.IN_PROGRESS, inWorkCount, DesktopColors.StatusBlue),
-                            Triple(TicketQueueTab.CLOSED, closedCount, Color(0xFF0F172A)),
+                            Triple(TicketQueueTab.CLOSED, closedCount, closedTabAccent),
                             Triple(TicketQueueTab.SERVICE, serviceCount, Color(0xFF475569))
                         ).forEach { (tab, count, activeColor) ->
                             val selected = !showHabrPanel && queueTab == tab
                             Surface(
                                 color = if (selected) activeColor else Color.Transparent,
-                                contentColor = if (selected) Color.White else Color(0xFF334155),
+                                contentColor = if (selected) Color.White else DesktopColors.TextSecondary,
                                 shape = RoundedCornerShape(8.dp),
                                 shadowElevation = if (selected) 1.dp else 0.dp,
                                 modifier = Modifier
@@ -424,7 +427,7 @@ fun DesktopTicketsWorkspace(
                                         text = count.toString(),
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = if (selected) Color.White else Color(0xFF0F172A),
+                                        color = if (selected) Color.White else DesktopColors.TextPrimary,
                                         maxLines = 1,
                                         softWrap = false
                                     )
@@ -445,10 +448,10 @@ fun DesktopTicketsWorkspace(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (selected) accentColor.copy(alpha = 0.12f) else Color.White,
+                        color = if (selected) accentColor.copy(alpha = 0.16f) else DesktopColors.CardBg,
                         border = BorderStroke(
                             1.dp,
-                            if (selected) accentColor else Color(0xFFE2E8F0)
+                            if (selected) accentColor else DesktopColors.BorderSubtle
                         ),
                         modifier = modifier
                             .height(30.dp)
@@ -459,7 +462,7 @@ fun DesktopTicketsWorkspace(
                                 text = label,
                                 fontSize = 11.5.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selected) accentColor else Color(0xFF475569),
+                                color = if (selected) accentColor else DesktopColors.TextSecondary,
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -490,7 +493,7 @@ fun DesktopTicketsWorkspace(
                     }
                 } else if (!showHabrPanel && (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED)) {
                     val activeScope = if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope else closedScope
-                    val accent = if (queueTab == TicketQueueTab.IN_PROGRESS) DesktopColors.StatusBlue else Color(0xFF0F172A)
+                    val accent = if (queueTab == TicketQueueTab.IN_PROGRESS) DesktopColors.StatusBlue else closedTabAccent
                     Spacer(Modifier.height(7.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -554,7 +557,7 @@ fun DesktopTicketsWorkspace(
                 }
             }
 
-            VerticalDivider(thickness = 1.dp, color = Color(0xFFE2E8F0))
+            VerticalDivider(thickness = 1.dp, color = DesktopColors.BorderSubtle)
 
             // ================= RIGHT PANE: TICKET INSPECTOR OR IN-APP HABR READER =================
             Box(
@@ -684,8 +687,8 @@ private fun DesktopWelcomeOverviewPane(
     ) {
         Surface(
             shape = RoundedCornerShape(16.dp),
-            color = Color.White,
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            color = DesktopColors.CardBg,
+            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
             shadowElevation = 2.dp,
             modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
         ) {
@@ -703,12 +706,12 @@ private fun DesktopWelcomeOverviewPane(
                             text = "Рабочее место инженера Help-CSL",
                             fontSize = 19.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF0F172A)
+                            color = DesktopColors.TextPrimary
                         )
                         Text(
                             text = "Выберите заявку слева для работы со звонками, AnyDesk/RustDesk/RDP, комментариями и PDF-актами",
                             fontSize = 12.5.sp,
-                            color = Color(0xFF64748B)
+                            color = DesktopColors.TextMuted
                         )
                     }
                 }
@@ -728,8 +731,8 @@ private fun DesktopWelcomeOverviewPane(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = accent.copy(alpha = 0.08f),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
+                            color = accent.copy(alpha = 0.11f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.32f)),
                             modifier = modifier.clickable(onClick = onClick)
                         ) {
                             Column(
@@ -740,7 +743,7 @@ private fun DesktopWelcomeOverviewPane(
                                     text = title,
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF475569),
+                                    color = DesktopColors.TextSecondary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -771,7 +774,7 @@ private fun DesktopWelcomeOverviewPane(
                     KpiTile(
                         title = "Ждут >${staleThresholdMin}м",
                         count = staleNewCount,
-                        accent = if (staleNewCount > 0) DesktopColors.StatusRed else Color(0xFF64748B),
+                        accent = if (staleNewCount > 0) DesktopColors.StatusRed else DesktopColors.TextMuted,
                         modifier = Modifier.weight(1f),
                         onClick = { onJumpToQueue(TicketQueueTab.NEW, true) }
                     )
@@ -791,14 +794,14 @@ private fun DesktopWelcomeOverviewPane(
                             text = "Быстрый переход к активным заявкам:",
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF334155)
+                            color = DesktopColors.TextSecondary
                         )
                         previewTickets.forEach { t ->
                             val isWork = t.stage == TicketStage.IN_PROGRESS
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = Color(0xFFF8FAFC),
-                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                color = DesktopColors.SubtleBg,
+                                border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onOpenTicket(t.key) }
@@ -831,14 +834,14 @@ private fun DesktopWelcomeOverviewPane(
                                                 text = t.reporterName.ifBlank { "Клиент" },
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF0F172A),
+                                                color = DesktopColors.TextPrimary,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Text(
                                                 text = t.summary,
                                                 fontSize = 12.sp,
-                                                color = Color(0xFF475569),
+                                                color = DesktopColors.TextSecondary,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
@@ -898,14 +901,14 @@ private fun DesktopWelcomeOverviewPane(
 
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFFF8FAFC),
-                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    color = DesktopColors.SubtleBg,
+                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = "💡 Горячие клавиши: F5 — обновить · Ctrl+V — вставить скриншот буфера в комментарий · Перетащите файлы мышью в окно для прикрепления к заявке",
                         fontSize = 11.5.sp,
-                        color = Color(0xFF64748B),
+                        color = DesktopColors.TextMuted,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
@@ -936,7 +939,7 @@ private fun CompactDesktopTicketCard(
     }
 
     val stageAccent = when {
-        !ticket.isClientTicket -> Color(0xFF64748B)
+        !ticket.isClientTicket -> DesktopColors.TextMuted
         ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue
         ticket.stage == TicketStage.CLOSED -> DesktopColors.StatusGreen
         slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed
@@ -947,12 +950,12 @@ private fun CompactDesktopTicketCard(
         isSelected -> DesktopColors.CslOrange
         ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue.copy(alpha = 0.45f)
         slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed.copy(alpha = 0.42f)
-        else -> Color(0xFFE2E8F0)
+        else -> DesktopColors.BorderSubtle
     }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = if (isSelected) DesktopColors.CslOrangeContainer else Color.White,
+        color = if (isSelected) DesktopColors.CslOrangeContainer else DesktopColors.CardBg,
         border = BorderStroke(if (isSelected) 1.6.dp else 1.dp, borderColor),
         shadowElevation = if (isSelected) 2.dp else 0.5.dp,
         modifier = Modifier
@@ -985,7 +988,7 @@ private fun CompactDesktopTicketCard(
                         text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF0F172A),
+                        color = DesktopColors.TextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -998,7 +1001,7 @@ private fun CompactDesktopTicketCard(
                             SlaUrgency.OVERDUE -> DesktopColors.StatusRed
                         }
                         Surface(
-                            color = slaColor.copy(alpha = 0.13f),
+                            color = slaColor.copy(alpha = 0.16f),
                             shape = RoundedCornerShape(6.dp)
                         ) {
                             Text(
@@ -1034,7 +1037,7 @@ private fun CompactDesktopTicketCard(
                     text = ticket.summary,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFF334155),
+                    color = DesktopColors.TextSecondary,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1062,7 +1065,7 @@ private fun CompactDesktopTicketCard(
                         Text(
                             text = "· ${ticket.status}",
                             fontSize = 11.sp,
-                            color = Color(0xFF64748B),
+                            color = DesktopColors.TextMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1082,7 +1085,7 @@ private fun CompactDesktopTicketCard(
                             text = "👤 $eng",
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.Medium,
-                            color = Color(0xFF475569),
+                            color = DesktopColors.TextSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1879,54 +1882,63 @@ private fun DesktopTicketInspector(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(
-                            onClick = { WindowsExternalLaunchers.copyToClipboard(ticket.key) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("📋 ${ticket.key}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false)
-                        }
-                        if (ticket.webUrl.isNotBlank()) {
-                            OutlinedButton(
-                                onClick = { WindowsExternalLaunchers.openBrowser(ticket.webUrl) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Text("🌐 Открыть в Jira ↗", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                            Text(
+                                text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            DisableSelection {
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            WindowsExternalLaunchers.copyToClipboard(ticket.key)
+                                            controller.showStatusMessage("Номер ${ticket.key} скопирован в буфер")
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("📋 ${ticket.key}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false)
+                                    }
+                                    if (ticket.webUrl.isNotBlank()) {
+                                        OutlinedButton(
+                                            onClick = { WindowsExternalLaunchers.openBrowser(ticket.webUrl) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("🌐 Открыть в Jira ↗", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                        }
+                                    }
+                                }
                             }
                         }
+
+                        Text(
+                            text = ticket.summary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                            Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Text("Приоритет: ${ticket.priority}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                            Text("Исполнитель: ${ticket.assigneeName ?: "Не назначен"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
                     }
-                }
-
-                Text(
-                    text = ticket.summary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                    Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                    Text("Приоритет: ${ticket.priority}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                    Text("Исполнитель: ${ticket.assigneeName ?: "Не назначен"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -2083,51 +2095,75 @@ private fun DesktopTicketInspector(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("📞 Связь с клиентом (SIP-телефония и мессенджеры)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    ticket.phoneNumbers.forEach { phone ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "${phone.formattedDisplay} (${phone.e164})",
-                                fontWeight = FontWeight.SemiBold,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilledTonalButton(
-                                    onClick = { WindowsExternalLaunchers.dialSipOrTel(phone.e164) },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) { Text("📞 SIP звонок", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.openTelegram(phone.e164) },
-                                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
-                                ) { Text("Telegram", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.openViber(phone.e164) },
-                                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
-                                ) { Text("Viber", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.openWhatsApp(phone.e164) },
-                                    contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
-                                ) { Text("WhatsApp", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.copyToClipboard(phone.e164) },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                                ) { Text("📋", fontSize = 11.5.sp) }
+                SelectionContainer {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("📞 Связь с клиентом (SIP-телефония и мессенджеры)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        ticket.phoneNumbers.forEach { phone ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "${phone.formattedDisplay} (${phone.e164})",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp
+                                )
+                                DisableSelection {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        FilledTonalButton(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.dialSipOrTel(phone.e164)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("📞 SIP звонок", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.openTelegram(phone.e164)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                                        ) { Text("Telegram", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.openViber(phone.e164)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                                        ) { Text("Viber", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.openWhatsApp(phone.e164)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                                        ) { Text("WhatsApp", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = {
+                                                WindowsExternalLaunchers.copyToClipboard(phone.e164)
+                                                controller.showStatusMessage("Номер ${phone.e164} скопирован в буфер")
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                        ) { Text("📋", fontSize = 11.5.sp) }
+                                    }
+                                }
                             }
                         }
-                    }
-                    ticket.telegramHandles.orEmpty().forEach { handle ->
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("✈ Telegram ник: @$handle", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-                            OutlinedButton(
-                                onClick = { WindowsExternalLaunchers.openTelegram("", handle) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                            ) { Text("Открыть чат @$handle", fontSize = 11.5.sp) }
+                        ticket.telegramHandles.orEmpty().forEach { handle ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("✈ Telegram ник: @$handle", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                                DisableSelection {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val msg = WindowsExternalLaunchers.openTelegram("", handle)
+                                            controller.showStatusMessage(msg)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) { Text("Открыть чат @$handle", fontSize = 11.5.sp) }
+                                }
+                            }
                         }
                     }
                 }
@@ -2141,133 +2177,157 @@ private fun DesktopTicketInspector(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.4f))
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "🛠 Инженерная панель быстрого подключения Windows",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = DesktopColors.CslOrange
-                    )
+                SelectionContainer {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "🛠 Инженерная панель быстрого подключения Windows",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = DesktopColors.CslOrange
+                        )
 
-                    entities.remoteIds.forEach { remote ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "🖥 ${remote.kind.label}: ${remote.formattedId}",
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Button(
-                                    onClick = { WindowsExternalLaunchers.launchAnyDesk(remote.normalizedId) },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-                                ) { Text("⚡ AnyDesk", fontSize = 11.5.sp) }
-                                FilledTonalButton(
-                                    onClick = { WindowsExternalLaunchers.launchRustDesk(remote.normalizedId) },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) { Text("🦀 RustDesk", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.copyToClipboard(remote.normalizedId) },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                                ) { Text("📋 Копия", fontSize = 11.5.sp) }
+                        entities.remoteIds.forEach { remote ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "🖥 ${remote.kind.label}: ${remote.formattedId}",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                DisableSelection {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Button(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.launchAnyDesk(remote.normalizedId)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                        ) { Text("⚡ AnyDesk", fontSize = 11.5.sp) }
+                                        FilledTonalButton(
+                                            onClick = {
+                                                val msg = WindowsExternalLaunchers.launchRustDesk(remote.normalizedId)
+                                                controller.showStatusMessage(msg)
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("🦀 RustDesk", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = {
+                                                WindowsExternalLaunchers.copyToClipboard(remote.normalizedId)
+                                                controller.showStatusMessage("ID ${remote.normalizedId} скопирован в буфер")
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                        ) { Text("📋 Копия", fontSize = 11.5.sp) }
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    entities.networkTargets.forEach { net ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("🌐 Хост / IP: ${net.host}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilledTonalButton(
-                                    onClick = { WindowsExternalLaunchers.launchRdp(net.host) },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) { Text("🖥 RDP (mstsc)", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { WindowsExternalLaunchers.launchSshTerminal(net.host) },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) { Text("⌨ SSH", fontSize = 11.5.sp) }
-                                OutlinedButton(
-                                    onClick = { controller.runHostDiagnostics(net.host) },
-                                    enabled = !state.isRunningDiagnostics,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) { Text("📡 Диагностика", fontSize = 11.5.sp) }
+                        entities.networkTargets.forEach { net ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("🌐 Хост / IP: ${net.host}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                                DisableSelection {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        FilledTonalButton(
+                                            onClick = { WindowsExternalLaunchers.launchRdp(net.host) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("🖥 RDP (mstsc)", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = { WindowsExternalLaunchers.launchSshTerminal(net.host) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("⌨ SSH", fontSize = 11.5.sp) }
+                                        OutlinedButton(
+                                            onClick = { controller.runHostDiagnostics(net.host) },
+                                            enabled = !state.isRunningDiagnostics,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("📡 Диагностика", fontSize = 11.5.sp) }
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    if (entities.macAddresses.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            entities.macAddresses.forEach { mac ->
-                                AssistChip(
-                                    onClick = { WindowsExternalLaunchers.copyToClipboard(mac.normalizedMac) },
-                                    label = {
-                                        Text(
-                                            "MAC ${mac.normalizedMac} · ${mac.vendorName ?: "Неизвестный OUI"}",
-                                            fontSize = 11.sp
+                        if (entities.macAddresses.isNotEmpty()) {
+                            DisableSelection {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    entities.macAddresses.forEach { mac ->
+                                        AssistChip(
+                                            onClick = {
+                                                WindowsExternalLaunchers.copyToClipboard(mac.normalizedMac)
+                                                controller.showStatusMessage("MAC ${mac.normalizedMac} скопирован в буфер")
+                                            },
+                                            label = {
+                                                Text(
+                                                    "MAC ${mac.normalizedMac} · ${mac.vendorName ?: "Неизвестный OUI"}",
+                                                    fontSize = 11.sp
+                                                )
+                                            }
                                         )
                                     }
-                                )
+                                }
                             }
                         }
-                    }
 
-                    entities.streetAddresses.forEach { addr ->
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("📍 ${addr.displayAddress}", fontSize = 12.sp)
-                            TextButton(
-                                onClick = {
-                                    val encoded = java.net.URLEncoder.encode(addr.searchQuery, "UTF-8")
-                                    WindowsExternalLaunchers.openBrowser("https://yandex.by/maps/?text=$encoded")
-                                }
-                            ) { Text("Открыть Яндекс.Карты ↗", fontSize = 11.5.sp) }
-                        }
-                    }
-
-                    state.diagnosticReport?.let { rep ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    "Отчёт диагностики: ${rep.targetHost} (${rep.resolvedIp ?: "DNS не разрешён"})",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
-                                Text(
-                                    "ICMP/TCP доступность: ${if (rep.isHostAlive) "ДОСТУПЕН (${rep.icmpLatencyMs ?: "—"} мс)" else "НЕДОСТУПЕН"}",
-                                    fontSize = 11.5.sp
-                                )
-                                val openPorts = rep.portStatuses.filter { it.isOpen }
-                                    .joinToString(", ") { "${it.port}/${it.serviceName} (${it.latencyMs}мс)" }
-                                Text("Открытые TCP-порты: ${openPorts.ifBlank { "нет открытых из стандартного списка" }}", fontSize = 11.5.sp)
-                                rep.sslCertificate?.let { ssl ->
-                                    Text("SSL сертификат: ${ssl.subjectCn}, истекает ${ssl.expiresFormatted} (${ssl.daysRemaining} дн.)", fontSize = 11.5.sp)
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                OutlinedButton(
-                                    onClick = {
-                                        val formatted = QuickReplyTemplates.formatDiagnosticReportForComment(rep)
-                                        commentDraft = if (commentDraft.isBlank()) {
-                                            formatted
-                                        } else {
-                                            "${commentDraft.trimEnd()}\n\n$formatted"
+                        entities.streetAddresses.forEach { addr ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("📍 ${addr.displayAddress}", fontSize = 12.sp)
+                                DisableSelection {
+                                    TextButton(
+                                        onClick = {
+                                            val encoded = java.net.URLEncoder.encode(addr.searchQuery, "UTF-8")
+                                            WindowsExternalLaunchers.openBrowser("https://yandex.by/maps/?text=$encoded")
                                         }
-                                        internalComment = true
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text("📋 Вставить отчёт в комментарий (внутр. заметка)", fontSize = 11.5.sp)
+                                    ) { Text("Открыть Яндекс.Карты ↗", fontSize = 11.5.sp) }
+                                }
+                            }
+                        }
+
+                        state.diagnosticReport?.let { rep ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(
+                                        "Отчёт диагностики: ${rep.targetHost} (${rep.resolvedIp ?: "DNS не разрешён"})",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        "ICMP/TCP доступность: ${if (rep.isHostAlive) "ДОСТУПЕН (${rep.icmpLatencyMs ?: "—"} мс)" else "НЕДОСТУПЕН"}",
+                                        fontSize = 11.5.sp
+                                    )
+                                    val openPorts = rep.portStatuses.filter { it.isOpen }
+                                        .joinToString(", ") { "${it.port}/${it.serviceName} (${it.latencyMs}мс)" }
+                                    Text("Открытые TCP-порты: ${openPorts.ifBlank { "нет открытых из стандартного списка" }}", fontSize = 11.5.sp)
+                                    rep.sslCertificate?.let { ssl ->
+                                        Text("SSL сертификат: ${ssl.subjectCn}, истекает ${ssl.expiresFormatted} (${ssl.daysRemaining} дн.)", fontSize = 11.5.sp)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    DisableSelection {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val formatted = QuickReplyTemplates.formatDiagnosticReportForComment(rep)
+                                                commentDraft = if (commentDraft.isBlank()) {
+                                                    formatted
+                                                } else {
+                                                    "${commentDraft.trimEnd()}\n\n$formatted"
+                                                }
+                                                internalComment = true
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("📋 Вставить отчёт в комментарий (внутр. заметка)", fontSize = 11.5.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2283,12 +2343,16 @@ private fun DesktopTicketInspector(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("📝 Описание обращения", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                Text(
-                    text = ticket.description.ifBlank { "Описание не указано." },
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("📝 Описание обращения", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                        Text(
+                            text = ticket.description.ifBlank { "Описание не указано." },
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -2512,24 +2576,28 @@ private fun DesktopTicketInspector(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("💬 Комментарии (${ticket.comments.size})", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("💬 Комментарии (${ticket.comments.size})", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
 
-                ticket.comments.forEach { c ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(9.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        ticket.comments.forEach { c ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(c.author, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = DesktopColors.CslOrange)
-                                Text(c.createdIso.take(16).replace('T', ' '), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Column(modifier = Modifier.padding(9.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(c.author, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = DesktopColors.CslOrange)
+                                        Text(c.createdIso.take(16).replace('T', ' '), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(c.body, fontSize = 12.5.sp)
+                                }
                             }
-                            Spacer(Modifier.height(3.dp))
-                            Text(c.body, fontSize = 12.5.sp)
                         }
                     }
                 }
@@ -3137,9 +3205,11 @@ private fun SerialArchiveSearchDialog(
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.fillMaxWidth().clickable { onOpenTicket(t.key) }
                         ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text("${t.reporterName} · ${t.key}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text(t.summary, fontSize = 12.sp, maxLines = 2)
+                            SelectionContainer {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("${t.reporterName} · ${t.key}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(t.summary, fontSize = 12.sp, maxLines = 2)
+                                }
                             }
                         }
                     }
@@ -3173,10 +3243,12 @@ private fun PostponedTicketsDialog(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("${item.reporterDisplayName.ifBlank { "Клиент" }} (исх. ${item.originalKey})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text(item.summary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Возврат: ${item.scheduledDisplay}", fontSize = 11.sp, color = DesktopColors.CslOrange)
+                            SelectionContainer(modifier = Modifier.weight(1f)) {
+                                Column {
+                                    Text("${item.reporterDisplayName.ifBlank { "Клиент" }} (исх. ${item.originalKey})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(item.summary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("Возврат: ${item.scheduledDisplay}", fontSize = 11.sp, color = DesktopColors.CslOrange)
+                                }
                             }
                             TextButton(onClick = { onCancelItem(item) }) {
                                 Text("Отменить", color = DesktopColors.StatusRed)
@@ -3216,46 +3288,48 @@ private fun ClientHistoryTicketRow(
             .clip(RoundedCornerShape(7.dp))
             .clickable(onClick = onClick)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 9.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        SelectionContainer {
             Row(
-                modifier = Modifier.weight(1f).padding(end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 9.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = prev.key,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    color = DesktopColors.CslOrange
-                )
-                Text(
-                    text = prev.summary,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            val rightMeta = buildString {
-                if (dateLabel.isNotEmpty()) {
-                    append(dateLabel)
-                    append(" · ")
+                Row(
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = prev.key,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = DesktopColors.CslOrange
+                    )
+                    Text(
+                        text = prev.summary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
-                append(prev.status)
+                val rightMeta = buildString {
+                    if (dateLabel.isNotEmpty()) {
+                        append(dateLabel)
+                        append(" · ")
+                    }
+                    append(prev.status)
+                }
+                Text(
+                    text = rightMeta,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
             }
-            Text(
-                text = rightMeta,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
         }
     }
 }

@@ -91,6 +91,7 @@ import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.AppThemeMode
 import com.helpdesk.jiraagent.model.AuthType
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
@@ -250,6 +251,42 @@ fun ServerSettingsScreen(
                 Icon(Icons.Default.QrCode2, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Перенос QR", maxLines = 1, softWrap = false, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // 0a. Theme Mode Selector Card (System / Light / Dark)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "🌓 Тема оформления интерфейса",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AppThemeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = draft.themeMode == mode,
+                            onClick = {
+                                val updated = draft.copy(themeMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = {
+                                Text(mode.title, maxLines = 1, softWrap = false)
+                            }
+                        )
+                    }
+                }
             }
         }
 

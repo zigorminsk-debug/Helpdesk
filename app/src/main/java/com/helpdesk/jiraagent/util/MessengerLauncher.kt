@@ -1,6 +1,8 @@
 package com.helpdesk.jiraagent.util
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -14,8 +16,17 @@ enum class MessengerApp(val label: String) {
 
 object MessengerLauncher {
 
+    private val TELEGRAM_PACKAGES = listOf(
+        "org.telegram.messenger",
+        "org.telegram.messenger.web",
+        "org.thunderdog.challegram"
+    )
+    private val VIBER_PACKAGES = listOf("com.viber.voip")
+    private val WHATSAPP_PACKAGES = listOf("com.whatsapp", "com.whatsapp.w4b")
+
     /**
-     * Opens the selected messenger directly on the chat screen with [phoneE164] (e.g. "+375291234567").
+     * Opens the selected messenger directly on the chat screen with [phoneE164] (e.g. "+375291234567")
+     * without falling back to opening web URLs in a browser.
      */
     fun openChatByPhone(context: Context, app: MessengerApp, phoneE164: String) {
         val digits = phoneE164.filter { it.isDigit() }
@@ -26,27 +37,33 @@ object MessengerLauncher {
 
         when (app) {
             MessengerApp.TELEGRAM -> {
-                val opened = tryLaunchUri(context, "tg://resolve?phone=$digits") ||
-                    tryLaunchUri(context, "https://t.me/+$digits")
+                val uri = "tg://resolve?phone=$digits"
+                val opened = tryLaunchUriWithPackages(context, uri, TELEGRAM_PACKAGES) ||
+                    tryLaunchUri(context, uri)
                 if (!opened) {
-                    Toast.makeText(context, "Не удалось открыть Telegram", Toast.LENGTH_SHORT).show()
+                    copyPhoneFallback(context, "+$digits")
+                    Toast.makeText(context, "Приложение Telegram не установлено (номер +$digits скопирован)", Toast.LENGTH_SHORT).show()
                 }
             }
 
             MessengerApp.VIBER -> {
-                val opened = tryLaunchUri(context, "viber://chat?number=%2B$digits") ||
+                val opened = tryLaunchUriWithPackages(context, "viber://chat?number=%2B$digits", VIBER_PACKAGES) ||
+                    tryLaunchUri(context, "viber://chat?number=%2B$digits") ||
                     tryLaunchUri(context, "viber://contact?number=%2B$digits") ||
                     tryLaunchUri(context, "viber://add?number=$digits")
                 if (!opened) {
-                    Toast.makeText(context, "Приложение Viber не установлено", Toast.LENGTH_SHORT).show()
+                    copyPhoneFallback(context, "+$digits")
+                    Toast.makeText(context, "Приложение Viber не установлено (номер +$digits скопирован)", Toast.LENGTH_SHORT).show()
                 }
             }
 
             MessengerApp.WHATSAPP -> {
-                val opened = tryLaunchUri(context, "whatsapp://send?phone=$digits") ||
-                    tryLaunchUri(context, "https://wa.me/$digits")
+                val uri = "whatsapp://send?phone=$digits"
+                val opened = tryLaunchUriWithPackages(context, uri, WHATSAPP_PACKAGES) ||
+                    tryLaunchUri(context, uri)
                 if (!opened) {
-                    Toast.makeText(context, "Не удалось открыть WhatsApp", Toast.LENGTH_SHORT).show()
+                    copyPhoneFallback(context, "+$digits")
+                    Toast.makeText(context, "Приложение WhatsApp не установлено (номер +$digits скопирован)", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -80,11 +97,30 @@ object MessengerLauncher {
             .trim('/')
         if (clean.isEmpty()) return
 
-        val opened = tryLaunchUri(context, "tg://resolve?domain=$clean") ||
-            tryLaunchUri(context, "https://t.me/$clean")
+        val uri = "tg://resolve?domain=$clean"
+        val opened = tryLaunchUriWithPackages(context, uri, TELEGRAM_PACKAGES) ||
+            tryLaunchUri(context, uri)
         if (!opened) {
-            Toast.makeText(context, "Не удалось открыть Telegram (@$clean)", Toast.LENGTH_SHORT).show()
+            copyPhoneFallback(context, "@$clean")
+            Toast.makeText(context, "Приложение Telegram не установлено (@$clean скопирован)", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun tryLaunchUriWithPackages(context: Context, uriString: String, packages: List<String>): Boolean {
+        val parsed = Uri.parse(uriString)
+        for (pkg in packages) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                return true
+            } catch (_: Exception) {
+                // Try next package
+            }
+        }
+        return false
     }
 
     private fun tryLaunchUri(context: Context, uriString: String): Boolean {
@@ -98,6 +134,13 @@ object MessengerLauncher {
             false
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun copyPhoneFallback(context: Context, value: String) {
+        runCatching {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            cm?.setPrimaryClip(ClipData.newPlainText("Help-CSL Contact", value))
         }
     }
 }

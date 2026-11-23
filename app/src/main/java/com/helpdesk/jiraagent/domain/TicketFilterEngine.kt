@@ -125,6 +125,148 @@ object TicketFilterEngine {
     }
 
     /**
+     * Identifies closed human client queues in Jira Service Management (e.g. "Готовые Заявки", "Закрытые", "Выполнено")
+     * while skipping automated monitoring/backup queues.
+     */
+    fun isClosedHumanQueueName(queueName: String): Boolean {
+        val norm = queueName.trim().lowercase(Locale.ROOT).replace('ё', 'е')
+        if (norm.isEmpty()) return false
+        if (NOISE_OR_NON_TICKET_QUEUE_HINTS.any { norm.contains(it) }) {
+            return false
+        }
+        return CLOSED_QUEUE_HINTS.any { norm.contains(it) }
+    }
+
+    /**
+     * Identifies automated monitoring / backup / infrastructure queues in Jira Service Management
+     * (e.g. "Zabbix", "BACKUP ERRORS", "RAID PROBLEMS") for populating the "Сервисные" tab.
+     */
+    fun isAutomatedServiceQueueName(queueName: String): Boolean {
+        val norm = queueName.trim().lowercase(Locale.ROOT).replace('ё', 'е')
+        if (norm.isEmpty()) return false
+        if (norm.contains("chat") || norm.contains("чат") ||
+            norm.contains("назначенные мне") || norm.contains("assigned to me") ||
+            norm.contains("закуп")
+        ) {
+            return false
+        }
+        return listOf(
+            "zabbix", "backup", "бэкап", "резервн", "raid",
+            "monitoring", "мониторинг", "alert", "prometheus", "grafana", "nagios"
+        ).any { norm.contains(it) }
+    }
+
+    /**
+     * Builds locale-safe candidate active JQL queries (ordered best-first) so Russian-locale
+     * Jira Server/DC instances (where `statusCategory != Done` returns HTTP 400 because
+     * `Done` is localized as `Готово`) always succeed via numeric status IDs or `resolution = Unresolved`.
+     */
+    fun buildLocaleSafeActiveJqlCandidates(
+        filter: FilterSettings,
+        doneStatusIds: List<String> = emptyList(),
+        fallbackProjectKeys: List<String> = emptyList(),
+        excludeNoise: Boolean = false
+    ): List<String> {
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return listOf(buildJql(filter))
+        }
+
+        val base = buildBaseClausesWithFallbackProjects(filter, fallbackProjectKeys).toMutableList()
+        base.add("""summary !~ "${AdminChatCodec.ADMIN_CHAT_MARKER}"""")
+        base.add("""summary !~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}"""")
+        if (excludeNoise && filter.clientOnlyFilterEnabled) {
+            val allExcluded = (splitCsv(filter.excludedReporters) + splitCsv(filter.excludedLabelsAndKeywords))
+                .map { it.lowercase(Locale.ROOT) }
+            if (allExcluded.any { it.contains("zabbix") }) {
+                base.add("""summary !~ "zabbix"""")
+            }
+            base.add("""summary !~ "BACKUP ERROR"""")
+            base.add("""summary !~ "RAID PROBLEM"""")
+        }
+
+        val cleanDoneIds = doneStatusIds.map { it.trim() }.filter { it.isNotEmpty() && it.all(Char::isDigit) }.distinct()
+        val statusConds = buildList {
+            if (cleanDoneIds.isNotEmpty()) {
+                add("status not in (${cleanDoneIds.joinToString(", ")})")
+            }
+            add("statusCategory != 3")
+            add("resolution = Unresolved")
+            add("statusCategory != Done")
+        }
+        return statusConds.map { cond ->
+            val clauses = base + cond
+            "${clauses.joinToString(" AND ")} ORDER BY created DESC"
+        }
+    }
+
+    /**
+     * Builds locale-safe candidate closed JQL queries (ordered best-first) for the "Закрытые" and "Сервисные" tabs.
+     * Works on Russian Jira Server/DC (`status in (<numeric done IDs>)` / `statusCategory = 3` / `resolution is not EMPTY`)
+     * as well as English Jira Server/DC and Jira Cloud (`statusCategory = Done`).
+     */
+    fun buildLocaleSafeClosedJqlCandidates(
+        filter: FilterSettings,
+        doneStatusIds: List<String> = emptyList(),
+        fallbackProjectKeys: List<String> = emptyList(),
+        excludeZabbixReporter: Boolean = false
+    ): List<String> {
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.contains("ORDER BY", ignoreCase = true) ||
+            customTrimmed.contains("statusCategory", ignoreCase = true)
+        ) {
+            return emptyList()
+        }
+
+        val base = buildBaseClausesWithFallbackProjects(filter, fallbackProjectKeys).toMutableList()
+        base.add("""summary !~ "${AdminChatCodec.ADMIN_CHAT_MARKER}"""")
+        base.add("""summary !~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}"""")
+        if (excludeZabbixReporter && filter.clientOnlyFilterEnabled) {
+            val excludedSenders = splitCsv(filter.excludedReporters).map { it.lowercase(Locale.ROOT) }
+            if (excludedSenders.any { it == "zabbix" }) {
+                base.add("""(reporter is EMPTY OR reporter != "zabbix")""")
+            }
+        }
+
+        val cleanDoneIds = doneStatusIds.map { it.trim() }.filter { it.isNotEmpty() && it.all(Char::isDigit) }.distinct()
+        val statusConds = buildList {
+            if (cleanDoneIds.isNotEmpty()) {
+                add("status in (${cleanDoneIds.joinToString(", ")})")
+            }
+            add("statusCategory = 3")
+            add("resolution is not EMPTY")
+            add("statusCategory = Done")
+        }
+        return statusConds.map { cond ->
+            val clauses = base + cond
+            "${clauses.joinToString(" AND ")} ORDER BY updated DESC"
+        }
+    }
+
+    private fun buildBaseClausesWithFallbackProjects(
+        filter: FilterSettings,
+        fallbackProjectKeys: List<String>
+    ): List<String> {
+        val explicitProjects = splitCsv(filter.projectKeys)
+        if (explicitProjects.isNotEmpty()) {
+            return buildBaseClauses(filter)
+        }
+        val clauses = mutableListOf<String>()
+        val cleanFallback = fallbackProjectKeys.map { it.trim().replace("\"", "") }.filter { it.isNotEmpty() }.distinct()
+        if (cleanFallback.isNotEmpty()) {
+            val quoted = cleanFallback.joinToString(", ") { "\"$it\"" }
+            clauses.add("project in ($quoted)")
+        }
+        val customTrimmed = filter.customJqlCondition.trim()
+        if (customTrimmed.isNotEmpty()) {
+            clauses.add("($customTrimmed)")
+        }
+        return clauses
+    }
+
+    /**
      * Scopes a Jira Service Management queue JQL string to [projectKey] (preserving operator precedence
      * and existing ORDER BY clauses) so it can be executed safely via `/rest/api/2/search`.
      */

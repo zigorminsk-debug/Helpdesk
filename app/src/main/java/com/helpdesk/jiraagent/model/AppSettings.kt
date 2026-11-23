@@ -80,6 +80,12 @@ enum class TtsReadoutMode(val title: String, val subtitle: String) {
     ALWAYS("Всегда (в рабочие часы)", "Озвучивать новые заявки и на динамике, и в гарнитуре")
 }
 
+enum class AppThemeMode(val title: String) {
+    SYSTEM("Системная"),
+    LIGHT("☀️ Светлая"),
+    DARK("🌙 Тёмная")
+}
+
 data class AppSettings(
     val serverUrl: String = "",
     val confluenceUrl: String = DEFAULT_CONFLUENCE_URL,
@@ -119,7 +125,8 @@ data class AppSettings(
     val biometricLockEnabled: Boolean = false,
     val phoneRegion: PhoneRegion = PhoneRegion.AUTO_BY_RU,
     val customCountryCode: String = "+375",
-    val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
+    val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile",
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM
 ) {
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&

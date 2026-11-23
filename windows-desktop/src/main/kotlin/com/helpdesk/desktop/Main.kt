@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -216,8 +217,8 @@ fun main(args: Array<String>) = application {
                 runCatching { dropTarget.isActive = false }
             }
         }
-        HelpCslDesktopTheme {
-            Column(modifier = Modifier.fillMaxSize()) {
+        HelpCslDesktopTheme(darkTheme = state.darkTheme) {
+            Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 DesktopTopNavigationHeader(
                     state = state,
                     version = controller.currentVersion,
@@ -236,7 +237,8 @@ fun main(args: Array<String>) = application {
                     onOpenToolbox = { showToolboxDialog = true },
                     onOpenAnalytics = { showShiftAnalytics = true },
                     onOpenQr = { showQrDialog = true },
-                    onOpenGuide = { showFullGuide = true }
+                    onOpenGuide = { showFullGuide = true },
+                    onToggleDarkTheme = { controller.toggleDarkTheme() }
                 )
 
                 // Status / Error / New Update Strip
@@ -356,7 +358,8 @@ private fun DesktopTopNavigationHeader(
     onOpenToolbox: () -> Unit,
     onOpenAnalytics: () -> Unit,
     onOpenQr: () -> Unit,
-    onOpenGuide: () -> Unit
+    onOpenGuide: () -> Unit,
+    onToggleDarkTheme: () -> Unit
 ) {
     val rbStatus = remember(state.settings) { BelarusWorkCalendar.evaluate(state.settings) }
     val activeRepairsCount = remember(state.repairItems) {
@@ -529,6 +532,7 @@ private fun DesktopTopNavigationHeader(
                 }
             }
 
+            HeaderUtilityPill(if (state.darkTheme) "☀️ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
             HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
             HeaderUtilityPill("📊 Смена", onOpenAnalytics)
             HeaderUtilityPill("📲 QR", onOpenQr)
@@ -699,7 +703,9 @@ private fun DesktopStatusBannerStrip(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("⚠ $err", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text("⚠ $err", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                    }
                     TextButton(onClick = onDismiss) { Text("✕", color = Color.White) }
                 }
             }
@@ -711,7 +717,9 @@ private fun DesktopStatusBannerStrip(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("✓ $ok", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text("✓ $ok", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                    }
                     TextButton(onClick = onDismiss) { Text("✕") }
                 }
             }

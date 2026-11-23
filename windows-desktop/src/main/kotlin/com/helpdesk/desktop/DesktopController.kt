@@ -94,6 +94,7 @@ data class DesktopUiState(
     val activeTab: DesktopMainTab = DesktopMainTab.TICKETS,
     val settings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
+    val darkTheme: Boolean = false,
     val minimizeToTray: Boolean = true,
     val respectWorkScheduleOnDesktop: Boolean = false,
     val tickets: List<HelpdeskTicket> = emptyList(),
@@ -211,6 +212,7 @@ class DesktopController(
         DesktopUiState(
             settings = persisted.appSettings,
             filterSettings = persisted.filterSettings,
+            darkTheme = persisted.darkTheme,
             minimizeToTray = persisted.minimizeToTray,
             respectWorkScheduleOnDesktop = persisted.respectWorkScheduleOnDesktop,
             dismissedGifDateIso = persisted.dismissedGifDateIso,
@@ -427,6 +429,7 @@ class DesktopController(
         _state.value = DesktopUiState(
             activeTab = DesktopMainTab.SETTINGS,
             settings = cleanedSettings,
+            darkTheme = cur.darkTheme,
             minimizeToTray = cur.minimizeToTray,
             watchlistHosts = emptyList(),
             watchlistLabels = emptyMap(),
@@ -461,6 +464,21 @@ class DesktopController(
     fun setMinimizeToTray(enabled: Boolean) {
         _state.update { it.copy(minimizeToTray = enabled) }
         persistCurrentState()
+    }
+
+    fun setDarkTheme(enabled: Boolean) {
+        _state.update { it.copy(darkTheme = enabled) }
+        persistCurrentState()
+    }
+
+    fun toggleDarkTheme() {
+        _state.update { it.copy(darkTheme = !it.darkTheme) }
+        persistCurrentState()
+    }
+
+    fun showStatusMessage(message: String) {
+        if (message.isBlank()) return
+        _state.update { it.copy(statusBanner = message) }
     }
 
     fun setRespectWorkScheduleOnDesktop(enabled: Boolean) {
@@ -729,6 +747,7 @@ class DesktopController(
                 DesktopPersistedState(
                     appSettings = cur.settings,
                     filterSettings = cur.filterSettings,
+                    darkTheme = cur.darkTheme,
                     minimizeToTray = cur.minimizeToTray,
                     respectWorkScheduleOnDesktop = cur.respectWorkScheduleOnDesktop,
                     dismissedGifDateIso = cur.dismissedGifDateIso,

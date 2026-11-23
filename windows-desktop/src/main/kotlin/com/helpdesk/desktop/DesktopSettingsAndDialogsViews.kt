@@ -7,6 +7,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -226,7 +227,7 @@ fun DesktopSettingsWorkspace(
                 HorizontalDivider()
 
                 Text(
-                    text = "Мониторинг Zabbix (z.csl.by) — баннер ошибок и критических предупреждений",
+                    text = "Мониторинг Zabbix (z.csl.by) — звук и баннер только при попадании в Disaster",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.5.sp,
                     color = DesktopColors.CslOrange
@@ -340,6 +341,19 @@ fun DesktopSettingsWorkspace(
         ) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("🔔 Расписание РБ (09:00–17:30), звук уведомлений и системный трей Windows", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = state.darkTheme,
+                            onCheckedChange = { controller.setDarkTheme(it) }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("🌙 Тёмная тема оформления интерфейса", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+
+                HorizontalDivider()
 
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -928,19 +942,23 @@ fun DesktopFullGuideDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Column(
-                    modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                SelectionContainer(
+                    modifier = Modifier.weight(1f)
                 ) {
-                    filtered.forEach { (title, body) ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(title, fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = DesktopColors.CslOrange)
-                                Text(body, fontSize = 12.5.sp)
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        filtered.forEach { (title, body) ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(title, fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = DesktopColors.CslOrange)
+                                    Text(body, fontSize = 12.5.sp)
+                                }
                             }
                         }
                     }

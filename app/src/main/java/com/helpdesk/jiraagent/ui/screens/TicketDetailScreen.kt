@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -841,32 +842,34 @@ fun TicketDetailScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = ticket.summary,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                    SelectionContainer {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = ticket.summary,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
 
-                        HorizontalDivider()
+                            HorizontalDivider()
 
-                        MetadataRow("Клиент / Автор", ticket.reporterName)
-                        if (ticket.reporterLoginOrEmail.isNotBlank()) {
-                            MetadataRow("Контакт в Jira", ticket.reporterLoginOrEmail)
-                        }
-                        MetadataRow("Исполнитель", ticket.assigneeName ?: "Не назначен")
-                        MetadataRow("Проект", "${ticket.projectName} (${ticket.projectKey})")
-                        MetadataRow("Тип обращения", ticket.customerRequestType ?: ticket.issueType)
-                        MetadataRow("Статус", ticket.status)
-                        if (ticket.priority.isNotBlank()) {
-                            MetadataRow("Приоритет", ticket.priority)
-                        }
-                        if (ticket.labels.isNotEmpty()) {
-                            MetadataRow("Метки", ticket.labels.joinToString(", "))
+                            MetadataRow("Клиент / Автор", ticket.reporterName)
+                            if (ticket.reporterLoginOrEmail.isNotBlank()) {
+                                MetadataRow("Контакт в Jira", ticket.reporterLoginOrEmail)
+                            }
+                            MetadataRow("Исполнитель", ticket.assigneeName ?: "Не назначен")
+                            MetadataRow("Проект", "${ticket.projectName} (${ticket.projectKey})")
+                            MetadataRow("Тип обращения", ticket.customerRequestType ?: ticket.issueType)
+                            MetadataRow("Статус", ticket.status)
+                            if (ticket.priority.isNotBlank()) {
+                                MetadataRow("Приоритет", ticket.priority)
+                            }
+                            if (ticket.labels.isNotEmpty()) {
+                                MetadataRow("Метки", ticket.labels.joinToString(", "))
+                            }
                         }
                     }
                 }
@@ -878,27 +881,29 @@ fun TicketDetailScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = "Описание заявки",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = CslOrange
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        if (ticket.description.isBlank()) {
+                    SelectionContainer {
+                        Column(modifier = Modifier.padding(14.dp)) {
                             Text(
-                                text = "Описание отсутствует",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = "Описание заявки",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = CslOrange
                             )
-                        } else {
-                            ClickablePhoneText(
-                                text = ticket.description,
-                                region = appSettings.phoneRegion,
-                                customCountryCode = appSettings.customCountryCode,
-                                onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) }
-                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            if (ticket.description.isBlank()) {
+                                Text(
+                                    text = "Описание отсутствует",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                ClickablePhoneText(
+                                    text = ticket.description,
+                                    region = appSettings.phoneRegion,
+                                    customCountryCode = appSettings.customCountryCode,
+                                    onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) }
+                                )
+                            }
                         }
                     }
                 }
@@ -1081,28 +1086,30 @@ fun TicketDetailScreen(
 
                             ticket.comments.forEachIndexed { idx, comment ->
                                 if (idx > 0) HorizontalDivider()
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Person,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(15.dp),
-                                            tint = CslOrange
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = comment.author,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold
+                                SelectionContainer {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Person,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(15.dp),
+                                                tint = CslOrange
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = comment.author,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                        ClickablePhoneText(
+                                            text = comment.body,
+                                            region = appSettings.phoneRegion,
+                                            customCountryCode = appSettings.customCountryCode,
+                                            onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) },
+                                            style = MaterialTheme.typography.bodySmall
                                         )
                                     }
-                                    ClickablePhoneText(
-                                        text = comment.body,
-                                        region = appSettings.phoneRegion,
-                                        customCountryCode = appSettings.customCountryCode,
-                                        onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) },
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
                                 }
                             }
                         }

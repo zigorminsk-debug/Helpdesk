@@ -327,7 +327,10 @@ class ZabbixIntegrationTest {
                         clientSock.soTimeout = 3000
                         val packet = readHttpPacket(clientSock.getInputStream()) ?: return@use
                         val pathAndQuery = java.net.URLDecoder.decode(packet.first, "UTF-8")
+                        val isLocalizedDoneJqlError = pathAndQuery.contains("statusCategory = Done") ||
+                            pathAndQuery.contains("statusCategory != Done")
                         val json = when {
+                            isLocalizedDoneJqlError -> """{"errorMessages":["The value 'Done' does not exist for the field 'statusCategory'."]}"""
                             pathAndQuery.contains("/rest/api/2/status") -> """
                                 [
                                   {"id":"10001","name":"Ожидание поддержки","statusCategory":{"key":"indeterminate"}},
@@ -340,6 +343,7 @@ class ZabbixIntegrationTest {
                                   "values": [
                                     {"id":"10","name":"ALL","jql":"resolution = Unresolved"},
                                     {"id":"12","name":"В работе","jql":"resolution = Unresolved AND reporter != zabbix"},
+                                    {"id":"14","name":"Готовые Заявки","jql":"status = 6 AND reporter != zabbix"},
                                     {"id":"15","name":"BACKUP ERRORS","jql":"summary ~ backup"},
                                     {"id":"16","name":"Zabbix","jql":"reporter = zabbix"}
                                   ]
@@ -361,6 +365,24 @@ class ZabbixIntegrationTest {
                                         "reporter": {"displayName":"ЖЭУ 9","name":"jeu9"},
                                         "created": "2026-10-22T10:00:00.000+0300",
                                         "updated": "2026-11-19T12:00:00.000+0300"
+                                      }
+                                    }
+                                  ]
+                                }
+                            """.trimIndent()
+                            pathAndQuery.contains("status = 6") || pathAndQuery.contains("status in (6)") -> """
+                                {
+                                  "issues": [
+                                    {
+                                      "id": "503",
+                                      "key": "CSL-503",
+                                      "fields": {
+                                        "summary": "Замена картриджа выполнена",
+                                        "status": {"name":"Готово","statusCategory":{"key":"done"}},
+                                        "project": {"key":"CSL","name":"Helpdesk"},
+                                        "reporter": {"displayName":"ОАО Белшина","name":"belshina"},
+                                        "created": "2026-11-18T10:00:00.000+0300",
+                                        "updated": "2026-11-20T15:00:00.000+0300"
                                       }
                                     }
                                   ]
@@ -405,7 +427,8 @@ class ZabbixIntegrationTest {
                         }
                         val out = clientSock.getOutputStream()
                         val bytes = json.toByteArray(StandardCharsets.UTF_8)
-                        val hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+                        val statusLine = if (isLocalizedDoneJqlError) "HTTP/1.1 400 Bad Request" else "HTTP/1.1 200 OK"
+                        val hdr = "$statusLine\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
                         out.write(hdr.toByteArray(StandardCharsets.UTF_8))
                         out.write(bytes)
                         out.flush()
@@ -426,10 +449,15 @@ class ZabbixIntegrationTest {
             val tickets = jira.fetchRecentTickets(settings, FilterSettings()).getOrThrow()
             val inProgress = tickets.filter { it.isClientTicket && it.stage == com.helpdesk.jiraagent.model.TicketStage.IN_PROGRESS }
             val newClient = tickets.filter { it.isClientTicket && it.stage == com.helpdesk.jiraagent.model.TicketStage.NEW }
+            val closedClient = tickets.filter { it.isClientTicket && it.stage == com.helpdesk.jiraagent.model.TicketStage.CLOSED }
+            val serviceTickets = tickets.filter { !it.isClientTicket }
             assertEquals(1, inProgress.size)
             assertEquals("CSL-501", inProgress.first().key)
             assertEquals(1, newClient.size)
             assertEquals("CSL-502", newClient.first().key)
+            assertEquals(1, closedClient.size)
+            assertEquals("CSL-503", closedClient.first().key)
+            assertTrue(serviceTickets.any { it.key == "CSL-999" })
         } finally {
             running.set(false)
             runCatching { serverSocket.close() }

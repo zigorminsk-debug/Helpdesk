@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -130,25 +131,27 @@ fun DesktopZabbixWorkspace(
                         Text("Нет результатов проверки")
                     } else {
                         val openPorts = rep.portStatuses.filter { it.isOpen }
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("IP: ${rep.resolvedIp ?: "не определён"}", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                if (rep.icmpReachable) {
-                                    "🟢 ICMP Ping: доступен (${rep.icmpLatencyMs ?: 0} мс)"
-                                } else {
-                                    "🔴 ICMP Ping: нет ответа"
-                                }
-                            )
-                            Text(
-                                if (openPorts.isEmpty()) {
-                                    "Открытые TCP-порты не обнаружены"
-                                } else {
-                                    "Открытые порты: " + openPorts.joinToString(", ") {
-                                        "${it.port}/${it.serviceName} (${it.latencyMs ?: 0} мс)"
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("IP: ${rep.resolvedIp ?: "не определён"}", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (rep.icmpReachable) {
+                                        "🟢 ICMP Ping: доступен (${rep.icmpLatencyMs ?: 0} мс)"
+                                    } else {
+                                        "🔴 ICMP Ping: нет ответа"
                                     }
-                                },
-                                fontSize = 12.5.sp
-                            )
+                                )
+                                Text(
+                                    if (openPorts.isEmpty()) {
+                                        "Открытые TCP-порты не обнаружены"
+                                    } else {
+                                        "Открытые порты: " + openPorts.joinToString(", ") {
+                                            "${it.port}/${it.serviceName} (${it.latencyMs ?: 0} мс)"
+                                        }
+                                    },
+                                    fontSize = 12.5.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -203,8 +206,8 @@ fun DesktopZabbixWorkspace(
         // Top Header Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            colors = CardDefaults.cardColors(containerColor = DesktopColors.CardBg),
+            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
             shape = RoundedCornerShape(12.dp)
         ) {
             Column(
@@ -256,7 +259,7 @@ fun DesktopZabbixWorkspace(
                             } else {
                                 "Авторизация по логину и паролю · всплывающий баннер и звук только при попадании в Disaster"
                             }
-                            Text(sub, fontSize = 12.sp, color = Color(0xFF64748B), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(sub, fontSize = 12.sp, color = DesktopColors.TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
 
@@ -309,7 +312,7 @@ fun DesktopZabbixWorkspace(
         AnimatedVisibility(visible = showAuthPanel || !settings.isZabbixConfigured) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = DesktopColors.CardBg),
                 border = BorderStroke(1.5.dp, DesktopColors.CslOrange.copy(alpha = 0.65f)),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -321,7 +324,7 @@ fun DesktopZabbixWorkspace(
                         text = "Авторизация на сервере Zabbix (z.csl.by)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
-                        color = DesktopColors.CslMidnight
+                        color = DesktopColors.TextPrimary
                     )
 
                     Row(
@@ -429,7 +432,7 @@ fun DesktopZabbixWorkspace(
         if (!state.zabbixError.isNullOrBlank()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+                colors = CardDefaults.cardColors(containerColor = DesktopColors.StatusRed.copy(alpha = 0.12f)),
                 border = BorderStroke(1.dp, DesktopColors.StatusRed)
             ) {
                 Row(
@@ -437,13 +440,14 @@ fun DesktopZabbixWorkspace(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "⚠️ Ошибка Zabbix: ${state.zabbixError}",
-                        color = DesktopColors.StatusRed,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp,
-                        modifier = Modifier.weight(1f)
-                    )
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "⚠️ Ошибка Zabbix: ${state.zabbixError}",
+                            color = DesktopColors.StatusRed,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                    }
                     TextButton(onClick = { showAuthPanel = true }) {
                         Text("Проверить логин/пароль")
                     }
@@ -503,8 +507,8 @@ fun DesktopZabbixWorkspace(
                     item(key = "desktop_muted_rules_card") {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                            colors = CardDefaults.cardColors(containerColor = DesktopColors.CardBg),
+                            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Column(
@@ -525,7 +529,7 @@ fun DesktopZabbixWorkspace(
                                         Text(
                                             text = "По этим триггерам баннеры и звук выводиться больше не будут даже при новых срабатываниях.",
                                             fontSize = 12.sp,
-                                            color = Color(0xFF64748B)
+                                            color = DesktopColors.TextMuted
                                         )
                                     }
                                     if (state.mutedZabbixRules.isNotEmpty()) {
@@ -539,7 +543,7 @@ fun DesktopZabbixWorkspace(
                                     Text(
                                         text = "Список пуст. Нажмите «🔕 Не решаема» на любой карточке, чтобы навсегда отключить по ней уведомления.",
                                         fontSize = 12.5.sp,
-                                        color = Color(0xFF64748B)
+                                        color = DesktopColors.TextMuted
                                     )
                                 } else {
                                     val q = searchQuery.trim().lowercase()
@@ -550,8 +554,8 @@ fun DesktopZabbixWorkspace(
                                     }.forEach { rule ->
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
-                                            color = Color(0xFFF8FAFC),
-                                            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                            color = DesktopColors.SubtleBg,
+                                            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Row(
@@ -571,17 +575,19 @@ fun DesktopZabbixWorkspace(
                                                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                                     )
                                                 }
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = rule.hostLabel.ifBlank { "Триггер Zabbix" },
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 13.sp
-                                                    )
-                                                    Text(
-                                                        text = rule.problemName,
-                                                        fontSize = 12.sp,
-                                                        color = Color(0xFF475569)
-                                                    )
+                                                SelectionContainer(modifier = Modifier.weight(1f)) {
+                                                    Column {
+                                                        Text(
+                                                            text = rule.hostLabel.ifBlank { "Триггер Zabbix" },
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 13.sp
+                                                        )
+                                                        Text(
+                                                            text = rule.problemName,
+                                                            fontSize = 12.sp,
+                                                            color = DesktopColors.TextSecondary
+                                                        )
+                                                    }
                                                 }
                                                 OutlinedButton(
                                                     onClick = { controller.unmuteZabbixRule(rule.ruleKey) }
@@ -627,8 +633,8 @@ fun DesktopZabbixWorkspace(
                     ) { prob ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                            colors = CardDefaults.cardColors(containerColor = DesktopColors.CardBg),
+                            border = BorderStroke(1.dp, DesktopColors.BorderStrong),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Row(
@@ -648,9 +654,11 @@ fun DesktopZabbixWorkspace(
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(prob.hostWithIpLabel, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
-                                    Text(prob.name, fontSize = 12.5.sp, color = Color(0xFF475569))
+                                SelectionContainer(modifier = Modifier.weight(1f)) {
+                                    Column {
+                                        Text(prob.hostWithIpLabel, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                                        Text(prob.name, fontSize = 12.5.sp, color = DesktopColors.TextSecondary)
+                                    }
                                 }
                                 OutlinedButton(onClick = { controller.restoreDismissedZabbixProblem(prob) }) {
                                     Text("Показать снова")
@@ -665,7 +673,7 @@ fun DesktopZabbixWorkspace(
             } else if (filteredActiveProblems.isEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+                    colors = CardDefaults.cardColors(containerColor = DesktopColors.StatusGreen.copy(alpha = 0.14f)),
                     border = BorderStroke(1.dp, DesktopColors.StatusGreen.copy(alpha = 0.5f))
                 ) {
                     Row(
@@ -683,7 +691,7 @@ fun DesktopZabbixWorkspace(
                                     "✅ По выбранному фильтру активных проблем нет."
                             },
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF166534)
+                            color = DesktopColors.StatusGreen
                         )
                         if (hiddenTotalCount > 0) {
                             TextButton(onClick = { filterMode = 3 }) {
@@ -701,7 +709,7 @@ fun DesktopZabbixWorkspace(
                         val sevColor = desktopZabbixSevColor(prob.severityLevel)
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            colors = CardDefaults.cardColors(containerColor = DesktopColors.CardBg),
                             border = BorderStroke(
                                 if (prob.severityLevel >= 4 && !prob.acknowledged) 1.8.dp else 1.dp,
                                 sevColor.copy(alpha = if (prob.acknowledged) 0.35f else 0.85f)
@@ -723,57 +731,65 @@ fun DesktopZabbixWorkspace(
                                     )
                                 }
 
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                SelectionContainer(modifier = Modifier.weight(1f)) {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
-                                        Text(
-                                            text = prob.hostWithIpLabel,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 14.sp,
-                                            color = DesktopColors.CslMidnight,
-                                            modifier = Modifier.clickable {
-                                                val addr = prob.hostIp.ifBlank { prob.hostTechnicalName.ifBlank { prob.effectiveHostLabel } }
-                                                clipboard.setText(AnnotatedString(addr))
-                                            }
-                                        )
-                                        Text(
-                                            text = "Начало: ${prob.formattedStartTime()} · Длится: ${prob.formattedDuration()}",
-                                            fontSize = 11.5.sp,
-                                            color = Color(0xFF64748B)
-                                        )
-                                        if (prob.acknowledged) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
                                             Text(
-                                                text = "✓ Подтверждено",
+                                                text = prob.hostWithIpLabel,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 14.sp,
+                                                color = DesktopColors.TextPrimary
+                                            )
+                                            Text(
+                                                text = "Начало: ${prob.formattedStartTime()} · Длится: ${prob.formattedDuration()}",
                                                 fontSize = 11.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = DesktopColors.StatusGreen
+                                                color = DesktopColors.TextMuted
+                                            )
+                                            if (prob.acknowledged) {
+                                                Text(
+                                                    text = "✓ Подтверждено",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = DesktopColors.StatusGreen
+                                                )
+                                            }
+                                        }
+
+                                        Text(
+                                            text = prob.name + (if (prob.opData.isNotBlank()) "  [${prob.opData}]" else ""),
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = DesktopColors.TextPrimary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+
+                                        if (prob.ackMessage.isNotBlank()) {
+                                            Text(
+                                                text = "Комментарий: ${prob.ackMessage}",
+                                                fontSize = 12.sp,
+                                                color = DesktopColors.TextSecondary
                                             )
                                         }
-                                    }
-
-                                    Text(
-                                        text = prob.name + (if (prob.opData.isNotBlank()) "  [${prob.opData}]" else ""),
-                                        fontSize = 13.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-
-                                    if (prob.ackMessage.isNotBlank()) {
-                                        Text(
-                                            text = "Комментарий: ${prob.ackMessage}",
-                                            fontSize = 12.sp,
-                                            color = Color(0xFF475569)
-                                        )
                                     }
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val addr = prob.hostIp.ifBlank { prob.hostTechnicalName.ifBlank { prob.effectiveHostLabel } }
+                                            clipboard.setText(AnnotatedString(addr))
+                                            controller.showStatusMessage("Адрес $addr скопирован в буфер")
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Text("📋 IP", fontSize = 12.sp)
+                                    }
                                     if (prob.eventId.isNotBlank() && prob.eventId != "0") {
                                         OutlinedButton(
                                             onClick = {
@@ -840,20 +856,20 @@ private fun desktopZabbixSevColor(level: Int): Color {
 private fun DesktopZabbixStatBadge(label: String, count: Int, accent: Color) {
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (count > 0) accent.copy(alpha = 0.14f) else Color.White,
-        border = BorderStroke(1.dp, if (count > 0) accent else Color(0xFFCBD5E1))
+        color = if (count > 0) accent.copy(alpha = 0.14f) else DesktopColors.CardBg,
+        border = BorderStroke(1.dp, if (count > 0) accent else DesktopColors.BorderStrong)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(label, fontSize = 12.sp, color = DesktopColors.CslMidnight)
+            Text(label, fontSize = 12.sp, color = DesktopColors.TextPrimary)
             Text(
                 text = count.toString(),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = if (count > 0) accent else Color(0xFF64748B)
+                color = if (count > 0) accent else DesktopColors.TextMuted
             )
         }
     }

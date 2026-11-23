@@ -474,16 +474,162 @@ object WindowsExternalLaunchers {
         }.getOrNull()
     }
 
+    private val BROWSER_EXECUTABLE_NAMES = setOf(
+        "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe",
+        "browser.exe", "yandex.exe", "brave.exe", "vivaldi.exe",
+        "iexplore.exe", "waterfox.exe", "maxthon.exe", "arc.exe", "thorium.exe"
+    )
+
+    private fun isBrowserPath(raw: String): Boolean {
+        val low = raw.lowercase()
+        return BROWSER_EXECUTABLE_NAMES.any { low.contains(it) }
+    }
+
+    /**
+     * Finds a running non-WindowsApps Win32 executable matching [exeNamesLower] via JDK 17 ProcessHandle.
+     * Catches portable apps (e.g. D:\Telegram\Telegram.exe or Portable AnyDesk/MicroSIP) instantly.
+     */
+    private fun findRunningWin32Executable(exeNamesLower: Set<String>): File? {
+        return runCatching {
+            var found: File? = null
+            ProcessHandle.allProcesses().forEach { ph ->
+                if (found != null) return@forEach
+                val cmd = ph.info().command().orElse(null) ?: return@forEach
+                val f = File(cmd)
+                val nameLow = f.name.lowercase()
+                if (nameLow in exeNamesLower && !cmd.lowercase().contains("\\windowsapps\\") && f.exists()) {
+                    found = f
+                }
+            }
+            found
+        }.getOrNull()
+    }
+
+    private fun isRunningInWindowsApps(exeNamesLower: Set<String>): Boolean {
+        return runCatching {
+            var running = false
+            ProcessHandle.allProcesses().forEach { ph ->
+                if (running) return@forEach
+                val cmd = ph.info().command().orElse(null) ?: return@forEach
+                val nameLow = File(cmd).name.lowercase()
+                if (nameLow in exeNamesLower && cmd.lowercase().contains("\\windowsapps\\")) {
+                    running = true
+                }
+            }
+            running
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Queries Windows Registry (`HKCU\Software\Classes\<scheme>` & `HKCR\<scheme>`) to:
+     * 1) Extract a direct Win32 `.exe` path if registered (and NOT a web browser!),
+     * 2) Detect whether a native/Store UWP handler (`URL Protocol` / `DelegateExecute` / `AppX`) is installed.
+     */
+    private fun inspectProtocolRegistration(scheme: String): Pair<File?, Boolean> {
+        val cleanScheme = scheme.trim().lowercase()
+        val regRoots = listOf(
+            "HKCU\\Software\\Classes\\$cleanScheme",
+            "HKCR\\$cleanScheme"
+        )
+        for (root in regRoots) {
+            val cmdOut = runCatching {
+                val proc = ProcessBuilder("reg.exe", "query", "$root\\shell\\open\\command", "/ve")
+                    .redirectErrorStream(true)
+                    .start()
+                val finished = proc.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (!finished) {
+                    proc.destroyForcibly()
+                    ""
+                } else if (proc.exitValue() == 0) {
+                    proc.inputStream.bufferedReader().readText()
+                } else ""
+            }.getOrDefault("")
+
+            if (cmdOut.isNotBlank() && !isBrowserPath(cmdOut)) {
+                val quotedExe = Regex("\"([A-Za-z]:\\\\[^\"]+\\.exe)\"", RegexOption.IGNORE_CASE)
+                    .find(cmdOut)?.groupValues?.getOrNull(1)
+                val unquotedExe = if (quotedExe == null) {
+                    Regex("([A-Za-z]:\\\\[^\\r\\n\"]+?\\.exe)", RegexOption.IGNORE_CASE)
+                        .find(cmdOut)?.groupValues?.getOrNull(1)
+                } else null
+                val exePath = quotedExe ?: unquotedExe
+                if (exePath != null && !exePath.lowercase().contains("\\windowsapps\\")) {
+                    val f = File(exePath)
+                    if (f.exists()) return f to true
+                }
+                return null to true
+            }
+
+            // Microsoft Store / MSIX UWP apps register DelegateExecute or AppX under shell\open or root key
+            val rootOut = runCatching {
+                val proc = ProcessBuilder("reg.exe", "query", root)
+                    .redirectErrorStream(true)
+                    .start()
+                val finished = proc.waitFor(1200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (!finished) {
+                    proc.destroyForcibly()
+                    ""
+                } else if (proc.exitValue() == 0) {
+                    proc.inputStream.bufferedReader().readText()
+                } else ""
+            }.getOrDefault("")
+
+            if (rootOut.isNotBlank() && !isBrowserPath(rootOut)) {
+                if (rootOut.contains("URL Protocol", ignoreCase = true) ||
+                    rootOut.contains("AppX", ignoreCase = true) ||
+                    rootOut.contains("shell", ignoreCase = true)
+                ) {
+                    return null to true
+                }
+            }
+        }
+        return null to false
+    }
+
+    private fun launchViaWindowsShellProtocol(uri: String): Boolean {
+        return runCatching {
+            ProcessBuilder("explorer.exe", uri).start()
+            true
+        }.getOrElse {
+            runCatching {
+                ProcessBuilder("rundll32.exe", "url.dll,FileProtocolHandler", uri).start()
+                true
+            }.getOrDefault(false)
+        }
+    }
+
+    /**
+     * Opens an `http://` or `https://` web URL in the default browser.
+     * IMPORTANT: Never pass custom app protocols (`tg://`, `viber://`, `whatsapp://`, `tel:`) to
+     * `Desktop.getDesktop().browse(...)` because OpenJDK 17 `WDesktopPeer.browse` on Windows
+     * unconditionally spawns `defaultBrowser.exe <uri>` instead of `ShellExecute`!
+     */
     fun openUrl(url: String) {
-        if (url.isBlank()) return
-        runCatching {
-            if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().browse(URI(url))
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return
+        val scheme = trimmed.substringBefore(':', "").lowercase()
+        if (scheme == "http" || scheme == "https") {
+            runCatching {
+                if (Desktop.isDesktopSupported()) {
+                    Desktop.getDesktop().browse(URI(trimmed))
+                    return
+                }
+            }
+            runCatching {
+                ProcessBuilder("explorer.exe", trimmed).start()
+            }
+            return
+        }
+
+        val (regExe, hasHandler) = inspectProtocolRegistration(scheme)
+        if (regExe != null) {
+            runCatching {
+                ProcessBuilder(regExe.absolutePath, trimmed).directory(regExe.parentFile).start()
                 return
             }
         }
-        runCatching {
-            ProcessBuilder("cmd.exe", "/c", "start", "", url).start()
+        if (hasHandler) {
+            launchViaWindowsShellProtocol(trimmed)
         }
     }
 
@@ -517,35 +663,45 @@ object WindowsExternalLaunchers {
         val progFilesX86 = System.getenv("ProgramFiles(x86)").orEmpty()
 
         if (kind == RemoteDesktopKind.ANYDESK) {
-            val candidates = listOf(
+            val candidates = listOfNotNull(
+                findRunningWin32Executable(setOf("anydesk.exe")),
                 File(progFilesX86, "AnyDesk\\AnyDesk.exe"),
                 File(progFiles, "AnyDesk\\AnyDesk.exe"),
-                File(localAppData, "Programs\\AnyDesk\\AnyDesk.exe")
+                File(localAppData, "Programs\\AnyDesk\\AnyDesk.exe"),
+                inspectProtocolRegistration("anydesk").first
             )
             val exe = candidates.firstOrNull { it.exists() }
             if (exe != null) {
                 runCatching {
-                    ProcessBuilder(exe.absolutePath, cleanId).start()
+                    ProcessBuilder(exe.absolutePath, cleanId).directory(exe.parentFile).start()
                     return "Запущен AnyDesk → $cleanId (ID также в буфере)"
                 }
             }
-            openUrl("anydesk:$cleanId")
-            return "ID $cleanId скопирован и отправлен в AnyDesk"
+            if (inspectProtocolRegistration("anydesk").second) {
+                launchViaWindowsShellProtocol("anydesk:$cleanId")
+                return "ID $cleanId скопирован и отправлен в AnyDesk"
+            }
+            return "⚠️ Установленный AnyDesk не найден на ПК (ID $cleanId скопирован в буфер)"
         } else {
-            val candidates = listOf(
+            val candidates = listOfNotNull(
+                findRunningWin32Executable(setOf("rustdesk.exe")),
                 File(progFiles, "RustDesk\\rustdesk.exe"),
                 File(progFilesX86, "RustDesk\\rustdesk.exe"),
-                File(localAppData, "Programs\\RustDesk\\rustdesk.exe")
+                File(localAppData, "Programs\\RustDesk\\rustdesk.exe"),
+                inspectProtocolRegistration("rustdesk").first
             )
             val exe = candidates.firstOrNull { it.exists() }
             if (exe != null) {
                 runCatching {
-                    ProcessBuilder(exe.absolutePath, "--connect", cleanId).start()
+                    ProcessBuilder(exe.absolutePath, "--connect", cleanId).directory(exe.parentFile).start()
                     return "Запущен RustDesk → $cleanId (ID также в буфере)"
                 }
             }
-            openUrl("rustdesk://$cleanId")
-            return "ID $cleanId скопирован и отправлен в RustDesk"
+            if (inspectProtocolRegistration("rustdesk").second) {
+                launchViaWindowsShellProtocol("rustdesk://$cleanId")
+                return "ID $cleanId скопирован и отправлен в RustDesk"
+            }
+            return "⚠️ Установленный RustDesk не найден на ПК (ID $cleanId скопирован в буфер)"
         }
     }
 
@@ -565,12 +721,75 @@ object WindowsExternalLaunchers {
         }
     }
 
-    fun callSipPhone(phoneE164: String) {
-        copyToClipboard(phoneE164)
-        openUrl("tel:${phoneE164.trim()}")
+    fun callSipPhone(phoneE164: String): String {
+        val cleanPhone = phoneE164.trim()
+        copyToClipboard(cleanPhone)
+        val appData = System.getenv("APPDATA").orEmpty()
+        val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
+        val progFiles = System.getenv("ProgramFiles").orEmpty()
+        val progFilesX86 = System.getenv("ProgramFiles(x86)").orEmpty()
+
+        // 1. Check MicroSIP first (most popular lightweight SIP softphone — accepts raw phone argument directly)
+        val microSipCandidates = listOfNotNull(
+            findRunningWin32Executable(setOf("microsip.exe")),
+            File(localAppData, "MicroSIP\\microsip.exe"),
+            File(appData, "MicroSIP\\microsip.exe"),
+            File(progFilesX86, "MicroSIP\\microsip.exe"),
+            File(progFiles, "MicroSIP\\microsip.exe")
+        )
+        microSipCandidates.firstOrNull { it.exists() }?.let { exe ->
+            val ok = runCatching {
+                ProcessBuilder(exe.absolutePath, cleanPhone).directory(exe.parentFile).start()
+                true
+            }.getOrDefault(false)
+            if (ok) return "📞 Вызов $cleanPhone передан в MicroSIP"
+        }
+
+        // 2. Check PhonerLite / 3CX / Zoiper / Linphone / Bria
+        val otherSipRunning = findRunningWin32Executable(
+            setOf(
+                "phonerlite.exe", "3cxdesktopapp.exe", "3cxwin8phone.exe", "3cxphone.exe",
+                "zoiper5.exe", "zoiper.exe", "linphone.exe", "bria.exe", "x-lite.exe", "eyebeam.exe"
+            )
+        )
+        val otherSipCandidates = listOfNotNull(
+            otherSipRunning,
+            File(progFilesX86, "PhonerLite\\PhonerLite.exe"),
+            File(progFiles, "PhonerLite\\PhonerLite.exe"),
+            File(localAppData, "Programs\\3CXDesktopApp\\3CXDesktopApp.exe"),
+            File(progFiles, "3CXPhone\\3CXWin8Phone.exe"),
+            File(progFilesX86, "3CXPhone\\3CXPhone.exe"),
+            File(progFilesX86, "Zoiper5\\Zoiper5.exe"),
+            File(progFiles, "Linphone\\bin\\linphone.exe")
+        )
+        otherSipCandidates.firstOrNull { it.exists() }?.let { exe ->
+            val arg = if (exe.name.equals("PhonerLite.exe", ignoreCase = true)) "callto:$cleanPhone" else "tel:$cleanPhone"
+            val ok = runCatching {
+                ProcessBuilder(exe.absolutePath, arg).directory(exe.parentFile).start()
+                true
+            }.getOrDefault(false)
+            if (ok) return "📞 Вызов $cleanPhone передан в ${exe.nameWithoutExtension}"
+        }
+
+        // 3. Check registered non-browser protocol handler (`tel`, `sip`, `callto`)
+        for (scheme in listOf("tel", "sip", "callto")) {
+            val (regExe, hasHandler) = inspectProtocolRegistration(scheme)
+            if (regExe != null) {
+                val ok = runCatching {
+                    ProcessBuilder(regExe.absolutePath, "$scheme:$cleanPhone").directory(regExe.parentFile).start()
+                    true
+                }.getOrDefault(false)
+                if (ok) return "📞 Вызов $cleanPhone передан в ${regExe.nameWithoutExtension}"
+            }
+            if (hasHandler && launchViaWindowsShellProtocol("$scheme:$cleanPhone")) {
+                return "📞 Вызов $cleanPhone передан в SIP-софтфон"
+            }
+        }
+
+        return "📋 Номер $cleanPhone скопирован (установленный SIP-софтфон не найден на ПК)"
     }
 
-    fun dialSipOrTel(phoneE164: String) = callSipPhone(phoneE164)
+    fun dialSipOrTel(phoneE164: String): String = callSipPhone(phoneE164)
 
     fun openBrowser(url: String) = openUrl(url)
 
@@ -578,24 +797,148 @@ object WindowsExternalLaunchers {
 
     fun launchRustDesk(rawId: String): String = launchRemoteDesktop(RemoteDesktopKind.RUSTDESK, rawId)
 
-    fun openTelegram(phoneE164: String, usernameHandle: String? = null) {
+    /**
+     * Launches the installed Telegram Desktop app directly (`Telegram.exe -- tg://resolve?...` or UWP Store app).
+     * Never opens a web browser (`t.me`).
+     */
+    fun openTelegram(phoneE164: String, usernameHandle: String? = null): String {
+        val tgUri: String
+        val label: String
         if (!usernameHandle.isNullOrBlank()) {
             val clean = usernameHandle.trim().removePrefix("@")
-            openUrl("tg://resolve?domain=$clean")
-            return
+            copyToClipboard("@$clean")
+            tgUri = "tg://resolve?domain=$clean"
+            label = "@$clean"
+        } else {
+            val digits = phoneE164.filter { it.isDigit() }
+            copyToClipboard("+$digits")
+            tgUri = "tg://resolve?phone=$digits"
+            label = "+$digits"
         }
-        val digits = phoneE164.filter { it.isDigit() }
-        openUrl("tg://resolve?phone=$digits")
+
+        val appData = System.getenv("APPDATA").orEmpty()
+        val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
+        val progFiles = System.getenv("ProgramFiles").orEmpty()
+        val progFilesX86 = System.getenv("ProgramFiles(x86)").orEmpty()
+        val userHome = System.getProperty("user.home").orEmpty()
+
+        val tgExeNames = setOf("telegram.exe", "ayugram.exe", "64gram.exe", "kotatogram.exe", "unigram.exe")
+        val (regExe, hasProtocolHandler) = inspectProtocolRegistration("tg")
+
+        val win32Candidates = listOfNotNull(
+            findRunningWin32Executable(tgExeNames),
+            regExe,
+            File(appData, "Telegram Desktop\\Telegram.exe"),
+            File(localAppData, "Programs\\Telegram Desktop\\Telegram.exe"),
+            File(progFiles, "Telegram Desktop\\Telegram.exe"),
+            File(progFilesX86, "Telegram Desktop\\Telegram.exe"),
+            File(userHome, "Downloads\\Telegram Desktop\\Telegram.exe"),
+            File(appData, "AyuGramDesktop\\AyuGram.exe"),
+            File(appData, "64Gram\\Telegram.exe")
+        )
+        win32Candidates.firstOrNull { it.exists() }?.let { exe ->
+            val ok = runCatching {
+                ProcessBuilder(exe.absolutePath, "--", tgUri).directory(exe.parentFile).start()
+                true
+            }.getOrDefault(false)
+            if (ok) return "✈ Открыт чат $label в ${exe.nameWithoutExtension} Desktop"
+        }
+
+        val storeAlias = File(localAppData, "Microsoft\\WindowsApps\\Telegram.exe")
+        if (storeAlias.exists() || isRunningInWindowsApps(tgExeNames) || hasProtocolHandler) {
+            if (launchViaWindowsShellProtocol(tgUri)) {
+                return "✈ Открыт чат $label в Telegram Desktop"
+            }
+        }
+
+        return "⚠️ Установленный Telegram Desktop не найден на ПК (контакт $label скопирован в буфер)"
     }
 
-    fun openViber(phoneE164: String) {
+    /**
+     * Launches the installed Rakuten Viber Desktop app directly (`Viber.exe viber://chat?number=...`).
+     * Never opens a web browser.
+     */
+    fun openViber(phoneE164: String): String {
         val digits = phoneE164.filter { it.isDigit() }
-        openUrl("viber://chat?number=%2B$digits")
+        copyToClipboard("+$digits")
+        val viberUri = "viber://chat?number=%2B$digits"
+
+        val appData = System.getenv("APPDATA").orEmpty()
+        val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
+        val progFiles = System.getenv("ProgramFiles").orEmpty()
+        val progFilesX86 = System.getenv("ProgramFiles(x86)").orEmpty()
+
+        val viberExeNames = setOf("viber.exe")
+        val (regExe, hasProtocolHandler) = inspectProtocolRegistration("viber")
+
+        val win32Candidates = listOfNotNull(
+            findRunningWin32Executable(viberExeNames),
+            regExe,
+            File(localAppData, "Viber\\Viber.exe"),
+            File(appData, "ViberPC\\Viber.exe"),
+            File(localAppData, "Programs\\Viber\\Viber.exe"),
+            File(progFiles, "Viber\\Viber.exe"),
+            File(progFilesX86, "Viber\\Viber.exe")
+        )
+        win32Candidates.firstOrNull { it.exists() }?.let { exe ->
+            val ok = runCatching {
+                ProcessBuilder(exe.absolutePath, viberUri).directory(exe.parentFile).start()
+                true
+            }.getOrDefault(false)
+            if (ok) return "💬 Открыт чат +$digits в Viber Desktop"
+        }
+
+        val storeAlias = File(localAppData, "Microsoft\\WindowsApps\\Viber.exe")
+        if (storeAlias.exists() || isRunningInWindowsApps(viberExeNames) || hasProtocolHandler) {
+            if (launchViaWindowsShellProtocol(viberUri)) {
+                return "💬 Открыт чат +$digits в Viber Desktop"
+            }
+        }
+
+        return "⚠️ Установленный Viber не найден на ПК (номер +$digits скопирован в буфер)"
     }
 
-    fun openWhatsApp(phoneE164: String) {
+    /**
+     * Launches the installed WhatsApp Desktop app directly via `whatsapp://send?phone=...` or `WhatsApp.exe`.
+     * Never opens `https://wa.me/...` in a web browser.
+     */
+    fun openWhatsApp(phoneE164: String): String {
         val digits = phoneE164.filter { it.isDigit() }
-        openUrl("https://wa.me/$digits")
+        copyToClipboard("+$digits")
+        val waUri = "whatsapp://send?phone=$digits"
+
+        val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
+        val progFiles = System.getenv("ProgramFiles").orEmpty()
+        val progFilesX86 = System.getenv("ProgramFiles(x86)").orEmpty()
+
+        val waExeNames = setOf("whatsapp.exe", "whatsapp.root.exe")
+        val (regExe, hasProtocolHandler) = inspectProtocolRegistration("whatsapp")
+
+        // Official Windows 10/11 WhatsApp Desktop is an MSIX/UWP package activated via whatsapp:// protocol
+        val storeAlias = File(localAppData, "Microsoft\\WindowsApps\\WhatsApp.exe")
+        if (hasProtocolHandler || isRunningInWindowsApps(waExeNames) || storeAlias.exists()) {
+            if (launchViaWindowsShellProtocol(waUri)) {
+                return "💬 Открыт чат +$digits в WhatsApp Desktop"
+            }
+        }
+
+        val win32Candidates = listOfNotNull(
+            findRunningWin32Executable(waExeNames),
+            regExe,
+            File(localAppData, "WhatsApp\\WhatsApp.exe"),
+            File(localAppData, "Programs\\WhatsApp\\WhatsApp.exe"),
+            File(progFiles, "WhatsApp\\WhatsApp.exe"),
+            File(progFilesX86, "WhatsApp\\WhatsApp.exe")
+        )
+        win32Candidates.firstOrNull { it.exists() }?.let { exe ->
+            val ok = runCatching {
+                ProcessBuilder(exe.absolutePath, waUri).directory(exe.parentFile).start()
+                true
+            }.getOrDefault(false)
+            if (ok) return "💬 Открыт чат +$digits в WhatsApp Desktop"
+        }
+
+        return "⚠️ Установленный WhatsApp Desktop не найден на ПК (номер +$digits скопирован в буфер)"
     }
 
     fun openMapForAddress(address: String) {

@@ -25,6 +25,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,12 +47,14 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.LibraryBooks
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -125,6 +128,7 @@ import com.helpdesk.jiraagent.ui.screens.ServerSettingsScreen
 import com.helpdesk.jiraagent.ui.screens.TicketDetailScreen
 import com.helpdesk.jiraagent.ui.screens.TicketsScreen
 import com.helpdesk.jiraagent.ui.screens.ZabbixMonitorScreen
+import com.helpdesk.jiraagent.model.AppThemeMode
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
@@ -152,7 +156,14 @@ class MainActivity : FragmentActivity() {
         handleNotificationIntent(intent)
 
         setContent {
-            JiraHelpdeskTheme {
+            val currentAppSettings by viewModel.appSettings.collectAsStateWithLifecycle()
+            val systemDark = isSystemInDarkTheme()
+            val useDark = when (currentAppSettings.themeMode) {
+                AppThemeMode.DARK -> true
+                AppThemeMode.LIGHT -> false
+                AppThemeMode.SYSTEM -> systemDark
+            }
+            JiraHelpdeskTheme(darkTheme = useDark) {
                 HelpdeskMainRoot(viewModel = viewModel)
             }
         }
@@ -724,6 +735,22 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "База решений",
+                            tint = Color.White
+                        )
+                    }
+                    val systemDarkNow = isSystemInDarkTheme()
+                    val isCurrentlyDark = when (appSettings.themeMode) {
+                        AppThemeMode.DARK -> true
+                        AppThemeMode.LIGHT -> false
+                        AppThemeMode.SYSTEM -> systemDarkNow
+                    }
+                    IconButton(onClick = {
+                        val nextMode = if (isCurrentlyDark) AppThemeMode.LIGHT else AppThemeMode.DARK
+                        viewModel.saveAppSettings(appSettings.copy(themeMode = nextMode))
+                    }) {
+                        Icon(
+                            imageVector = if (isCurrentlyDark) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            contentDescription = "Переключить тему",
                             tint = Color.White
                         )
                     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -990,11 +991,28 @@ private fun ConfluenceBlockView(
             }
         }
         is ConfluenceBlock.Callout -> {
+            val isDark = LocalDesktopDarkTheme.current
             val (bg, border, icon) = when (block.kind) {
-                ConfluenceCalloutKind.WARNING -> Triple(Color(0xFFFFFBEB), DesktopColors.StatusAmber, "⚠")
-                ConfluenceCalloutKind.NOTE -> Triple(Color(0xFFFEF2F2), DesktopColors.StatusRed, "📌")
-                ConfluenceCalloutKind.TIP -> Triple(Color(0xFFECFDF5), DesktopColors.StatusGreen, "💡")
-                ConfluenceCalloutKind.INFO -> Triple(Color(0xFFEFF6FF), Color(0xFF2563EB), "ℹ")
+                ConfluenceCalloutKind.WARNING -> Triple(
+                    if (isDark) DesktopColors.StatusAmber.copy(alpha = 0.14f) else Color(0xFFFFFBEB),
+                    DesktopColors.StatusAmber,
+                    "⚠"
+                )
+                ConfluenceCalloutKind.NOTE -> Triple(
+                    if (isDark) DesktopColors.StatusRed.copy(alpha = 0.14f) else Color(0xFFFEF2F2),
+                    DesktopColors.StatusRed,
+                    "📌"
+                )
+                ConfluenceCalloutKind.TIP -> Triple(
+                    if (isDark) DesktopColors.StatusGreen.copy(alpha = 0.14f) else Color(0xFFECFDF5),
+                    DesktopColors.StatusGreen,
+                    "💡"
+                )
+                ConfluenceCalloutKind.INFO -> Triple(
+                    if (isDark) Color(0xFF2563EB).copy(alpha = 0.15f) else Color(0xFFEFF6FF),
+                    if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB),
+                    "ℹ"
+                )
             }
             Surface(
                 shape = RoundedCornerShape(8.dp),
@@ -1006,7 +1024,7 @@ private fun ConfluenceBlockView(
                     if (block.title.isNotBlank()) {
                         Text("$icon ${block.title}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = border)
                     }
-                    Text(block.body, fontSize = 12.5.sp, lineHeight = 18.sp, color = Color(0xFF0F172A))
+                    Text(block.body, fontSize = 12.5.sp, lineHeight = 18.sp, color = DesktopColors.TextPrimary)
                 }
             }
         }
@@ -1082,7 +1100,7 @@ private fun ConfluenceBlockView(
                         }
                     }
                     block.rows.forEachIndexed { rIdx, row ->
-                        val rowBg = if (rIdx % 2 == 0) Color.White else Color(0xFFF8FAFC)
+                        val rowBg = if (rIdx % 2 == 0) DesktopColors.CardBg else DesktopColors.SubtleBg
                         Row(modifier = Modifier.background(rowBg)) {
                             for (c in 0 until colCount) {
                                 val cellVal = row.getOrNull(c).orEmpty()
@@ -1098,13 +1116,13 @@ private fun ConfluenceBlockView(
                                     Text(
                                         text = cellVal.ifBlank { "—" },
                                         fontSize = 12.sp,
-                                        color = Color(0xFF0F172A)
+                                        color = DesktopColors.TextPrimary
                                     )
                                 }
                             }
                         }
                         if (rIdx < block.rows.lastIndex) {
-                            HorizontalDivider(color = Color(0xFFE2E8F0))
+                            HorizontalDivider(color = DesktopColors.BorderSubtle)
                         }
                     }
                 }
@@ -1592,64 +1610,68 @@ fun DesktopKnowledgeArchiveDialog(
                                 expandedKey = if (isExp) null else t.key
                             }
                         ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "${t.key} · ${t.summary}",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.5.sp,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        "${t.status} · ${t.createdIso.take(10)}",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Text(
-                                    "Клиент: ${t.reporterName}  |  Инженер: ${t.assigneeName ?: "—"}",
-                                    fontSize = 11.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                if (lastComment != null) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = Color.White,
-                                        modifier = Modifier.fillMaxWidth()
+                            SelectionContainer {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            "💡 Решение (${lastComment.author}): ${if (isExp) lastComment.body else lastComment.body.take(220)}",
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.padding(8.dp)
+                                            "${t.key} · ${t.summary}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.5.sp,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Text(
+                                            "${t.status} · ${t.createdIso.take(10)}",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                } else if (isExp && t.description.isNotBlank()) {
-                                    Text(t.description.take(500), fontSize = 12.sp)
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            onOpenTicket(t.key)
-                                            onDismiss()
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                    ) {
-                                        Text("Открыть карточку ${t.key}", fontSize = 11.5.sp)
-                                    }
-                                    if (lastComment != null && onInsertSolution != null) {
-                                        Button(
-                                            onClick = {
-                                                onInsertSolution(lastComment.body)
-                                                onDismiss()
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    Text(
+                                        "Клиент: ${t.reporterName}  |  Инженер: ${t.assigneeName ?: "—"}",
+                                        fontSize = 11.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (lastComment != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = DesktopColors.CardBg,
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Text("Вставить решение в ответ", fontSize = 11.5.sp)
+                                            Text(
+                                                "💡 Решение (${lastComment.author}): ${if (isExp) lastComment.body else lastComment.body.take(220)}",
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.padding(8.dp)
+                                            )
+                                        }
+                                    } else if (isExp && t.description.isNotBlank()) {
+                                        Text(t.description.take(500), fontSize = 12.sp)
+                                    }
+                                    DisableSelection {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    onOpenTicket(t.key)
+                                                    onDismiss()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Открыть карточку ${t.key}", fontSize = 11.5.sp)
+                                            }
+                                            if (lastComment != null && onInsertSolution != null) {
+                                                Button(
+                                                    onClick = {
+                                                        onInsertSolution(lastComment.body)
+                                                        onDismiss()
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                                ) {
+                                                    Text("Вставить решение в ответ", fontSize = 11.5.sp)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1795,25 +1817,29 @@ fun DesktopSysadminToolboxDialog(
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            SubnetRow("Адрес сети:", "${info.networkAddress}/${info.cidrPrefix}")
-                                            SubnetRow("Маска подсети:", "${info.subnetMask}  (Wildcard: ${info.wildcardMask})")
-                                            SubnetRow("Первый рабочий хост (шлюз):", info.firstUsableHost)
-                                            SubnetRow("Последний рабочий хост:", info.lastUsableHost)
-                                            SubnetRow("Broadcast:", info.broadcastAddress)
-                                            SubnetRow("Доступно узлов:", "${info.usableHostCount} хостов")
-                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        val summary = """
-                                                            Сеть: ${info.networkAddress}/${info.cidrPrefix}
-                                                            Маска: ${info.subnetMask}
-                                                            Диапазон: ${info.firstUsableHost} — ${info.lastUsableHost}
-                                                            Broadcast: ${info.broadcastAddress} (${info.usableHostCount} узлов)
-                                                        """.trimIndent()
-                                                        WindowsExternalLaunchers.copyToClipboard(summary)
+                                        SelectionContainer {
+                                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                SubnetRow("Адрес сети:", "${info.networkAddress}/${info.cidrPrefix}")
+                                                SubnetRow("Маска подсети:", "${info.subnetMask}  (Wildcard: ${info.wildcardMask})")
+                                                SubnetRow("Первый рабочий хост (шлюз):", info.firstUsableHost)
+                                                SubnetRow("Последний рабочий хост:", info.lastUsableHost)
+                                                SubnetRow("Broadcast:", info.broadcastAddress)
+                                                SubnetRow("Доступно узлов:", "${info.usableHostCount} хостов")
+                                                DisableSelection {
+                                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                                        OutlinedButton(
+                                                            onClick = {
+                                                                val summary = """
+                                                                    Сеть: ${info.networkAddress}/${info.cidrPrefix}
+                                                                    Маска: ${info.subnetMask}
+                                                                    Диапазон: ${info.firstUsableHost} — ${info.lastUsableHost}
+                                                                    Broadcast: ${info.broadcastAddress} (${info.usableHostCount} узлов)
+                                                                """.trimIndent()
+                                                                WindowsExternalLaunchers.copyToClipboard(summary)
+                                                            }
+                                                        ) { Text("📋 Скопировать расчёт", fontSize = 12.sp) }
                                                     }
-                                                ) { Text("📋 Скопировать расчёт", fontSize = 12.sp) }
+                                                }
                                             }
                                         }
                                     }
@@ -1989,31 +2015,33 @@ fun DesktopSysadminToolboxDialog(
                                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                                                 modifier = Modifier.fillMaxWidth()
                                             ) {
-                                                Column(
-                                                    modifier = Modifier.padding(10.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    val badge = when {
-                                                        !st.isOnline -> "🔴 Недоступен"
-                                                        st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
-                                                        else -> "🟢 Онлайн"
-                                                    }
-                                                    val summaryLine = buildList {
-                                                        add(badge)
-                                                        st.resolvedIp?.let { add("IP: $it") }
-                                                        st.latencyMs?.let { add("Пинг: $it мс") }
-                                                        add("Проверка: ${st.checkedAtDisplay}")
-                                                    }.joinToString("  ·  ")
-                                                    Text(summaryLine, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                                    st.httpServerSummary?.let {
-                                                        Text("🌐 Веб-ответ: $it", fontSize = 12.sp)
-                                                    }
-                                                    if (st.sslSubject != null) {
-                                                        Text(
-                                                            text = "🔒 SSL CN: ${st.sslSubject} · действует до ${st.sslExpiresFormatted ?: "—"} (${st.sslDaysRemaining ?: 0} дн.)" +
-                                                                (st.sslIssuer?.takeIf { it.isNotBlank() }?.let { " · УЦ: $it" }.orEmpty()),
-                                                            fontSize = 12.sp
-                                                        )
+                                                SelectionContainer {
+                                                    Column(
+                                                        modifier = Modifier.padding(10.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                                    ) {
+                                                        val badge = when {
+                                                            !st.isOnline -> "🔴 Недоступен"
+                                                            st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
+                                                            else -> "🟢 Онлайн"
+                                                        }
+                                                        val summaryLine = buildList {
+                                                            add(badge)
+                                                            st.resolvedIp?.let { add("IP: $it") }
+                                                            st.latencyMs?.let { add("Пинг: $it мс") }
+                                                            add("Проверка: ${st.checkedAtDisplay}")
+                                                        }.joinToString("  ·  ")
+                                                        Text(summaryLine, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        st.httpServerSummary?.let {
+                                                            Text("🌐 Веб-ответ: $it", fontSize = 12.sp)
+                                                        }
+                                                        if (st.sslSubject != null) {
+                                                            Text(
+                                                                text = "🔒 SSL CN: ${st.sslSubject} · действует до ${st.sslExpiresFormatted ?: "—"} (${st.sslDaysRemaining ?: 0} дн.)" +
+                                                                    (st.sslIssuer?.takeIf { it.isNotBlank() }?.let { " · УЦ: $it" }.orEmpty()),
+                                                                fontSize = 12.sp
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }

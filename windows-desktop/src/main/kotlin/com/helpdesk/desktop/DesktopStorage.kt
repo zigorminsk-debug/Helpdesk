@@ -45,6 +45,7 @@ import javax.crypto.spec.SecretKeySpec
 data class DesktopPersistedState(
     val appSettings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
+    val darkTheme: Boolean = false,
     val minimizeToTray: Boolean = true,
     val respectWorkScheduleOnDesktop: Boolean = false,
     val dismissedGifDateIso: String = "",
@@ -176,6 +177,7 @@ class DesktopStorage {
             val migratedState = DesktopPersistedState(
                 appSettings = safeApp,
                 filterSettings = safeFilter,
+                darkTheme = raw.darkTheme,
                 minimizeToTray = raw.minimizeToTray,
                 respectWorkScheduleOnDesktop = raw.respectWorkScheduleOnDesktop,
                 dismissedGifDateIso = raw.dismissedGifDateIso.orEmpty(),

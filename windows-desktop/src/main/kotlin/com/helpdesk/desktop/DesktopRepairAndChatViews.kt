@@ -11,6 +11,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -117,8 +119,8 @@ fun DesktopRepairWorkspace(
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = Color.White,
-                    unfocusedContainerColor = Color.White
+                    focusedContainerColor = DesktopColors.CardBg,
+                    unfocusedContainerColor = DesktopColors.CardBg
                 ),
                 leadingIcon = { Text("🔎", fontSize = 14.sp) },
                 placeholder = {
@@ -296,6 +298,7 @@ fun DesktopRepairWorkspace(
     readyNotifyItem?.let { target ->
         RepairReadyNotifyDialog(
             item = target,
+            onStatusMessage = { controller.showStatusMessage(it) },
             onSendToJiraTicket = {
                 controller.postRepairReadyToLinkedTicket(target)
                 readyNotifyItem = null
@@ -328,68 +331,73 @@ private fun RepairItemDesktopCard(
         ),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            // Audit banner for soft-deleted items in «Удалённые»
-            if (item.isDeleted) {
-                val deletedWhen = item.deletedAtEpochMs?.let { REPAIR_TS_FMT.format(Instant.ofEpochMilli(it)) } ?: "—"
-                Surface(
-                    color = DesktopColors.DeletedRed.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // Audit banner for soft-deleted items in «Удалённые»
+                if (item.isDeleted) {
+                    val deletedWhen = item.deletedAtEpochMs?.let { REPAIR_TS_FMT.format(Instant.ofEpochMilli(it)) } ?: "—"
+                    Surface(
+                        color = DesktopColors.DeletedRed.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "🗑 Удалено: ${item.deletedBy?.ifBlank { "Неизвестно" } ?: "Неизвестно"} · $deletedWhen",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = DesktopColors.DeletedRed
-                            )
-                            item.deleteReason?.takeIf { it.isNotBlank() }?.let { r ->
-                                Text("Причина: $r", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "🗑 Удалено: ${item.deletedBy?.ifBlank { "Неизвестно" } ?: "Неизвестно"} · $deletedWhen",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = DesktopColors.DeletedRed
+                                )
+                                item.deleteReason?.takeIf { it.isNotBlank() }?.let { r ->
+                                    Text("Причина: $r", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                            DisableSelection {
+                                FilledTonalButton(onClick = onRestore) {
+                                    Text("↩ Восстановить", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
                             }
                         }
-                        FilledTonalButton(onClick = onRestore) {
-                            Text("↩ Восстановить", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = item.clientName.ifBlank { "Клиент не указан" },
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = item.intakeNumber,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = DesktopColors.CslOrange
+                        )
+                        if (item.linkedTicketKey.isNotBlank()) {
+                            DisableSelection {
+                                AssistChip(
+                                    onClick = { onOpenLinkedTicket(item.linkedTicketKey) },
+                                    label = { Text("Заявка ${item.linkedTicketKey} ↗", fontSize = 11.sp) }
+                                )
+                            }
                         }
                     }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = item.clientName.ifBlank { "Клиент не указан" },
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = item.intakeNumber,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
-                        color = DesktopColors.CslOrange
-                    )
-                    if (item.linkedTicketKey.isNotBlank()) {
-                        AssistChip(
-                            onClick = { onOpenLinkedTicket(item.linkedTicketKey) },
-                            label = { Text("Заявка ${item.linkedTicketKey} ↗", fontSize = 11.sp) }
-                        )
-                    }
-                }
 
                 Surface(
                     color = DesktopColors.CslOrange.copy(alpha = 0.14f),
@@ -437,56 +445,59 @@ private fun RepairItemDesktopCard(
                 )
 
                 if (!item.isDeleted) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        item.status.nextLogicalStatus()?.let { next ->
-                            Button(
-                                onClick = { onAdvanceStatus(next) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-                            ) {
-                                Text("→ ${next.shortTitle}", fontSize = 11.5.sp)
+                    DisableSelection {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item.status.nextLogicalStatus()?.let { next ->
+                                Button(
+                                    onClick = { onAdvanceStatus(next) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                ) {
+                                    Text("→ ${next.shortTitle}", fontSize = 11.5.sp)
+                                }
                             }
-                        }
-                        OutlinedButton(
-                            onClick = onPrintSticker,
-                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
-                        ) {
-                            Text("🏷 QR 58×40", fontSize = 11.5.sp)
-                        }
-                        OutlinedButton(
-                            onClick = onNotifyReady,
-                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
-                        ) {
-                            Text("📣 Готово", fontSize = 11.5.sp)
-                        }
-                        OutlinedButton(
-                            onClick = { onPrintPdf(false) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text("📄 PDF квитанция", fontSize = 11.5.sp)
-                        }
-                        if (item.linkedTicketKey.isNotBlank()) {
                             OutlinedButton(
-                                onClick = { onPrintPdf(true) },
+                                onClick = onPrintSticker,
+                                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                            ) {
+                                Text("🏷 QR 58×40", fontSize = 11.5.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onNotifyReady,
+                                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
+                            ) {
+                                Text("📣 Готово", fontSize = 11.5.sp)
+                            }
+                            OutlinedButton(
+                                onClick = { onPrintPdf(false) },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("📎 PDF в Jira", fontSize = 11.5.sp)
+                                Text("📄 PDF квитанция", fontSize = 11.5.sp)
                             }
-                        }
-                        OutlinedButton(
-                            onClick = onEdit,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text("✏ Изменить", fontSize = 11.5.sp)
-                        }
-                        TextButton(
-                            onClick = onRequestSoftDelete,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text("🗑 В удалённые", fontSize = 11.5.sp, color = DesktopColors.DeletedRed)
+                            if (item.linkedTicketKey.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = { onPrintPdf(true) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("📎 PDF в Jira", fontSize = 11.5.sp)
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onEdit,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("✏ Изменить", fontSize = 11.5.sp)
+                            }
+                            TextButton(
+                                onClick = onRequestSoftDelete,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text("🗑 В удалённые", fontSize = 11.5.sp, color = DesktopColors.DeletedRed)
+                            }
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -810,17 +821,19 @@ fun DesktopChatWorkspace(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "📌 Дежурная смена / Закреп инженеров ${if (state.chatRoomKey.isNotBlank()) "(${state.chatRoomKey})" else ""}",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = DesktopColors.CslOrange
-                    )
-                    Text(
-                        text = state.chatPinnedNote.ifBlank { "Нет закреплённого объявления смены. Нажмите «Изменить закреп», чтобы оставить информацию коллегам." },
-                        fontSize = 12.5.sp
-                    )
+                SelectionContainer(modifier = Modifier.weight(1f)) {
+                    Column {
+                        Text(
+                            "📌 Дежурная смена / Закреп инженеров ${if (state.chatRoomKey.isNotBlank()) "(${state.chatRoomKey})" else ""}",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = DesktopColors.CslOrange
+                        )
+                        Text(
+                            text = state.chatPinnedNote.ifBlank { "Нет закреплённого объявления смены. Нажмите «Изменить закреп», чтобы оставить информацию коллегам." },
+                            fontSize = 12.5.sp
+                        )
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { showEditPinDialog = true }) {
@@ -914,7 +927,9 @@ fun DesktopChatWorkspace(
                                     }
 
                                     if (msg.text.isNotBlank()) {
-                                        Text(msg.text, fontSize = 13.sp)
+                                        SelectionContainer {
+                                            Text(msg.text, fontSize = 13.sp)
+                                        }
                                     }
 
                                     // Inline image or file attachment in chat
@@ -1151,6 +1166,7 @@ fun DesktopChatWorkspace(
 @Composable
 private fun RepairReadyNotifyDialog(
     item: RepairEquipmentItem,
+    onStatusMessage: (String) -> Unit,
     onSendToJiraTicket: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1173,14 +1189,17 @@ private fun RepairReadyNotifyDialog(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(onClick = { WindowsExternalLaunchers.copyToClipboard(message) }) {
+                    OutlinedButton(onClick = {
+                        WindowsExternalLaunchers.copyToClipboard(message)
+                        onStatusMessage("Текст уведомления скопирован в буфер обмена")
+                    }) {
                         Text("📋 Скопировать текст", fontSize = 11.5.sp)
                     }
                     if (phone.isNotBlank()) {
                         Button(
                             onClick = {
                                 WindowsExternalLaunchers.copyToClipboard(message)
-                                WindowsExternalLaunchers.openViber(phone)
+                                onStatusMessage(WindowsExternalLaunchers.openViber(phone))
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7360F2))
                         ) {
@@ -1189,7 +1208,7 @@ private fun RepairReadyNotifyDialog(
                         Button(
                             onClick = {
                                 WindowsExternalLaunchers.copyToClipboard(message)
-                                WindowsExternalLaunchers.openWhatsApp(phone)
+                                onStatusMessage(WindowsExternalLaunchers.openWhatsApp(phone))
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
                         ) {
