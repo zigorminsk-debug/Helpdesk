@@ -1362,9 +1362,9 @@ class DesktopController(
         val demo = ZabbixProblem(
             eventId = "DEMO${nowSec % 10000}",
             triggerId = "9901",
-            name = "Недоступен сервис 1С / Критическая загрузка диска C: (свободно < 2%)",
-            opData = "Free: 1.4 GB (1.8%)",
-            severityLevel = 4,
+            name = "Disaster: Недоступен узел / авария сервиса 1С Продакшн",
+            opData = "ICMP ping: DOWN",
+            severityLevel = 5,
             hostId = "101",
             hostTechnicalName = "srv-1c-prod.csl.by",
             hostDisplayName = "Сервер 1С Продакшн",

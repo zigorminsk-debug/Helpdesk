@@ -441,11 +441,12 @@ class JiraMonitorService : Service() {
                             .format(Instant.now())
                         val dismissed = repository.dismissedZabbixKeys.value
                         val muted = repository.currentMutedZabbixKeySet()
+                        val minSev = settings.normalizedZabbixMinSeverity
                         val critCount = snapshot.problems.count {
-                            it.severityLevel >= 3 && !it.isHiddenFromActiveFeed(dismissed, muted)
+                            it.severityLevel >= minSev && !it.isHiddenFromActiveFeed(dismissed, muted)
                         }
                         updateForegroundText(
-                            statusText = "Zabbix активен · ошибок/аварий: $critCount · $timeStr",
+                            statusText = "Zabbix активен · Disaster: $critCount · $timeStr",
                             coreStateKey = "zbx_only_$critCount"
                         )
                     }

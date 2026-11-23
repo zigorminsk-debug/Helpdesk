@@ -118,10 +118,10 @@ private enum class ZabbixViewMode {
 }
 
 private val ZABBIX_ALERT_THRESHOLD_OPTIONS = listOf(
-    3 to "Ошибки и критич. (3–5)",
-    4 to "Высокие и аварии (4–5)",
-    2 to "Предупреждения+ (2–5)",
-    5 to "Только аварии (5)"
+    5 to "Только Disaster (5)",
+    4 to "High и Disaster (4–5)",
+    3 to "Average и выше (3–5)",
+    2 to "Warning и выше (2–5)"
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -490,7 +490,7 @@ fun ZabbixMonitorScreen(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "Звук, всплывающее окно и пуш при новых проблемах",
+                                        text = "Звук и баннер только при попадании проблемы в Disaster",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

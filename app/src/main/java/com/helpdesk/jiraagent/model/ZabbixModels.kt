@@ -42,9 +42,9 @@ enum class ZabbixSeverity(
     ),
     DISASTER(
         level = 5,
-        ruTitle = "Чрезвычайная авария",
-        shortBadge = "АВАРИЯ",
-        bannerSuffix = "Чрезвычайная авария Zabbix"
+        ruTitle = "Disaster (Чрезвычайная авария)",
+        shortBadge = "DISASTER",
+        bannerSuffix = "Disaster — Чрезвычайная авария Zabbix"
     );
 
     companion object {
@@ -54,10 +54,10 @@ enum class ZabbixSeverity(
 
         fun formatThresholdOptionLabel(minLevel: Int): String {
             return when (minLevel) {
-                5 -> "Только Чрезвычайные (5)"
-                4 -> "Высокие и Чрезвычайные (4–5)"
-                3 -> "Ошибки и критические (3–5)"
-                2 -> "Предупреждения и выше (2–5)"
+                5 -> "Только Disaster (5)"
+                4 -> "High и Disaster (4–5)"
+                3 -> "Average и выше (3–5)"
+                2 -> "Warning и выше (2–5)"
                 else -> "Все проблемы (1–5)"
             }
         }
@@ -140,19 +140,14 @@ data class ZabbixProblem(
         )
     }
 
+    /**
+     * Strict severity check for Zabbix sound & popup banner notifications.
+     * By default (`minSeverityLevel = 5`), sound and banner notifications fire
+     * ONLY when a problem enters `Disaster` (`severityLevel == 5`).
+     */
     fun shouldTriggerBanner(minSeverityLevel: Int): Boolean {
         val threshold = minSeverityLevel.coerceIn(1, 5)
-        if (severityLevel >= threshold) return true
-        // Also catch triggers explicitly marked "критич" / "critical" / "ошибк" / "error" at Warning(2)+
-        if (severityLevel >= 2) {
-            val lower = name.lowercase()
-            if (lower.contains("критич") || lower.contains("critical") ||
-                lower.contains("disaster") || lower.contains("авари")
-            ) {
-                return true
-            }
-        }
-        return false
+        return severityLevel >= threshold
     }
 
     fun formattedStartTime(zoneId: ZoneId = ZoneId.of("Europe/Minsk")): String {

@@ -50,13 +50,13 @@ class ZabbixIntegrationTest {
         val ordinaryWarn = ZabbixProblem(
             eventId = "102",
             triggerId = "12",
-            name = "CPU load slightly elevated",
+            name = "System status is in critical state (Warning level)",
             severityLevel = ZabbixSeverity.WARNING.level
         )
         val errorProb = ZabbixProblem(
             eventId = "103",
             triggerId = "13",
-            name = "Ошибка службы резервного копирования",
+            name = "Критическая ошибка службы резервного копирования",
             severityLevel = ZabbixSeverity.AVERAGE.level,
             hostDisplayName = "Backup-Srv",
             hostIp = "192.168.10.50"
@@ -64,7 +64,7 @@ class ZabbixIntegrationTest {
         val critWarnProb = ZabbixProblem(
             eventId = "104",
             triggerId = "14",
-            name = "High memory utilization (>95%)",
+            name = "Critical high memory utilization (>95%)",
             severityLevel = ZabbixSeverity.HIGH.level,
             hostDisplayName = "1C-Prod"
         )
@@ -77,15 +77,16 @@ class ZabbixIntegrationTest {
         )
 
         val defaultThreshold = AppSettings().normalizedZabbixMinSeverity
+        assertEquals(ZabbixSeverity.DISASTER.level, defaultThreshold)
         assertFalse(infoProb.shouldTriggerBanner(defaultThreshold))
         assertFalse(ordinaryWarn.shouldTriggerBanner(defaultThreshold))
-        assertTrue(errorProb.shouldTriggerBanner(defaultThreshold))
-        assertTrue(critWarnProb.shouldTriggerBanner(defaultThreshold))
+        assertFalse(errorProb.shouldTriggerBanner(defaultThreshold))
+        assertFalse(critWarnProb.shouldTriggerBanner(defaultThreshold))
         assertTrue(disasterProb.shouldTriggerBanner(defaultThreshold))
 
-        val ticket = errorProb.toBannerDisplayTicket("http://z.csl.by")
-        assertEquals("ZBX-103", ticket.key)
-        assertTrue(ticket.reporterName.contains("Backup-Srv"))
+        val ticket = disasterProb.toBannerDisplayTicket("http://z.csl.by")
+        assertEquals("ZBX-105", ticket.key)
+        assertTrue(ticket.reporterName.contains("Core-GW"))
         assertTrue(ticket.isClientTicket)
     }
 

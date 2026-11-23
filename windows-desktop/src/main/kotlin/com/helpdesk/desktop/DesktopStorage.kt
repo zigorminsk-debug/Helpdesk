@@ -56,6 +56,7 @@ data class DesktopPersistedState(
     val seenTicketKeys: Set<String> = emptySet(),
     val deferredAlertKeys: Set<String> = emptySet(),
     val zabbixBaselineInitialized: Boolean = false,
+    val zabbixDisasterOnlyMigrated: Boolean = true,
     val seenZabbixAlertKeys: Set<String> = emptySet(),
     val deferredZabbixAlertKeys: Set<String> = emptySet(),
     val dismissedZabbixAlertKeys: Set<String> = emptySet(),
@@ -113,18 +114,24 @@ class DesktopStorage {
             val json = String(cipher.doFinal(cipherBytes), StandardCharsets.UTF_8)
             val raw = gson.fromJson(json, DesktopPersistedState::class.java) ?: DesktopPersistedState()
 
+            val needsZabbixDisasterMigration = !raw.zabbixDisasterOnlyMigrated
             val safeApp = (raw.appSettings ?: AppSettings()).let { s ->
                 val safeWikiUrl = (s.confluenceUrl as String?)?.takeIf { it.isNotBlank() }
                     ?: AppSettings.DEFAULT_CONFLUENCE_URL
                 val safeZabbixUrl = (s.zabbixUrl as String?)?.takeIf { it.isNotBlank() }
                     ?: AppSettings.DEFAULT_ZABBIX_URL
+                val migratedMinSev = if (needsZabbixDisasterMigration) {
+                    AppSettings.DEFAULT_ZABBIX_MIN_SEVERITY
+                } else {
+                    s.normalizedZabbixMinSeverity
+                }
                 s.copy(
                     confluenceUrl = safeWikiUrl,
                     confluenceToken = (s.confluenceToken as String?).orEmpty(),
                     zabbixUrl = safeZabbixUrl,
                     zabbixLogin = (s.zabbixLogin as String?).orEmpty(),
                     zabbixPassword = (s.zabbixPassword as String?).orEmpty(),
-                    zabbixMinAlertSeverity = s.normalizedZabbixMinSeverity,
+                    zabbixMinAlertSeverity = migratedMinSev,
                     offHoursPollIntervalMinutes = s.normalizedOffHoursPollMinutes,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
@@ -166,7 +173,7 @@ class DesktopStorage {
                 filterSettings = safeFilter
             )
 
-            DesktopPersistedState(
+            val migratedState = DesktopPersistedState(
                 appSettings = safeApp,
                 filterSettings = safeFilter,
                 minimizeToTray = raw.minimizeToTray,
@@ -176,15 +183,20 @@ class DesktopStorage {
                 resolvedChatRoomKey = raw.resolvedChatRoomKey.orEmpty(),
                 resolvedRepairRoomKey = raw.resolvedRepairRoomKey.orEmpty(),
                 pinnedShiftNote = raw.pinnedShiftNote.orEmpty(),
-                    baselineInitialized = raw.baselineInitialized,
-                    seenTicketKeys = raw.seenTicketKeys ?: emptySet(),
-                    deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
-                    zabbixBaselineInitialized = raw.zabbixBaselineInitialized,
-                    seenZabbixAlertKeys = raw.seenZabbixAlertKeys ?: emptySet(),
-                    deferredZabbixAlertKeys = raw.deferredZabbixAlertKeys ?: emptySet(),
-                    dismissedZabbixAlertKeys = raw.dismissedZabbixAlertKeys ?: emptySet(),
-                    mutedZabbixRules = (raw.mutedZabbixRules ?: emptyList()).filter { !(it.ruleKey as String?).isNullOrBlank() },
-                    cachedZabbixSnapshot = raw.cachedZabbixSnapshot,
+                baselineInitialized = raw.baselineInitialized,
+                seenTicketKeys = raw.seenTicketKeys ?: emptySet(),
+                deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
+                zabbixBaselineInitialized = raw.zabbixBaselineInitialized,
+                zabbixDisasterOnlyMigrated = true,
+                seenZabbixAlertKeys = raw.seenZabbixAlertKeys ?: emptySet(),
+                deferredZabbixAlertKeys = if (needsZabbixDisasterMigration) {
+                    emptySet()
+                } else {
+                    raw.deferredZabbixAlertKeys ?: emptySet()
+                },
+                dismissedZabbixAlertKeys = raw.dismissedZabbixAlertKeys ?: emptySet(),
+                mutedZabbixRules = (raw.mutedZabbixRules ?: emptyList()).filter { !(it.ruleKey as String?).isNullOrBlank() },
+                cachedZabbixSnapshot = raw.cachedZabbixSnapshot,
                 clientDossierNotes = raw.clientDossierNotes ?: emptyMap(),
                 clientPassports = ClientTechPassportCodec.mergePassports(
                     localMap = raw.clientPassports ?: emptyMap(),
@@ -207,6 +219,10 @@ class DesktopStorage {
                 cachedTickets = safeTickets,
                 cachedChatMessages = raw.cachedChatMessages ?: emptyList()
             )
+            if (needsZabbixDisasterMigration) {
+                saveState(migratedState)
+            }
+            migratedState
         }.getOrDefault(DesktopPersistedState())
     }
 

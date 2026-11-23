@@ -1534,14 +1534,20 @@ class SettingsRepository private constructor(context: Context) {
                 editor.putString(KEY_EXCLUDED_KEYWORDS, FilterSettings.DEFAULT_EXCLUDED_LABELS_AND_KEYWORDS)
             }
 
-            if (cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)) {
+            if (savedVersion < 4 && cachePrefs.getBoolean(KEY_BASELINE_INITIALIZED, false)) {
                 cachePrefs.edit().putBoolean(KEY_SILENT_RESEED_ONCE, true).apply()
+            }
+
+            if (savedVersion < 5) {
+                // Migrate Zabbix alert threshold to Disaster-only (5) so sound & banner fire ONLY on Disaster
+                editor.putInt(KEY_ZABBIX_MIN_SEVERITY, AppSettings.DEFAULT_ZABBIX_MIN_SEVERITY)
+                cachePrefs.edit().remove(KEY_DEFERRED_ZABBIX_ALERT_KEYS).apply()
             }
 
             editor.putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION).apply()
         }
 
-        private const val CURRENT_FILTER_SCHEMA_VERSION = 4
+        private const val CURRENT_FILTER_SCHEMA_VERSION = 5
         private const val KEY_FILTER_SCHEMA_VERSION = "filter_schema_version"
 
         private const val KEY_SERVER_URL = "server_url"

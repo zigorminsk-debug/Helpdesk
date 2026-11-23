@@ -1232,16 +1232,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val demoProblem = ZabbixProblem(
             eventId = "DEMO${nowSec % 10000}",
             triggerId = "9901",
-            name = "Недоступен сервис 1С / Критическая загрузка диска C: (свободно < 2%)",
-            opData = "Free: 1.4 GB (1.8%)",
-            severityLevel = 4,
+            name = "Disaster: Недоступен узел / авария сервиса 1С Продакшн",
+            opData = "ICMP ping: DOWN",
+            severityLevel = 5,
             hostId = "101",
             hostTechnicalName = "srv-1c-prod.csl.by",
             hostDisplayName = "Сервер 1С Продакшн",
             hostIp = "192.168.10.25",
             clockEpochSeconds = nowSec,
             acknowledged = false,
-            comments = "Тестовое критическое предупреждение Zabbix (z.csl.by) для проверки срочного баннера."
+            comments = "Тестовое событие Zabbix уровня Disaster (z.csl.by) для проверки срочного баннера и звука."
         )
         NotificationHelper.showZabbixAlertBanner(
             context = appContext,

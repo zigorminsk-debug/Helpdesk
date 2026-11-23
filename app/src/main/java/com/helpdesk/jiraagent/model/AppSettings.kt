@@ -147,7 +147,7 @@ data class AppSettings(
     companion object {
         const val DEFAULT_CONFLUENCE_URL = "https://w.csl.by"
         const val DEFAULT_ZABBIX_URL = "http://z.csl.by"
-        const val DEFAULT_ZABBIX_MIN_SEVERITY = 3
+        const val DEFAULT_ZABBIX_MIN_SEVERITY = 5
         const val DEFAULT_OFF_HOURS_POLL_MINUTES = 120
         const val OFF_HOURS_POLL_DISABLED = -1
         const val OFF_HOURS_POLL_SAME_AS_WORK = -2

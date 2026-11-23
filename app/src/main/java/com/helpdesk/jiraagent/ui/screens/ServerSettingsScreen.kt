@@ -384,10 +384,10 @@ fun ServerSettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf(
-                        3 to "Ошибки и критич. (3–5)",
-                        4 to "Высокие и аварии (4–5)",
-                        2 to "Предупреждения+ (2–5)",
-                        5 to "Только аварии (5)"
+                        5 to "Только Disaster (5)",
+                        4 to "High и Disaster (4–5)",
+                        3 to "Average и выше (3–5)",
+                        2 to "Warning и выше (2–5)"
                     ).forEach { (lvl, label) ->
                         FilterChip(
                             selected = draft.normalizedZabbixMinSeverity == lvl,

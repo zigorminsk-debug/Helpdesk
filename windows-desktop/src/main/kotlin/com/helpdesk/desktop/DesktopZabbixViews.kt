@@ -36,10 +36,10 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private val DESKTOP_ZABBIX_THRESHOLDS = listOf(
-    3 to "Ошибки и критические (3–5)",
-    4 to "Высокие и аварии (4–5)",
-    2 to "Предупреждения и выше (2–5)",
-    5 to "Только аварии (5)"
+    5 to "Только Disaster (5)",
+    4 to "High и Disaster (4–5)",
+    3 to "Average и выше (3–5)",
+    2 to "Warning и выше (2–5)"
 )
 
 @Composable
@@ -254,7 +254,7 @@ fun DesktopZabbixWorkspace(
                                     }
                                 }
                             } else {
-                                "Авторизация по логину и паролю · всплывающий баннер при ошибках и критических предупреждениях"
+                                "Авторизация по логину и паролю · всплывающий баннер и звук только при попадании в Disaster"
                             }
                             Text(sub, fontSize = 12.sp, color = Color(0xFF64748B), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
