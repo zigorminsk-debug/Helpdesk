@@ -1541,7 +1541,7 @@ class SettingsRepository private constructor(context: Context) {
             if (savedVersion < 5) {
                 // Migrate Zabbix alert threshold to Disaster-only (5) so sound & banner fire ONLY on Disaster
                 editor.putInt(KEY_ZABBIX_MIN_SEVERITY, AppSettings.DEFAULT_ZABBIX_MIN_SEVERITY)
-                cachePrefs.edit().remove(KEY_DEFERRED_ZABBIX_ALERT_KEYS).apply()
+                cachePrefs.edit().remove(KEY_DEFERRED_ZABBIX_KEYS).apply()
             }
 
             editor.putInt(KEY_FILTER_SCHEMA_VERSION, CURRENT_FILTER_SCHEMA_VERSION).apply()
