@@ -207,274 +207,408 @@ fun DesktopTicketsWorkspace(
         state.tickets.firstOrNull { it.key == state.selectedTicketKey }
     }
 
-    Row(modifier = Modifier.fillMaxSize()) {
-        // ================= LEFT PANE: QUEUE & EMPTY GIF + HABR =================
-        Column(
-            modifier = Modifier
-                .width(455.dp)
-                .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(10.dp)
-        ) {
-            // Search & Quick Action Toolbar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val leftPaneWidth = when {
+            maxWidth >= 1650.dp -> 485.dp
+            maxWidth >= 1320.dp -> 455.dp
+            else -> 415.dp
+        }
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            // ================= LEFT PANE: QUEUE & EMPTY GIF + HABR =================
+            Column(
+                modifier = Modifier
+                    .width(leftPaneWidth)
+                    .fillMaxHeight()
+                    .background(DesktopColors.ListPaneBg)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
+                // 1. Full-width Search Bar (single crisp line — never squished by action buttons!)
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    placeholder = { Text("Поиск: клиент, CSL-номер, телефон...", fontSize = 12.sp) },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White,
+                        focusedBorderColor = DesktopColors.CslOrange,
+                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                    ),
+                    leadingIcon = {
+                        Text("🔎", fontSize = 14.sp)
+                    },
+                    placeholder = {
+                        Text(
+                            text = "Поиск по клиенту, номеру CSL, теме или телефону…",
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = Color(0xFF64748B)
+                        )
+                    },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            TextButton(onClick = { searchQuery = "" }) { Text("✕") }
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFFE2E8F0),
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clickable { searchQuery = "" }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("✕", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334155))
+                                }
+                            }
                         }
                     }
                 )
-                FilledTonalButton(
-                    onClick = { showCreateDialog = true },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text("➕ Заявка", fontSize = 12.sp, maxLines = 1)
-                }
-                OutlinedButton(
-                    onClick = { showSerialArchiveDialog = true },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text("🔎 S/N", fontSize = 11.5.sp, maxLines = 1)
-                }
-                OutlinedButton(
-                    onClick = { showKnowledgeArchiveDialog = true },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text("📚 Решения", fontSize = 11.5.sp, maxLines = 1)
-                }
-                if (showHabrPanel) {
-                    Button(
-                        onClick = { showHabrPanel = false },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
-                    ) {
-                        Text("📰 Habr", fontSize = 12.sp, maxLines = 1)
-                    }
-                } else {
-                    OutlinedButton(
-                        onClick = {
-                            showHabrPanel = true
-                            if (state.habrItems.isEmpty() && !state.isLoadingHabr) {
-                                controller.loadHabrFeed(state.habrCategory, force = false)
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
-                    ) {
-                        Text("📰 Habr", fontSize = 12.sp, maxLines = 1)
-                    }
-                }
-            }
 
-            if (state.postponedTickets.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Surface(
-                    color = DesktopColors.StatusAmber.copy(alpha = 0.14f),
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, DesktopColors.StatusAmber.copy(alpha = 0.5f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showPostponedDialog = true }
+                Spacer(Modifier.height(8.dp))
+
+                // 2. Clean Equal-Width Quick Actions Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            "⏰ Отложенные заявки к автовозврату: ${state.postponedTickets.size}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text("Открыть →", fontSize = 11.sp, color = DesktopColors.CslOrange)
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            // 4 Primary Queue Tabs (Zero Clipping)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                listOf(
-                    TicketQueueTab.NEW to newCount,
-                    TicketQueueTab.IN_PROGRESS to inWorkCount,
-                    TicketQueueTab.CLOSED to closedCount,
-                    TicketQueueTab.SERVICE to serviceCount
-                ).forEach { (tab, count) ->
-                    val selected = !showHabrPanel && queueTab == tab
                     Surface(
-                        color = if (selected) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                         shape = RoundedCornerShape(8.dp),
+                        color = DesktopColors.CslOrange,
+                        contentColor = Color.White,
                         modifier = Modifier
-                            .weight(1f)
-                            .clickable {
-                                showHabrPanel = false
-                                queueTab = tab
-                            }
+                            .weight(1.1f)
+                            .height(34.dp)
+                            .clickable { showCreateDialog = true }
                     ) {
-                        Column(
-                            modifier = Modifier.padding(vertical = 6.dp, horizontal = 3.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 6.dp)) {
                             Text(
-                                text = tab.title,
-                                fontSize = 11.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                "+ Заявка",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 softWrap = false
                             )
+                        }
+                    }
+
+                    @Composable
+                    fun SecondaryActionPill(
+                        label: String,
+                        active: Boolean = false,
+                        modifier: Modifier = Modifier,
+                        onClick: () -> Unit
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (active) DesktopColors.CslMidnight else Color.White,
+                            contentColor = if (active) Color.White else Color(0xFF1E293B),
+                            border = BorderStroke(
+                                1.dp,
+                                if (active) DesktopColors.CslMidnight else Color(0xFFCBD5E1)
+                            ),
+                            modifier = modifier
+                                .height(34.dp)
+                                .clickable(onClick = onClick)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 6.dp)) {
+                                Text(
+                                    text = label,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
+
+                    SecondaryActionPill(
+                        label = "🔎 S/N",
+                        modifier = Modifier.weight(0.9f),
+                        onClick = { showSerialArchiveDialog = true }
+                    )
+                    SecondaryActionPill(
+                        label = "📚 Решения",
+                        modifier = Modifier.weight(1.1f),
+                        onClick = { showKnowledgeArchiveDialog = true }
+                    )
+                    SecondaryActionPill(
+                        label = "📰 Habr",
+                        active = showHabrPanel,
+                        modifier = Modifier.weight(0.95f),
+                        onClick = {
+                            val next = !showHabrPanel
+                            showHabrPanel = next
+                            if (next && state.habrItems.isEmpty() && !state.isLoadingHabr) {
+                                controller.loadHabrFeed(state.habrCategory, force = false)
+                            }
+                        }
+                    )
+                }
+
+                if (state.postponedTickets.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = DesktopColors.StatusAmber.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, DesktopColors.StatusAmber.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showPostponedDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
                             Text(
-                                text = count.toString(),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1
+                                "⏰ Отложенные к автовозврату: ${state.postponedTickets.size}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text("Открыть →", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = DesktopColors.CslOrange)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // 3. Modern Segmented Queue Control
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFE2E8F0).copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        listOf(
+                            Triple(TicketQueueTab.NEW, newCount, DesktopColors.CslOrange),
+                            Triple(TicketQueueTab.IN_PROGRESS, inWorkCount, DesktopColors.StatusBlue),
+                            Triple(TicketQueueTab.CLOSED, closedCount, Color(0xFF0F172A)),
+                            Triple(TicketQueueTab.SERVICE, serviceCount, Color(0xFF475569))
+                        ).forEach { (tab, count, activeColor) ->
+                            val selected = !showHabrPanel && queueTab == tab
+                            Surface(
+                                color = if (selected) activeColor else Color.Transparent,
+                                contentColor = if (selected) Color.White else Color(0xFF334155),
+                                shape = RoundedCornerShape(8.dp),
+                                shadowElevation = if (selected) 1.dp else 0.dp,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        showHabrPanel = false
+                                        queueTab = tab
+                                    }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = tab.title,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                    Spacer(Modifier.height(1.dp))
+                                    Text(
+                                        text = count.toString(),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (selected) Color.White else Color(0xFF0F172A),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. Clean Sub-filter Pills (no lavender purple!)
+                @Composable
+                fun SubScopePill(
+                    label: String,
+                    selected: Boolean,
+                    accentColor: Color = DesktopColors.CslOrange,
+                    modifier: Modifier = Modifier,
+                    onClick: () -> Unit
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) accentColor.copy(alpha = 0.12f) else Color.White,
+                        border = BorderStroke(
+                            1.dp,
+                            if (selected) accentColor else Color(0xFFE2E8F0)
+                        ),
+                        modifier = modifier
+                            .height(30.dp)
+                            .clickable(onClick = onClick)
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                            Text(
+                                text = label,
+                                fontSize = 11.5.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (selected) accentColor else Color(0xFF475569),
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
                 }
-            }
 
-            // Sub-tabs («Все» / «Мои») for В работе & Закрытые, or SLA filter for Новые
-            if (!showHabrPanel && queueTab == TicketQueueTab.NEW && (staleNewCount > 0 || filterOnlyStaleNew)) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FilterChip(
-                        selected = !filterOnlyStaleNew,
-                        onClick = { filterOnlyStaleNew = false },
-                        label = { Text("Все новые ($newCount)", fontSize = 11.sp, maxLines = 1) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        selected = filterOnlyStaleNew,
-                        onClick = { filterOnlyStaleNew = !filterOnlyStaleNew },
-                        label = { Text("🔥 Ждут >${staleThresholdMin}м ($staleNewCount)", fontSize = 11.sp, maxLines = 1) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            } else if (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED) {
-                val activeScope = if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope else closedScope
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    AssigneeScope.entries.forEach { scopeOpt ->
-                        FilterChip(
-                            selected = activeScope == scopeOpt,
-                            onClick = {
-                                if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope = scopeOpt
-                                else closedScope = scopeOpt
-                            },
-                            label = { Text("${scopeOpt.title} заявки", fontSize = 11.sp, maxLines = 1) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            if (showHabrPanel || filteredList.isEmpty()) {
-                DesktopEmptyQueueWithHabr(
-                    showEmptyQueueHeader = !showHabrPanel && filteredList.isEmpty(),
-                    showMorningGif = !showHabrPanel && filteredList.isEmpty() && isMorningGifTime,
-                    gifIndex = state.emptyGifIndex,
-                    onCycleGif = { controller.cycleEmptyGif() },
-                    onDismissGifToday = { controller.dismissMorningGifToday() },
-                    onRefreshTickets = { controller.refreshTickets(silent = false) },
-                    habrCategory = state.habrCategory,
-                    habrItems = state.habrItems,
-                    selectedHabrUrl = state.selectedHabrItem?.url,
-                    isLoadingHabr = state.isLoadingHabr,
-                    onSelectHabrCategory = { controller.loadHabrFeed(it, force = false) },
-                    onRefreshHabr = { controller.loadHabrFeed(state.habrCategory, force = true) },
-                    onSelectHabrNews = { controller.selectHabrNews(it) }
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(filteredList, key = { it.key }) { ticket ->
-                        CompactDesktopTicketCard(
-                            ticket = ticket,
-                            isSelected = ticket.key == state.selectedTicketKey,
-                            settings = state.settings,
-                            onClick = { controller.selectTicket(ticket.key) }
-                        )
-                    }
-                }
-            }
-        }
-
-        VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-
-        // ================= RIGHT PANE: TICKET INSPECTOR OR IN-APP HABR READER =================
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.background)
-        ) {
-            val activeHabr = state.selectedHabrItem
-            when {
-                activeHabr != null -> {
-                    DesktopHabrArticleReader(
-                        item = activeHabr,
-                        detail = state.habrArticleDetail,
-                        isLoading = state.isLoadingHabrArticle,
-                        errorMessage = state.habrArticleError,
-                        allItems = state.habrItems,
-                        onSelectAdjacent = { controller.selectHabrNews(it) },
-                        onRetry = { controller.selectHabrNews(activeHabr, forceRefresh = true) },
-                        onCopyLink = { WindowsExternalLaunchers.copyToClipboard(activeHabr.url) },
-                        onClose = { controller.closeHabrArticle() }
-                    )
-                }
-                selectedTicket != null -> {
-                    DesktopTicketInspector(
-                        ticket = selectedTicket,
-                        state = state,
-                        controller = controller
-                    )
-                }
-                else -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(32.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                if (!showHabrPanel && queueTab == TicketQueueTab.NEW && (staleNewCount > 0 || filterOnlyStaleNew)) {
+                    Spacer(Modifier.height(7.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            "Выберите заявку или новость Habr слева",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                        SubScopePill(
+                            label = "Все новые ($newCount)",
+                            selected = !filterOnlyStaleNew,
+                            accentColor = DesktopColors.CslOrange,
+                            modifier = Modifier.weight(1f),
+                            onClick = { filterOnlyStaleNew = false }
                         )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "В правом окне открываются карточки заявок (SIP-звонок, 1-клик AnyDesk/RustDesk/RDP/SSH, вставка скриншотов Win+Shift+S, PDF-акты) и полный текст новостей с Habr.com без запуска стороннего браузера.",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.widthIn(max = 580.dp)
+                        SubScopePill(
+                            label = "🔥 Ждут >${staleThresholdMin}м ($staleNewCount)",
+                            selected = filterOnlyStaleNew,
+                            accentColor = DesktopColors.StatusRed,
+                            modifier = Modifier.weight(1f),
+                            onClick = { filterOnlyStaleNew = !filterOnlyStaleNew }
+                        )
+                    }
+                } else if (!showHabrPanel && (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED)) {
+                    val activeScope = if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope else closedScope
+                    val accent = if (queueTab == TicketQueueTab.IN_PROGRESS) DesktopColors.StatusBlue else Color(0xFF0F172A)
+                    Spacer(Modifier.height(7.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AssigneeScope.entries.forEach { scopeOpt ->
+                            SubScopePill(
+                                label = "${scopeOpt.title} заявки",
+                                selected = activeScope == scopeOpt,
+                                accentColor = accent,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope = scopeOpt
+                                    else closedScope = scopeOpt
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                if (showHabrPanel || filteredList.isEmpty()) {
+                    DesktopEmptyQueueWithHabr(
+                        showEmptyQueueHeader = !showHabrPanel && filteredList.isEmpty(),
+                        showMorningGif = !showHabrPanel && filteredList.isEmpty() && isMorningGifTime,
+                        gifIndex = state.emptyGifIndex,
+                        onCycleGif = { controller.cycleEmptyGif() },
+                        onDismissGifToday = { controller.dismissMorningGifToday() },
+                        onRefreshTickets = { controller.refreshTickets(silent = false) },
+                        habrCategory = state.habrCategory,
+                        habrItems = state.habrItems,
+                        selectedHabrUrl = state.selectedHabrItem?.url,
+                        isLoadingHabr = state.isLoadingHabr,
+                        onSelectHabrCategory = { controller.loadHabrFeed(it, force = false) },
+                        onRefreshHabr = { controller.loadHabrFeed(state.habrCategory, force = true) },
+                        onSelectHabrNews = { controller.selectHabrNews(it) }
+                    )
+                } else {
+                    val listState = rememberLazyListState()
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize().padding(end = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            items(filteredList, key = { it.key }) { ticket ->
+                                CompactDesktopTicketCard(
+                                    ticket = ticket,
+                                    isSelected = ticket.key == state.selectedTicketKey,
+                                    settings = state.settings,
+                                    onClick = { controller.selectTicket(ticket.key) }
+                                )
+                            }
+                        }
+                        VerticalScrollbar(
+                            adapter = rememberScrollbarAdapter(listState),
+                            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                        )
+                    }
+                }
+            }
+
+            VerticalDivider(thickness = 1.dp, color = Color(0xFFE2E8F0))
+
+            // ================= RIGHT PANE: TICKET INSPECTOR OR IN-APP HABR READER =================
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(DesktopColors.WorkspaceBg)
+            ) {
+                val activeHabr = state.selectedHabrItem
+                when {
+                    activeHabr != null -> {
+                        DesktopHabrArticleReader(
+                            item = activeHabr,
+                            detail = state.habrArticleDetail,
+                            isLoading = state.isLoadingHabrArticle,
+                            errorMessage = state.habrArticleError,
+                            allItems = state.habrItems,
+                            onSelectAdjacent = { controller.selectHabrNews(it) },
+                            onRetry = { controller.selectHabrNews(activeHabr, forceRefresh = true) },
+                            onCopyLink = { WindowsExternalLaunchers.copyToClipboard(activeHabr.url) },
+                            onClose = { controller.closeHabrArticle() }
+                        )
+                    }
+                    selectedTicket != null -> {
+                        DesktopTicketInspector(
+                            ticket = selectedTicket,
+                            state = state,
+                            controller = controller
+                        )
+                    }
+                    else -> {
+                        DesktopWelcomeOverviewPane(
+                            newCount = newCount,
+                            inWorkCount = inWorkCount,
+                            staleNewCount = staleNewCount,
+                            closedCount = closedCount,
+                            staleThresholdMin = staleThresholdMin,
+                            previewTickets = (clientTickets.filter { it.stage == TicketStage.IN_PROGRESS } +
+                                clientTickets.filter { it.stage == TicketStage.NEW }).take(4),
+                            onJumpToQueue = { targetTab, staleOnly ->
+                                showHabrPanel = false
+                                queueTab = targetTab
+                                filterOnlyStaleNew = staleOnly
+                            },
+                            onOpenTicket = { key -> controller.selectTicket(key) },
+                            onCreateTicket = { showCreateDialog = true },
+                            onOpenHabr = {
+                                showHabrPanel = true
+                                if (state.habrItems.isEmpty() && !state.isLoadingHabr) {
+                                    controller.loadHabrFeed(state.habrCategory, force = false)
+                                }
+                            },
+                            onOpenSerialSearch = { showSerialArchiveDialog = true },
+                            onOpenKnowledgeBase = { showKnowledgeArchiveDialog = true }
                         )
                     }
                 }
@@ -526,6 +660,260 @@ fun DesktopTicketsWorkspace(
     }
 }
 
+@Composable
+private fun DesktopWelcomeOverviewPane(
+    newCount: Int,
+    inWorkCount: Int,
+    staleNewCount: Int,
+    closedCount: Int,
+    staleThresholdMin: Int,
+    previewTickets: List<HelpdeskTicket>,
+    onJumpToQueue: (TicketQueueTab, Boolean) -> Unit,
+    onOpenTicket: (String) -> Unit,
+    onCreateTicket: () -> Unit,
+    onOpenHabr: () -> Unit,
+    onOpenSerialSearch: () -> Unit,
+    onOpenKnowledgeBase: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(28.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color.White,
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            shadowElevation = 2.dp,
+            modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(26.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            text = "Рабочее место инженера Help-CSL",
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFF0F172A)
+                        )
+                        Text(
+                            text = "Выберите заявку слева для работы со звонками, AnyDesk/RustDesk/RDP, комментариями и PDF-актами",
+                            fontSize = 12.5.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
+                }
+
+                // 4 Clickable KPI Summary Cards
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    @Composable
+                    fun KpiTile(
+                        title: String,
+                        count: Int,
+                        accent: Color,
+                        modifier: Modifier = Modifier,
+                        onClick: () -> Unit
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = accent.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
+                            modifier = modifier.clickable(onClick = onClick)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = title,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF475569),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = count.toString(),
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = accent
+                                )
+                            }
+                        }
+                    }
+
+                    KpiTile(
+                        title = "Новые",
+                        count = newCount,
+                        accent = DesktopColors.CslOrange,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onJumpToQueue(TicketQueueTab.NEW, false) }
+                    )
+                    KpiTile(
+                        title = "В работе",
+                        count = inWorkCount,
+                        accent = DesktopColors.StatusBlue,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onJumpToQueue(TicketQueueTab.IN_PROGRESS, false) }
+                    )
+                    KpiTile(
+                        title = "Ждут >${staleThresholdMin}м",
+                        count = staleNewCount,
+                        accent = if (staleNewCount > 0) DesktopColors.StatusRed else Color(0xFF64748B),
+                        modifier = Modifier.weight(1f),
+                        onClick = { onJumpToQueue(TicketQueueTab.NEW, true) }
+                    )
+                    KpiTile(
+                        title = "Закрытые",
+                        count = closedCount,
+                        accent = DesktopColors.StatusGreen,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onJumpToQueue(TicketQueueTab.CLOSED, false) }
+                    )
+                }
+
+                // Quick Preview of Active Tickets (1-click jump!)
+                if (previewTickets.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Быстрый переход к активным заявкам:",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF334155)
+                        )
+                        previewTickets.forEach { t ->
+                            val isWork = t.stage == TicketStage.IN_PROGRESS
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFFF8FAFC),
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpenTicket(t.key) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = if (isWork) DesktopColors.StatusBlueContainer else DesktopColors.CslOrangeContainer
+                                        ) {
+                                            Text(
+                                                text = t.key,
+                                                fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = t.reporterName.ifBlank { "Клиент" },
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF0F172A),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = t.summary,
+                                                fontSize = 12.sp,
+                                                color = Color(0xFF475569),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (isWork) DesktopColors.StatusBlue.copy(alpha = 0.12f)
+                                        else DesktopColors.CslOrange.copy(alpha = 0.12f)
+                                    ) {
+                                        Text(
+                                            text = if (isWork) "В работе →" else "Открыть →",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Quick Action Toolbar
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onCreateTicket,
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                        shape = RoundedCornerShape(9.dp)
+                    ) {
+                        Text("+ Создать заявку", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenSerialSearch,
+                        shape = RoundedCornerShape(9.dp)
+                    ) {
+                        Text("🔎 История по S/N", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenKnowledgeBase,
+                        shape = RoundedCornerShape(9.dp)
+                    ) {
+                        Text("📚 Архив решений", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenHabr,
+                        shape = RoundedCornerShape(9.dp)
+                    ) {
+                        Text("📰 Свежее на Habr.com", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFFF8FAFC),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "💡 Горячие клавиши: F5 — обновить · Ctrl+V — вставить скриншот буфера в комментарий · Перетащите файлы мышью в окно для прикрепления к заявке",
+                        fontSize = 11.5.sp,
+                        color = Color(0xFF64748B),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
 /**
  * Compact Ticket Card following user rules:
  * - Client Name (`reporterName`) prominent at top;
@@ -547,106 +935,158 @@ private fun CompactDesktopTicketCard(
         } else null
     }
 
+    val stageAccent = when {
+        !ticket.isClientTicket -> Color(0xFF64748B)
+        ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue
+        ticket.stage == TicketStage.CLOSED -> DesktopColors.StatusGreen
+        slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed
+        else -> DesktopColors.CslOrange
+    }
+
     val borderColor = when {
         isSelected -> DesktopColors.CslOrange
-        slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed.copy(alpha = 0.65f)
-        else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+        ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue.copy(alpha = 0.45f)
+        slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed.copy(alpha = 0.42f)
+        else -> Color(0xFFE2E8F0)
     }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = if (isSelected) DesktopColors.CslOrange.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        color = if (isSelected) DesktopColors.CslOrangeContainer else Color.White,
         border = BorderStroke(if (isSelected) 1.6.dp else 1.dp, borderColor),
+        shadowElevation = if (isSelected) 2.dp else 0.5.dp,
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .wrapContentHeight()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            // 1. Prominent Client Name at Top + SLA / Stage Badge
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                if (slaBadge != null) {
-                    val slaColor = when (slaBadge.urgency) {
-                        SlaUrgency.FRESH -> DesktopColors.StatusGreen
-                        SlaUrgency.WARNING -> DesktopColors.StatusAmber
-                        SlaUrgency.OVERDUE -> DesktopColors.StatusRed
-                    }
-                    Surface(
-                        color = slaColor.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = slaBadge.label,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = slaColor,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-            }
-
-            // 2. Ticket Summary
-            Text(
-                text = ticket.summary,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            // Crisp left stage/SLA accent stripe
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight()
+                    .background(if (isSelected) DesktopColors.CslOrange else stageAccent)
             )
 
-            // 3. Smaller Ticket Key moved down + Status + Assignee (compact footer, zero wasted space)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .wrapContentHeight()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // 1. Prominent Client Name at Top + SLA / Stage Badge
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = ticket.key,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
-                        color = DesktopColors.CslOrange
-                    )
-                    Text(
-                        text = "· ${ticket.status}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                    Spacer(Modifier.width(6.dp))
+                    if (slaBadge != null) {
+                        val slaColor = when (slaBadge.urgency) {
+                            SlaUrgency.FRESH -> DesktopColors.StatusGreen
+                            SlaUrgency.WARNING -> DesktopColors.StatusAmber
+                            SlaUrgency.OVERDUE -> DesktopColors.StatusRed
+                        }
+                        Surface(
+                            color = slaColor.copy(alpha = 0.13f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = slaBadge.label,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = slaColor,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else if (ticket.stage == TicketStage.IN_PROGRESS) {
+                        Surface(
+                            color = DesktopColors.StatusBlueContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "В работе",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = DesktopColors.StatusBlue,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
-                ticket.assigneeName?.takeIf { it.isNotBlank() }?.let { eng ->
-                    Text(
-                        text = "👤 $eng",
-                        fontSize = 10.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+
+                // 2. Ticket Summary
+                Text(
+                    text = ticket.summary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF334155),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                // 3. Smaller Ticket Key moved down + Status + Assignee (compact footer, zero wasted space)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = ticket.key,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = if (ticket.stage == TicketStage.IN_PROGRESS) DesktopColors.StatusBlue else DesktopColors.CslOrange,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                        Text(
+                            text = "· ${ticket.status}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (ticket.phoneNumbers.isNotEmpty()) {
+                            Text(
+                                text = "· 📞",
+                                fontSize = 10.5.sp,
+                                color = DesktopColors.StatusGreen,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                    ticket.assigneeName?.takeIf { it.isNotBlank() }?.let { eng ->
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "👤 $eng",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF475569),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
@@ -1448,21 +1888,25 @@ private fun DesktopTicketInspector(
                         text = ticket.reporterName.ifBlank { ticket.reporterLoginOrEmail.ifBlank { "Клиент" } },
                         fontSize = 20.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                    Spacer(Modifier.width(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         OutlinedButton(
                             onClick = { WindowsExternalLaunchers.copyToClipboard(ticket.key) },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                         ) {
-                            Text("📋 ${ticket.key}", fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            Text("📋 ${ticket.key}", fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false)
                         }
                         if (ticket.webUrl.isNotBlank()) {
                             OutlinedButton(
                                 onClick = { WindowsExternalLaunchers.openBrowser(ticket.webUrl) },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("🌐 Открыть в Jira ↗", fontSize = 12.sp)
+                                Text("🌐 Открыть в Jira ↗", fontSize = 12.sp, maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -1475,18 +1919,21 @@ private fun DesktopTicketInspector(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold)
-                    Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Приоритет: ${ticket.priority}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Исполнитель: ${ticket.assigneeName ?: "Не назначен"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    Text("Приоритет: ${ticket.priority}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                    Text("Исполнитель: ${ticket.assigneeName ?: "Не назначен"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                 // Primary Workflow Buttons
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
@@ -1494,32 +1941,32 @@ private fun DesktopTicketInspector(
                         enabled = !state.isPerformingAction,
                         colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
                     ) {
-                        Text("▶ В работу", fontWeight = FontWeight.Bold)
+                        Text("▶ В работу", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                     Button(
                         onClick = { showCompleteDialog = true },
                         enabled = !state.isPerformingAction,
                         colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.StatusGreen)
                     ) {
-                        Text("✅ Завершить", fontWeight = FontWeight.Bold)
+                        Text("✅ Завершить", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                     FilledTonalButton(
                         onClick = { showPostponeModal = true },
                         enabled = !state.isPerformingAction
                     ) {
-                        Text("⏰ Отложить на...")
+                        Text("⏰ Отложить на...", maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         onClick = { showRejectDialog = true },
                         enabled = !state.isPerformingAction
                     ) {
-                        Text("✖ Отклонить")
+                        Text("✖ Отклонить", maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         onClick = { showTransferDialog = true },
                         enabled = !state.isPerformingAction
                     ) {
-                        Text("👤 Коллеге")
+                        Text("👤 Коллеге", maxLines = 1, softWrap = false)
                     }
                 }
 

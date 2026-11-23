@@ -4,7 +4,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -99,7 +102,9 @@ fun main(args: Array<String>) = application {
             mainWindowState.isMinimized = false
             mainComposeWindow?.apply {
                 isVisible = true
-                extendedState = Frame.NORMAL
+                if ((extendedState and Frame.ICONIFIED) != 0) {
+                    extendedState = extendedState and Frame.ICONIFIED.inv()
+                }
                 toFront()
                 requestFocus()
             }
@@ -123,13 +128,8 @@ fun main(args: Array<String>) = application {
         }
     }
 
-    // When minimizeToTray is active, clicking the taskbar minimize button (_) also hides to system tray
-    LaunchedEffect(mainWindowState.isMinimized, state.minimizeToTray) {
-        if (state.minimizeToTray && mainWindowState.isMinimized) {
-            isMainWindowVisible = false
-            mainWindowState.isMinimized = false
-        }
-    }
+    // NOTE: Clicking the standard minimize button (_) minimizes normally to the Windows Taskbar.
+    // Hiding to the Windows System Tray happens ONLY when closing the window via the X button (onCloseRequest).
 
     Tray(
         icon = trayIconPainter,
@@ -187,6 +187,10 @@ fun main(args: Array<String>) = application {
     ) {
         SideEffect {
             mainComposeWindow = window
+            val minDim = java.awt.Dimension(1024, 660)
+            if (window.minimumSize != minDim) {
+                window.minimumSize = minDim
+            }
         }
         DisposableEffect(window) {
             val dropTarget = DropTarget(window, object : DropTargetAdapter() {
@@ -373,110 +377,304 @@ private fun DesktopTopNavigationHeader(
         } ?: 0
     }
 
-    Surface(
-        color = DesktopColors.CslMidnight,
-        contentColor = Color.White,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    val connectionDotColor = when {
+        state.connectedUserName != null -> DesktopColors.StatusGreen
+        state.settings.isConfigured -> DesktopColors.StatusAmber
+        else -> Color(0xFF94A3B8)
+    }
+    val connectionTitle = state.connectedUserName
+        ?: if (state.settings.isConfigured) "Jira настроена" else "Не настроено"
+    val alertModeLabel = when {
+        !state.respectWorkScheduleOnDesktop -> "24/7"
+        rbStatus.isAllowedNow -> "РБ смена"
+        else -> "Тихий РБ"
+    }
+
+    @Composable
+    fun NavTabsRow(modifier: Modifier = Modifier) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = modifier.horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Brand + Navigation Tabs
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Image(
-                        bitmap = appIconBitmap,
-                        contentDescription = "Help-CSL",
-                        modifier = Modifier.size(34.dp).clip(RoundedCornerShape(8.dp))
-                    )
-                    Column {
-                        Text("Help-CSL", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White)
-                        Text("Windows v$version", fontSize = 10.sp, color = DesktopColors.CslOrange)
-                    }
+            DesktopMainTab.entries.forEach { tab ->
+                val selected = state.activeTab == tab
+                val badgeCount = when (tab) {
+                    DesktopMainTab.TICKETS -> newQueueCount
+                    DesktopMainTab.ZABBIX -> activeZabbixAlertsCount
+                    DesktopMainTab.REPAIR -> activeRepairsCount
+                    DesktopMainTab.CHAT -> state.unreadChatCount
+                    else -> 0
                 }
+                val isUrgentBadge = (tab == DesktopMainTab.TICKETS && newQueueCount > 0) ||
+                    (tab == DesktopMainTab.ZABBIX && activeZabbixAlertsCount > 0) ||
+                    (tab == DesktopMainTab.CHAT && state.unreadChatCount > 0)
 
-                Spacer(Modifier.width(6.dp))
-
-                DesktopMainTab.entries.forEach { tab ->
-                    val selected = state.activeTab == tab
-                    val badgeText = when (tab) {
-                        DesktopMainTab.TICKETS -> if (newQueueCount > 0) " ($newQueueCount)" else ""
-                        DesktopMainTab.ZABBIX -> if (activeZabbixAlertsCount > 0) " ($activeZabbixAlertsCount)" else ""
-                        DesktopMainTab.REPAIR -> if (activeRepairsCount > 0) " ($activeRepairsCount)" else ""
-                        DesktopMainTab.CHAT -> if (state.unreadChatCount > 0) " (+${state.unreadChatCount})" else ""
-                        else -> ""
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (selected) DesktopColors.CslOrange else DesktopColors.CslNavySurface,
-                        contentColor = Color.White,
-                        modifier = Modifier.clickable { onSelectTab(tab) }
+                Surface(
+                    shape = RoundedCornerShape(9.dp),
+                    color = if (selected) DesktopColors.CslOrange else DesktopColors.CslNavySurface,
+                    border = BorderStroke(
+                        1.dp,
+                        if (selected) DesktopColors.CslOrange else DesktopColors.CslNavyBorder
+                    ),
+                    contentColor = Color.White,
+                    modifier = Modifier
+                        .height(34.dp)
+                        .clickable { onSelectTab(tab) }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "${tab.title}$badgeText",
-                            fontSize = 13.sp,
+                            text = tab.title,
+                            fontSize = 12.5.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             maxLines = 1,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                            softWrap = false
                         )
+                        if (badgeCount > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = when {
+                                    selected -> Color.White.copy(alpha = 0.24f)
+                                    isUrgentBadge -> DesktopColors.CslOrange
+                                    else -> Color.White.copy(alpha = 0.14f)
+                                }
+                            ) {
+                                Text(
+                                    text = if (tab == DesktopMainTab.CHAT) "+$badgeCount" else badgeCount.toString(),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
 
-            // Right Status & Utility Buttons
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+    @Composable
+    fun HeaderUtilityPill(label: String, onClick: () -> Unit) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = DesktopColors.CslNavySurface,
+            border = BorderStroke(1.dp, DesktopColors.CslNavyBorder),
+            contentColor = Color.White,
+            modifier = Modifier
+                .height(32.dp)
+                .clickable(onClick = onClick)
+        ) {
+            Box(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = label,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun RightToolbarRow() {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // Compact Connection Status Pill
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = DesktopColors.CslNavySurface.copy(alpha = 0.85f),
+                border = BorderStroke(1.dp, DesktopColors.CslNavyBorder),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(connectionDotColor)
+                    )
                     Text(
-                        text = state.connectedUserName?.let { "🟢 $it" }
-                            ?: if (state.settings.isConfigured) "🟡 Jira настроена" else "⚪ Не настроено",
+                        text = connectionTitle,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1,
+                        softWrap = false
                     )
-                    val alertModeLabel = when {
-                        !state.respectWorkScheduleOnDesktop -> "🔔 Уведомления 24/7"
-                        rbStatus.isAllowedNow -> "🔔 РБ смена"
-                        else -> "🌙 Тихий РБ"
-                    }
                     Text(
-                        text = "$alertModeLabel · ${state.lastSyncDisplay}",
-                        fontSize = 10.sp,
-                        color = Color.White.copy(alpha = 0.72f)
+                        text = "· $alertModeLabel · ${state.lastSyncDisplay.removePrefix("обновлено в ")}",
+                        fontSize = 10.5.sp,
+                        color = Color.White.copy(alpha = 0.65f),
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
+            }
 
-                TextButton(onClick = onOpenToolbox) {
-                    Text("🛠 Инструменты", color = Color.White, fontSize = 12.sp)
-                }
-                TextButton(onClick = onOpenAnalytics) {
-                    Text("📊 Смена", color = Color.White, fontSize = 12.sp)
-                }
-                TextButton(onClick = onOpenQr) {
-                    Text("📲 QR", color = Color.White, fontSize = 12.sp)
-                }
-                TextButton(onClick = onOpenGuide) {
-                    Text("📖 Гайд", color = Color.White, fontSize = 12.sp)
-                }
-                Button(
-                    onClick = onRefresh,
-                    enabled = !state.isRefreshing,
-                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
+            HeaderUtilityPill("📊 Смена", onOpenAnalytics)
+            HeaderUtilityPill("📲 QR", onOpenQr)
+            HeaderUtilityPill("📖 Гайд", onOpenGuide)
+
+            Button(
+                onClick = onRefresh,
+                enabled = !state.isRefreshing,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = DesktopColors.CslOrange,
+                    disabledContainerColor = DesktopColors.CslOrange.copy(alpha = 0.5f)
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Text(
+                    text = if (state.isRefreshing) "Синхр…" else "🔄 Обновить",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val isWideSingleRow = maxWidth >= 1460.dp
+
+        Surface(
+            color = DesktopColors.CslMidnight,
+            contentColor = Color.White,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (isWideSingleRow) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(if (state.isRefreshing) "..." else "🔄 Обновить", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Image(
+                                bitmap = appIconBitmap,
+                                contentDescription = "Help-CSL",
+                                modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp))
+                            )
+                            Column {
+                                Text(
+                                    "Help-CSL",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 15.sp,
+                                    lineHeight = 16.sp,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                                Text(
+                                    "v$version",
+                                    fontSize = 10.sp,
+                                    lineHeight = 11.sp,
+                                    color = DesktopColors.CslOrange,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+
+                        NavTabsRow()
+                    }
+
+                    Spacer(Modifier.width(10.dp))
+                    RightToolbarRow()
+                }
+            } else {
+                // Clean 2-tier layout for normal/restored windows & 125%-150% DPI laptops (zero vertical crushing!)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Image(
+                                bitmap = appIconBitmap,
+                                contentDescription = "Help-CSL",
+                                modifier = Modifier.size(30.dp).clip(RoundedCornerShape(7.dp))
+                            )
+                            Row(
+                                verticalAlignment = Alignment.Bottom,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    "Help-CSL",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 15.sp,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                                Text(
+                                    "Windows v$version",
+                                    fontSize = 10.5.sp,
+                                    color = DesktopColors.CslOrange,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RightToolbarRow()
+                        }
+                    }
+
+                    HorizontalDivider(thickness = 1.dp, color = DesktopColors.CslNavyBorder.copy(alpha = 0.7f))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0A132C))
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NavTabsRow(modifier = Modifier.fillMaxWidth())
+                    }
                 }
             }
         }

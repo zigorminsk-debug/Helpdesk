@@ -113,48 +113,69 @@ fun DesktopRepairWorkspace(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).widthIn(min = 240.dp),
                 singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White
+                ),
+                leadingIcon = { Text("🔎", fontSize = 14.sp) },
                 placeholder = {
                     Text(
-                        "Поиск по REM-номеру, S/N (сканер штрихкодов USB), модели, клиенту, кто удалил...",
-                        fontSize = 12.5.sp
+                        "Поиск по REM-номеру, S/N, модели, клиенту…",
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             )
-            OutlinedButton(
-                onClick = { controller.refreshClientsDirectory(silent = false) },
-                enabled = !state.isLoadingClientsDirectory
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    if (state.isLoadingClientsDirectory) "Загрузка..."
-                    else "👥 Клиенты Helpdesk (${state.clientsDirectory.size})",
-                    fontSize = 12.sp
-                )
-            }
-            OutlinedButton(
-                onClick = { controller.syncRepairRegistry(silent = false) },
-                enabled = !state.isSyncingRepair
-            ) {
-                Text(if (state.isSyncingRepair) "Синхр..." else "🔄 Синхронизировать", fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = { controller.exportRepairsToExcelCsv() },
-                enabled = state.repairItems.any { !it.isDeleted }
-            ) {
-                Text("📊 В Excel (.csv)", fontSize = 12.sp)
-            }
-            Button(
-                onClick = {
-                    editingItem = RepairEquipmentItem(
-                        intakeNumber = RepairEquipmentCodec.generateNextIntakeNumber(state.repairItems),
-                        assignedEngineer = controller.currentEngineerDisplayName()
+                OutlinedButton(
+                    onClick = { controller.refreshClientsDirectory(silent = false) },
+                    enabled = !state.isLoadingClientsDirectory
+                ) {
+                    Text(
+                        if (state.isLoadingClientsDirectory) "Загрузка..."
+                        else "👥 Клиенты (${state.clientsDirectory.size})",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false
                     )
-                    showEditor = true
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-            ) {
-                Text("➕ Принять технику в ремонт", fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = { controller.syncRepairRegistry(silent = false) },
+                    enabled = !state.isSyncingRepair
+                ) {
+                    Text(
+                        if (state.isSyncingRepair) "Синхр..." else "🔄 Синхронизировать",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                OutlinedButton(
+                    onClick = { controller.exportRepairsToExcelCsv() },
+                    enabled = state.repairItems.any { !it.isDeleted }
+                ) {
+                    Text("📊 Excel (.csv)", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                }
+                Button(
+                    onClick = {
+                        editingItem = RepairEquipmentItem(
+                            intakeNumber = RepairEquipmentCodec.generateNextIntakeNumber(state.repairItems),
+                            assignedEngineer = controller.currentEngineerDisplayName()
+                        )
+                        showEditor = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                ) {
+                    Text("+ Принять в ремонт", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                }
             }
         }
 

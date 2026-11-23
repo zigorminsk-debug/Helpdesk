@@ -207,81 +207,95 @@ fun DesktopZabbixWorkspace(
             border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
             shape = RoundedCornerShape(12.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(11.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    !settings.isZabbixConfigured -> Color(0xFF94A3B8)
-                                    state.zabbixError != null -> DesktopColors.StatusRed
-                                    else -> DesktopColors.StatusGreen
-                                }
-                            )
-                    )
-                    Column {
-                        Text(
-                            text = "Мониторинг Zabbix (${settings.zabbixUrl.ifBlank { AppSettings.DEFAULT_ZABBIX_URL }})",
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(11.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        !settings.isZabbixConfigured -> Color(0xFF94A3B8)
+                                        state.zabbixError != null -> DesktopColors.StatusRed
+                                        else -> DesktopColors.StatusGreen
+                                    }
+                                )
                         )
-                        val sub = if (snapshot != null) {
-                            val timeStr = DateTimeFormatter.ofPattern("HH:mm:ss")
-                                .withZone(ZoneId.systemDefault())
-                                .format(Instant.ofEpochMilli(snapshot.fetchedAtMillis))
-                            buildString {
-                                if (snapshot.serverVersion.isNotBlank()) append("Zabbix v${snapshot.serverVersion} · ")
-                                if (snapshot.monitoredHostsCount > 0) append("Узлов под контролем: ${snapshot.monitoredHostsCount} · ")
-                                append("Обновлено в $timeStr")
-                                if (allServerProblems.size > activeProblems.size) {
-                                    append(" · Скрыто старых/нерешаемых: ${allServerProblems.size - activeProblems.size}")
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Мониторинг Zabbix (${settings.zabbixUrl.ifBlank { AppSettings.DEFAULT_ZABBIX_URL }})",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val sub = if (snapshot != null) {
+                                val timeStr = DateTimeFormatter.ofPattern("HH:mm:ss")
+                                    .withZone(ZoneId.systemDefault())
+                                    .format(Instant.ofEpochMilli(snapshot.fetchedAtMillis))
+                                buildString {
+                                    if (snapshot.serverVersion.isNotBlank()) append("Zabbix v${snapshot.serverVersion} · ")
+                                    if (snapshot.monitoredHostsCount > 0) append("Узлов под контролем: ${snapshot.monitoredHostsCount} · ")
+                                    append("Обновлено в $timeStr")
+                                    if (allServerProblems.size > activeProblems.size) {
+                                        append(" · Скрыто старых/нерешаемых: ${allServerProblems.size - activeProblems.size}")
+                                    }
                                 }
+                            } else {
+                                "Авторизация по логину и паролю · всплывающий баннер при ошибках и критических предупреждениях"
                             }
-                        } else {
-                            "Авторизация по логину и паролю · всплывающий баннер при ошибках и критических предупреждениях"
+                            Text(sub, fontSize = 12.sp, color = Color(0xFF64748B), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Text(sub, fontSize = 12.sp, color = Color(0xFF64748B))
                     }
-                }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (filterMode != 3 && filteredActiveProblems.isNotEmpty()) {
+                    Spacer(Modifier.width(10.dp))
+
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (filterMode != 3 && filteredActiveProblems.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { controller.dismissAllCurrentZabbixProblems(filteredActiveProblems) },
+                                border = BorderStroke(1.dp, DesktopColors.CslOrange)
+                            ) {
+                                Text("✓ Закрыть текущие (${filteredActiveProblems.size}) — только новые", maxLines = 1, softWrap = false)
+                            }
+                        }
                         OutlinedButton(
-                            onClick = { controller.dismissAllCurrentZabbixProblems(filteredActiveProblems) },
-                            border = BorderStroke(1.dp, DesktopColors.CslOrange)
+                            onClick = {
+                                val webUrl = ZabbixApiClient.normalizeWebBaseUrl(settings.zabbixUrl)
+                                runCatching { Desktop.getDesktop().browse(URI(webUrl)) }
+                            }
                         ) {
-                            Text("✓ Закрыть текущие (${filteredActiveProblems.size}) — только новые")
+                            Text("🌐 Открыть z.csl.by", maxLines = 1, softWrap = false)
                         }
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            val webUrl = ZabbixApiClient.normalizeWebBaseUrl(settings.zabbixUrl)
-                            runCatching { Desktop.getDesktop().browse(URI(webUrl)) }
+                        OutlinedButton(onClick = { controller.triggerTestZabbixBanner() }) {
+                            Text("🔔 Тест баннера", maxLines = 1, softWrap = false)
                         }
-                    ) {
-                        Text("🌐 Открыть z.csl.by")
-                    }
-                    OutlinedButton(onClick = { controller.triggerTestZabbixBanner() }) {
-                        Text("🔔 Тест баннера")
-                    }
-                    OutlinedButton(onClick = { showAuthPanel = !showAuthPanel }) {
-                        Text(if (showAuthPanel) "Скрыть вход" else "⚙️ Логин / Настройки")
-                    }
-                    Button(
-                        onClick = { controller.refreshZabbix(silent = false) },
-                        enabled = !state.isLoadingZabbix,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-                    ) {
-                        Text("🔄 Обновить")
+                        OutlinedButton(onClick = { showAuthPanel = !showAuthPanel }) {
+                            Text(if (showAuthPanel) "Скрыть вход" else "⚙️ Логин / Настройки", maxLines = 1, softWrap = false)
+                        }
+                        Button(
+                            onClick = { controller.refreshZabbix(silent = false) },
+                            enabled = !state.isLoadingZabbix,
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        ) {
+                            Text("🔄 Обновить", maxLines = 1, softWrap = false)
+                        }
                     }
                 }
             }
