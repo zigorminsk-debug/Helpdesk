@@ -325,7 +325,7 @@ class ZabbixIntegrationTest {
                     sock.use { clientSock ->
                         clientSock.soTimeout = 3000
                         val packet = readHttpPacket(clientSock.getInputStream()) ?: return@use
-                        val pathAndQuery = java.net.URLDecoder.decode(packet.requestLine, "UTF-8")
+                        val pathAndQuery = java.net.URLDecoder.decode(packet.first, "UTF-8")
                         val json = when {
                             pathAndQuery.contains("/rest/api/2/status") -> """
                                 [
