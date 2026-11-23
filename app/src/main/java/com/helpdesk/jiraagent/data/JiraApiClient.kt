@@ -173,20 +173,18 @@ class JiraApiClient {
             for (url in endpoints) {
                 try {
                     val req = Request.Builder().url(url).get().applyAuth(settings).build()
-                    clientFor(settings).newCall(req).execute().use { resp ->
-                        val bodyStr = resp.body?.string().orEmpty()
-                        if (resp.isSuccessful) {
-                            val json = JsonParser.parseString(bodyStr).asJsonObject
-                            val displayName = json.get("displayName")?.asString
-                                ?: json.get("name")?.asString
-                                ?: json.get("emailAddress")?.asString
-                                ?: "Успешно"
-                            return@withContext Result.success(displayName)
-                        } else if (resp.code == 401 || resp.code == 403) {
-                            throw mapHttpError(resp.code, bodyStr)
-                        } else {
-                            lastErr = mapHttpError(resp.code, bodyStr)
-                        }
+                    val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+                    if (code in 200..299) {
+                        val json = JsonParser.parseString(bodyStr).asJsonObject
+                        val displayName = json.get("displayName")?.asString
+                            ?: json.get("name")?.asString
+                            ?: json.get("emailAddress")?.asString
+                            ?: "Успешно"
+                        return@withContext Result.success(displayName)
+                    } else if (code == 401 || code == 403) {
+                        throw mapHttpError(code, bodyStr)
+                    } else {
+                        lastErr = mapHttpError(code, bodyStr)
                     }
                 } catch (e: JiraApiException) {
                     if (e.httpCode == 401 || e.httpCode == 403) throw e
@@ -215,47 +213,59 @@ class JiraApiClient {
             val activeJql = TicketFilterEngine.buildActiveJql(filterSettings)
             val closedJql = TicketFilterEngine.buildClosedJql(filterSettings)
 
-            coroutineScope {
-                val activeDeferred = async {
-                    val json = executeSearchWithFallback(baseUrl, activeJql, maxResults, preferCloud, settings)
-                    JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
-                }
-                val closedDeferred = async {
-                    if (closedJql == null) {
-                        emptyList()
-                    } else {
-                        runCatching {
-                            val json = executeSearchWithFallback(baseUrl, closedJql, 30, preferCloud, settings)
-                            JiraJsonParser.parseSearchResponse(json, settings, filterSettings)
-                        }.getOrDefault(emptyList())
-                    }
-                }
+            // Fetch active tickets FIRST with 100% of link bandwidth (avoids doubling Jira DB/JSON load over 4G+)
+            val activeJson = executeSearchWithFallback(
+                baseUrl = baseUrl,
+                jql = activeJql,
+                maxResults = maxResults,
+                preferCloud = preferCloud,
+                settings = settings,
+                fieldsSpec = "*all,-worklog",
+                expandNames = true
+            )
+            val activeTickets = JiraJsonParser.parseSearchResponse(activeJson, settings, filterSettings)
 
-                val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
-                for (ticket in activeDeferred.await()) {
-                    if (!AdminChatCodec.isAdminChatStorageIssue(
-                            issueKey = ticket.key,
-                            summary = ticket.summary,
-                            labels = ticket.labels,
-                            configuredChatKey = settings.adminChatIssueKey
-                        )
-                    ) {
-                        mergedByKey[ticket.key] = ticket
-                    }
-                }
-                for (ticket in closedDeferred.await()) {
-                    if (!AdminChatCodec.isAdminChatStorageIssue(
-                            issueKey = ticket.key,
-                            summary = ticket.summary,
-                            labels = ticket.labels,
-                            configuredChatKey = settings.adminChatIssueKey
-                        )
-                    ) {
-                        mergedByKey.putIfAbsent(ticket.key, ticket)
-                    }
-                }
-                mergedByKey.values.toList()
+            val closedTickets = if (closedJql == null) {
+                emptyList()
+            } else {
+                runCatching {
+                    val closedJson = executeSearchWithFallback(
+                        baseUrl = baseUrl,
+                        jql = closedJql,
+                        maxResults = 30,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        fieldsSpec = "*all,-worklog,-comment",
+                        expandNames = true
+                    )
+                    JiraJsonParser.parseSearchResponse(closedJson, settings, filterSettings)
+                }.getOrDefault(emptyList())
             }
+
+            val mergedByKey = LinkedHashMap<String, HelpdeskTicket>()
+            for (ticket in activeTickets) {
+                if (!AdminChatCodec.isAdminChatStorageIssue(
+                        issueKey = ticket.key,
+                        summary = ticket.summary,
+                        labels = ticket.labels,
+                        configuredChatKey = settings.adminChatIssueKey
+                    )
+                ) {
+                    mergedByKey[ticket.key] = ticket
+                }
+            }
+            for (ticket in closedTickets) {
+                if (!AdminChatCodec.isAdminChatStorageIssue(
+                        issueKey = ticket.key,
+                        summary = ticket.summary,
+                        labels = ticket.labels,
+                        configuredChatKey = settings.adminChatIssueKey
+                    )
+                ) {
+                    mergedByKey.putIfAbsent(ticket.key, ticket)
+                }
+            }
+            mergedByKey.values.toList()
         }
     }
 
@@ -264,24 +274,26 @@ class JiraApiClient {
         jql: String,
         maxResults: Int,
         preferCloud: Boolean,
-        settings: AppSettings
+        settings: AppSettings,
+        fieldsSpec: String = "*all,-worklog",
+        expandNames: Boolean = true
     ): String {
         return if (preferCloud) {
             try {
-                executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
+                executeCloudJqlSearch(baseUrl, jql, maxResults, settings, fieldsSpec, expandNames)
             } catch (e: JiraApiException) {
                 if (e.httpCode == 404 || e.httpCode == 405 || e.httpCode == 410) {
-                    executeV2GetSearch(baseUrl, jql, maxResults, settings)
+                    executeV2GetSearch(baseUrl, jql, maxResults, settings, fieldsSpec, expandNames)
                 } else {
                     throw e
                 }
             }
         } else {
             try {
-                executeV2GetSearch(baseUrl, jql, maxResults, settings)
+                executeV2GetSearch(baseUrl, jql, maxResults, settings, fieldsSpec, expandNames)
             } catch (e: JiraApiException) {
                 if (e.httpCode == 404 || e.httpCode == 410) {
-                    executeCloudJqlSearch(baseUrl, jql, maxResults, settings)
+                    executeCloudJqlSearch(baseUrl, jql, maxResults, settings, fieldsSpec, expandNames)
                 } else {
                     throw e
                 }
@@ -305,11 +317,9 @@ class JiraApiClient {
 
             val req = Request.Builder().url(url).get().applyAuth(settings).build()
             val json = try {
-                clientFor(settings).newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) throw mapHttpError(resp.code, bodyStr)
-                    bodyStr
-                }
+                val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+                if (code !in 200..299) throw mapHttpError(code, bodyStr)
+                bodyStr
             } catch (e: Exception) {
                 throw wrapNetworkException(e, settings.trustSelfSignedSsl)
             }
@@ -1759,13 +1769,24 @@ class JiraApiClient {
         baseUrl: String,
         jql: String,
         maxResults: Int,
-        settings: AppSettings
+        settings: AppSettings,
+        fieldsSpec: String = "*all,-worklog",
+        expandNames: Boolean = true
     ): String {
+        val fieldsArray = JsonArray().apply {
+            fieldsSpec.split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .ifEmpty { listOf("*all") }
+                .forEach { add(it) }
+        }
         val payload = JsonObject().apply {
             addProperty("jql", jql)
             addProperty("maxResults", maxResults)
-            add("fields", JsonArray().apply { add("*all") })
-            addProperty("expand", "names")
+            add("fields", fieldsArray)
+            if (expandNames) {
+                addProperty("expand", "names")
+            }
         }
         val bodyBytes = payload.toString().toRequestBody(jsonMediaType)
 
@@ -1779,14 +1800,12 @@ class JiraApiClient {
         for (url in urls) {
             try {
                 val req = Request.Builder().url(url).post(bodyBytes).applyAuth(settings).build()
-                clientFor(settings).newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (resp.isSuccessful) return bodyStr
-                    if (resp.code == 401 || resp.code == 403 || resp.code == 400) {
-                        throw mapHttpError(resp.code, bodyStr)
-                    }
-                    lastError = mapHttpError(resp.code, bodyStr)
+                val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+                if (code in 200..299) return bodyStr
+                if (code == 401 || code == 403 || code == 400) {
+                    throw mapHttpError(code, bodyStr)
                 }
+                lastError = mapHttpError(code, bodyStr)
             } catch (e: JiraApiException) {
                 if (e.httpCode == 401 || e.httpCode == 403 || e.httpCode == 400) throw e
                 lastError = e
@@ -1801,17 +1820,19 @@ class JiraApiClient {
         baseUrl: String,
         jql: String,
         maxResults: Int,
-        settings: AppSettings
+        settings: AppSettings,
+        fieldsSpec: String = "*all,-worklog",
+        expandNames: Boolean = true
     ): String {
         val encodedJql = URLEncoder.encode(jql, "UTF-8")
-        val url = "$baseUrl/rest/api/2/search?jql=$encodedJql&maxResults=$maxResults&fields=*all&expand=names"
+        val encodedFields = URLEncoder.encode(fieldsSpec.ifBlank { "*all" }, "UTF-8")
+        val expandQuery = if (expandNames) "&expand=names" else ""
+        val url = "$baseUrl/rest/api/2/search?jql=$encodedJql&maxResults=$maxResults&fields=$encodedFields$expandQuery"
         val req = Request.Builder().url(url).get().applyAuth(settings).build()
         try {
-            clientFor(settings).newCall(req).execute().use { resp ->
-                val bodyStr = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) throw mapHttpError(resp.code, bodyStr)
-                return bodyStr
-            }
+            val (code, bodyStr) = executeIdempotentCallWithRetry(settings, req)
+            if (code !in 200..299) throw mapHttpError(code, bodyStr)
+            return bodyStr
         } catch (e: Exception) {
             throw wrapNetworkException(e, settings.trustSelfSignedSsl)
         }
@@ -1853,7 +1874,15 @@ class JiraApiClient {
             )
             for (jql in searchQueries) {
                 val foundKey = runCatching {
-                    val json = executeSearchWithFallback(baseUrl, jql, 5, preferCloud, settings)
+                    val json = executeSearchWithFallback(
+                        baseUrl = baseUrl,
+                        jql = jql,
+                        maxResults = 5,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        fieldsSpec = "key,summary,labels",
+                        expandNames = false
+                    )
                     val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
                     arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
                 }.getOrNull()
@@ -2697,7 +2726,15 @@ class JiraApiClient {
             )
             for (jql in searchQueries) {
                 val foundKey = runCatching {
-                    val json = executeSearchWithFallback(baseUrl, jql, 5, preferCloud, settings)
+                    val json = executeSearchWithFallback(
+                        baseUrl = baseUrl,
+                        jql = jql,
+                        maxResults = 5,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        fieldsSpec = "key,summary,labels",
+                        expandNames = false
+                    )
                     val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
                     arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
                 }.getOrNull()
@@ -2848,7 +2885,15 @@ class JiraApiClient {
             } else {
                 "ORDER BY updated DESC"
             }
-            val searchJson = executeSearchWithFallback(baseUrl, jql, 100, preferCloud, settings)
+            val searchJson = executeSearchWithFallback(
+                baseUrl = baseUrl,
+                jql = jql,
+                maxResults = 100,
+                preferCloud = preferCloud,
+                settings = settings,
+                fieldsSpec = "*all,-comment,-attachment,-worklog,-description",
+                expandNames = true
+            )
             val parsedTickets = JiraJsonParser.parseSearchResponse(searchJson, settings, filterSettings)
             val ticketByKey = HashMap<String, HelpdeskTicket>(parsedTickets.size)
 
@@ -3333,6 +3378,50 @@ class JiraApiClient {
         return JiraApiException(message, code)
     }
 
+    private fun isRetryableStaleOrTimeoutError(e: Throwable): Boolean {
+        if (e is java.io.InterruptedIOException) return true // includes SocketTimeoutException("timeout")
+        if (e is java.io.EOFException) return true
+        if (e is java.net.SocketException) return true
+        if (e is java.io.IOException) {
+            val m = e.message?.lowercase(Locale.ROOT).orEmpty()
+            if (m.contains("timeout") ||
+                m.contains("reset") ||
+                m.contains("closed") ||
+                m.contains("broken pipe") ||
+                m.contains("unexpected end") ||
+                e.javaClass.simpleName.contains("StreamReset", ignoreCase = true)
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun executeIdempotentCallWithRetry(
+        settings: AppSettings,
+        request: Request
+    ): Pair<Int, String> {
+        val client = clientFor(settings)
+        try {
+            client.newCall(request).execute().use { resp ->
+                return resp.code to resp.body?.string().orEmpty()
+            }
+        } catch (firstErr: Exception) {
+            if (!isRetryableStaleOrTimeoutError(firstErr)) {
+                throw firstErr
+            }
+            // Evict dead/half-open mobile NAT or HTTP/2 socket and retry once on a clean TCP socket
+            evictAllConnections()
+            runCatching { Thread.sleep(250L) }
+            val freshReq = request.newBuilder()
+                .header("Connection", "close")
+                .build()
+            client.newCall(freshReq).execute().use { resp ->
+                return resp.code to resp.body?.string().orEmpty()
+            }
+        }
+    }
+
     private fun wrapNetworkException(e: Exception, trustSelfSigned: Boolean): Exception {
         if (e is JiraApiException) return e
         val msg = e.message.orEmpty()
@@ -3342,6 +3431,13 @@ class JiraApiClient {
                     "включите «Доверять самоподписанным SSL» в настройках.",
                 httpCode = null,
                 isNetworkError = false
+            )
+        }
+        if (e is java.net.SocketTimeoutException || msg.equals("timeout", ignoreCase = true)) {
+            return JiraApiException(
+                message = "Сервер Jira не ответил вовремя (таймаут соединения). Нажмите «Повтор».",
+                httpCode = null,
+                isNetworkError = true
             )
         }
         return JiraApiException(
@@ -3376,6 +3472,8 @@ class JiraApiClient {
             "phone", "телефон", "тел.", "тел ", "мобил", "контакт", "номер связи", "mobile", "callback"
         )
 
+        private val jiraConnectionPool = okhttp3.ConnectionPool(8, 60, TimeUnit.SECONDS)
+
         val sharedStandardClient: OkHttpClient by lazy { buildBaseClient() }
         val sharedTrustAllClient: OkHttpClient by lazy { buildTrustAllOverlay(sharedStandardClient) }
 
@@ -3383,12 +3481,18 @@ class JiraApiClient {
             return if (trustAllSsl) sharedTrustAllClient else sharedStandardClient
         }
 
+        fun evictAllConnections() {
+            runCatching { jiraConnectionPool.evictAll() }
+        }
+
         private fun buildBaseClient(): OkHttpClient {
             return OkHttpClient.Builder()
-                .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(15, TimeUnit.SECONDS)
+                .connectionPool(jiraConnectionPool)
+                .pingInterval(20, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(40, TimeUnit.SECONDS)
+                .writeTimeout(25, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .build()

@@ -14,7 +14,9 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.helpdesk.jiraagent.data.ConfluenceSyncOutcome
 import com.helpdesk.jiraagent.data.JiraApiClient
+import com.helpdesk.jiraagent.data.JiraApiException
 import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.data.ZabbixApiClient
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
@@ -33,6 +35,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.ZoneId
@@ -46,6 +50,8 @@ class JiraMonitorService : Service() {
     private var watchlistPingJob: Job? = null
     private var wikiDailySyncJob: Job? = null
     private val pollWakeupChannel = Channel<Unit>(Channel.CONFLATED)
+    private val jiraPollMutex = Mutex()
+    private val zabbixPollMutex = Mutex()
 
     private lateinit var repository: SettingsRepository
     private val apiClient: JiraApiClient
@@ -57,6 +63,10 @@ class JiraMonitorService : Service() {
     private var lastNotifiedUpdateTag: String? = null
     private var lastForegroundCoreKey: String? = null
     private var lastForegroundUpdatedAtMs: Long = 0L
+    private var consecutiveJiraNetworkErrors: Int = 0
+    private var consecutiveZabbixErrors: Int = 0
+    @Volatile
+    private var lastNetworkHandle: Long = 0L
     @Volatile
     private var skippedPollWhileOffline: Boolean = false
     private val notifiedOfflineHostKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -81,6 +91,13 @@ class JiraMonitorService : Service() {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             val cb = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    val prevHandle = lastNetworkHandle
+                    lastNetworkHandle = network.networkHandle
+                    if (prevHandle != 0L && prevHandle != network.networkHandle) {
+                        // Network interface changed (e.g. Wi-Fi <-> 4G+ or Dual-SIM switch): flush stale pooled sockets!
+                        JiraApiClient.evictAllConnections()
+                        ZabbixApiClient.evictAllConnections()
+                    }
                     PostponeScheduler.clearRetryBackoff()
                     if (repository.offlineQueuedActions.value.isNotEmpty() ||
                         repository.postponedTickets.value.any { it.scheduledAtMillis <= System.currentTimeMillis() }
@@ -90,10 +107,15 @@ class JiraMonitorService : Service() {
                             PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
                         }
                     }
-                    if (skippedPollWhileOffline) {
+                    if (skippedPollWhileOffline || repository.syncStatus.value.lastError != null) {
                         skippedPollWhileOffline = false
                         pollWakeupChannel.trySend(Unit)
                     }
+                }
+
+                override fun onLost(network: Network) {
+                    JiraApiClient.evictAllConnections()
+                    ZabbixApiClient.evictAllConnections()
                 }
             }
             cm.registerDefaultNetworkCallback(cb)
@@ -128,10 +150,10 @@ class JiraMonitorService : Service() {
                 serviceScope.launch {
                     PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
                     if (repository.appSettings.value.isConfigured) {
-                        pollOnce()
+                        pollOnce(manual = true)
                     }
                     if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
-                        pollZabbixSafely()
+                        pollZabbixSafely(manual = true)
                     }
                 }
                 ensureBackgroundLoopsRunning()
@@ -290,9 +312,9 @@ class JiraMonitorService : Service() {
         }
     }
 
-    private suspend fun pollOnce() {
+    private suspend fun pollOnce(manual: Boolean = false) = jiraPollMutex.withLock {
         val settings = repository.appSettings.value
-        if (!settings.isConfigured) return
+        if (!settings.isConfigured) return@withLock
         val filter = repository.filterSettings.value
 
         repository.updateSyncStatus { it.copy(isSyncing = true) }
@@ -303,6 +325,7 @@ class JiraMonitorService : Service() {
 
         val result = apiClient.fetchRecentTickets(settings, filter)
         result.onSuccess { tickets ->
+            consecutiveJiraNetworkErrors = 0
             val nowMillis = System.currentTimeMillis()
             val schedule = BelarusWorkCalendar.evaluate(settings, Instant.ofEpochMilli(nowMillis))
             val newClientTickets = repository.processPolledTicketsAndFindNewClientOnes(
@@ -366,27 +389,38 @@ class JiraMonitorService : Service() {
                 )
             }
         }.onFailure { err ->
-            val msg = err.message ?: "Ошибка подключения к Jira"
-            updateForegroundText(
-                statusText = "Ошибка связи: $msg",
-                coreStateKey = "err_$msg"
-            )
-            repository.updateSyncStatus {
-                it.copy(
-                    isSyncing = false,
-                    lastError = msg
+            val isTransientNet = (err as? JiraApiException)?.isNetworkError == true
+            if (isTransientNet) {
+                consecutiveJiraNetworkErrors++
+            }
+            val hasCachedTickets = repository.tickets.value.isNotEmpty()
+            // Avoid flashing scary red banner on a single transient cellular handoff when cached queue is fresh
+            if (!manual && isTransientNet && consecutiveJiraNetworkErrors < 2 && hasCachedTickets) {
+                repository.updateSyncStatus { it.copy(isSyncing = false) }
+            } else {
+                val msg = err.message ?: "Ошибка подключения к Jira"
+                updateForegroundText(
+                    statusText = "Ошибка связи: $msg",
+                    coreStateKey = "err_$msg"
                 )
+                repository.updateSyncStatus {
+                    it.copy(
+                        isSyncing = false,
+                        lastError = msg
+                    )
+                }
             }
         }
     }
 
-    private suspend fun pollZabbixSafely() {
+    private suspend fun pollZabbixSafely(manual: Boolean = false) = zabbixPollMutex.withLock {
         runCatching {
             val settings = repository.appSettings.value
-            if (!settings.isZabbixConfigured || !settings.zabbixEnabled) return
+            if (!settings.isZabbixConfigured || !settings.zabbixEnabled) return@withLock
 
             repository.zabbixClient.fetchSnapshot(settings)
                 .onSuccess { snapshot ->
+                    consecutiveZabbixErrors = 0
                     val isNotifWindowOpen = BelarusWorkCalendar.isWorkingTimeNow(settings)
                     val newAlerts = repository.processPolledZabbixSnapshotAndFindNewAlerts(
                         snapshot = snapshot,
@@ -417,7 +451,10 @@ class JiraMonitorService : Service() {
                     }
                 }
                 .onFailure { err ->
-                    repository.updateZabbixError(err.message ?: "Ошибка подключения к Zabbix")
+                    consecutiveZabbixErrors++
+                    if (manual || consecutiveZabbixErrors >= 2 || repository.zabbixSnapshot.value == null) {
+                        repository.updateZabbixError(err.message ?: "Ошибка подключения к Zabbix")
+                    }
                 }
         }
     }

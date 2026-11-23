@@ -247,14 +247,25 @@ class DesktopController(
         startWikiDailySyncLoop()
         if (persisted.appSettings.isConfigured) {
             scope.launch {
-                refreshTickets(silent = true, isInitialBoot = true)
+                if (!persisted.appSettings.pollingEnabled) {
+                    refreshTickets(silent = true, isInitialBoot = true)
+                }
+                delay(2_500L)
                 syncRepairRegistry(silent = true)
-                refreshClientsDirectory(silent = true)
+                if (persisted.clientDirectory.isEmpty()) {
+                    delay(1_500L)
+                    refreshClientsDirectory(silent = true)
+                }
+                delay(1_500L)
                 refreshChat(silent = true)
             }
         }
-        if (persisted.appSettings.isZabbixConfigured && persisted.appSettings.zabbixEnabled) {
+        if (persisted.appSettings.isZabbixConfigured &&
+            persisted.appSettings.zabbixEnabled &&
+            !persisted.appSettings.pollingEnabled
+        ) {
             scope.launch {
+                delay(1_500L)
                 refreshZabbix(silent = true)
             }
         }

@@ -355,23 +355,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             wikiOfflineStore.getSnapshot()?.let { snap ->
                 applyOfflineSnapshotToUi(snap)
             }
-            if (repository.appSettings.value.isConfluenceReady) {
+            // Stagger secondary background tasks so primary Jira queue refresh has 100% of bandwidth at startup
+            delay(2_500L)
+            val currentSettings = repository.appSettings.value
+            if (currentSettings.isZabbixConfigured &&
+                currentSettings.zabbixEnabled &&
+                (!currentSettings.pollingEnabled || repository.zabbixSnapshot.value == null)
+            ) {
+                refreshZabbix(manual = false)
+            }
+            delay(1_500L)
+            if (currentSettings.isConfigured) {
+                syncRepairRegistry(includeDirectoryRefresh = repository.clientDirectory.value.isEmpty())
+            }
+            delay(2_000L)
+            if (currentSettings.isConfluenceReady) {
                 if (wikiOfflineStore.isDailySyncDue()) {
                     syncWikiOfflineDatabase(force = false)
                 } else {
                     verifyWikiAccountOnStartup()
                 }
             }
-        }
-        if (repository.appSettings.value.autoCheckUpdates) {
-            checkForAppUpdate(manual = false)
-        }
-        if (repository.appSettings.value.isConfigured) {
-            syncRepairRegistry()
-            refreshClientsDirectory(manual = false)
-        }
-        if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
-            refreshZabbix(manual = false)
+            if (currentSettings.autoCheckUpdates) {
+                checkForAppUpdate(manual = false)
+            }
         }
     }
 
@@ -2397,10 +2404,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun syncRepairRegistry() {
+    fun syncRepairRegistry(includeDirectoryRefresh: Boolean = true) {
         val settings = appSettings.value
         if (!settings.isConfigured || _isSyncingRepair.value) return
-        if (!_isLoadingClientDirectory.value) {
+        if (includeDirectoryRefresh && !_isLoadingClientDirectory.value) {
             refreshClientsDirectory(manual = false)
         }
         viewModelScope.launch {

@@ -1,7 +1,10 @@
 package com.helpdesk.jiraagent
 
+import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.ZabbixApiClient
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.FilterSettings
+import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.ZabbixProblem
 import com.helpdesk.jiraagent.model.ZabbixSeverity
 import kotlinx.coroutines.runBlocking
@@ -253,6 +256,56 @@ class ZabbixIntegrationTest {
 
             client.acknowledgeProblem(settings, "9001", "Проверяем шлюз").getOrThrow()
             assertTrue(ackReceived.get())
+        } finally {
+            running.set(false)
+            runCatching { serverSocket.close() }
+            acceptThread.join(1000L)
+        }
+    }
+
+    @Test
+    fun jiraClientRecoversTransparentlyFromStaleSocketDrop() = runBlocking {
+        val running = AtomicBoolean(true)
+        val attemptCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val serverSocket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+
+        val acceptThread = thread(start = true, isDaemon = true) {
+            while (running.get()) {
+                val sock = runCatching { serverSocket.accept() }.getOrNull() ?: break
+                thread(start = true, isDaemon = true) {
+                    sock.use { clientSock ->
+                        clientSock.soTimeout = 3000
+                        val currentAttempt = attemptCount.incrementAndGet()
+                        val packet = readHttpPacket(clientSock.getInputStream()) ?: return@use
+                        if (currentAttempt == 1) {
+                            // Simulate half-open / NAT-dropped socket closing mid-stream without HTTP response
+                            runCatching { clientSock.setSoLinger(true, 0) }
+                            return@use
+                        }
+                        val out = clientSock.getOutputStream()
+                        val json = """{"issues":[],"total":0}"""
+                        val bytes = json.toByteArray(StandardCharsets.UTF_8)
+                        val hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+                        out.write(hdr.toByteArray(StandardCharsets.UTF_8))
+                        out.write(bytes)
+                        out.flush()
+                    }
+                }
+            }
+        }
+
+        try {
+            val port = serverSocket.localPort
+            val jira = JiraApiClient()
+            val settings = AppSettings(
+                serverUrl = "http://127.0.0.1:$port",
+                serverType = JiraServerType.SERVER_DC,
+                usernameOrEmail = "agent",
+                passwordOrToken = "secret"
+            )
+            val tickets = jira.fetchRecentTickets(settings, FilterSettings()).getOrThrow()
+            assertTrue(tickets.isEmpty())
+            assertTrue(attemptCount.get() >= 2)
         } finally {
             running.set(false)
             runCatching { serverSocket.close() }

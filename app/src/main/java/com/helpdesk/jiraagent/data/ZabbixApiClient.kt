@@ -16,10 +16,17 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketException
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 class ZabbixApiException(
     override val message: String,
@@ -560,7 +567,17 @@ class ZabbixApiClient {
                 reqBuilder.header("Authorization", "Bearer $bearerTokenHeader")
             }
 
-            val response = client.newCall(reqBuilder.build()).execute()
+            val response = try {
+                client.newCall(reqBuilder.build()).execute()
+            } catch (firstErr: IOException) {
+                if (firstErr is InterruptedIOException || firstErr is SocketException) {
+                    evictAllConnections()
+                    val freshReq = reqBuilder.header("Connection", "close").build()
+                    client.newCall(freshReq).execute()
+                } else {
+                    throw firstErr
+                }
+            }
             try {
                 val code = response.code
                 if (code in listOf(301, 302, 303, 307, 308)) {
@@ -625,24 +642,37 @@ class ZabbixApiClient {
     companion object {
         private val JSON_RPC_MEDIA_TYPE = "application/json".toMediaType()
 
+        private val zabbixConnectionPool = okhttp3.ConnectionPool(4, 60, TimeUnit.SECONDS)
+
         private val noRedirectStandardClient: OkHttpClient by lazy {
-            JiraApiClient.sharedClient(trustAllSsl = false)
-                .newBuilder()
-                .connectTimeout(12, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
+            OkHttpClient.Builder()
+                .connectionPool(zabbixConnectionPool)
+                .pingInterval(20, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(28, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .build()
         }
 
         private val noRedirectTrustAllClient: OkHttpClient by lazy {
-            JiraApiClient.sharedClient(trustAllSsl = true)
-                .newBuilder()
-                .connectTimeout(12, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .followRedirects(false)
-                .followSslRedirects(false)
+            val trustManager = object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            }
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
+            noRedirectStandardClient.newBuilder()
+                .sslSocketFactory(sslContext.socketFactory, trustManager)
+                .hostnameVerifier { _, _ -> true }
                 .build()
+        }
+
+        fun evictAllConnections() {
+            runCatching { zabbixConnectionPool.evictAll() }
         }
 
         private fun noRedirectClient(trustAllSsl: Boolean): OkHttpClient {
