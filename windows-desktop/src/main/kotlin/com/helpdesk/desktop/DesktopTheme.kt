@@ -1,12 +1,37 @@
 package com.helpdesk.desktop
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.HorizontalScrollbar
+import androidx.compose.foundation.LocalScrollbarStyle
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.ScrollbarStyle
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 val LocalDesktopDarkTheme = compositionLocalOf { false }
 
@@ -133,10 +158,146 @@ fun HelpCslDesktopTheme(
     darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    CompositionLocalProvider(LocalDesktopDarkTheme provides darkTheme) {
+    val scrollbarStyle = ScrollbarStyle(
+        minimalHeight = 28.dp,
+        thickness = 8.dp,
+        shape = RoundedCornerShape(4.dp),
+        hoverDurationMillis = 150,
+        unhoverColor = if (darkTheme) Color.White.copy(alpha = 0.28f) else Color(0xFF475569).copy(alpha = 0.36f),
+        hoverColor = CslOrange
+    )
+    CompositionLocalProvider(
+        LocalDesktopDarkTheme provides darkTheme,
+        LocalScrollbarStyle provides scrollbarStyle
+    ) {
         MaterialTheme(
             colorScheme = if (darkTheme) DesktopDarkColors else DesktopLightColors,
             content = content
         )
+    }
+}
+
+/**
+ * Adds mouse-wheel -> horizontal scrolling on Windows/Desktop whenever [scrollState] overflows.
+ */
+fun Modifier.desktopWheelHorizontalScroll(scrollState: ScrollState): Modifier =
+    this.pointerInput(scrollState) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                if (event.type == PointerEventType.Scroll && scrollState.maxValue > 0) {
+                    val delta = event.changes.fold(0f) { acc, c ->
+                        val d = if (abs(c.scrollDelta.x) > abs(c.scrollDelta.y)) c.scrollDelta.x else c.scrollDelta.y
+                        acc + d
+                    }
+                    if (delta != 0f) {
+                        val consumed = scrollState.dispatchRawDelta(delta * 56f)
+                        if (consumed != 0f) {
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+/**
+ * Horizontal chip/tab/button strip tailored for Windows Desktop:
+ * - Supports standard vertical mouse-wheel scrolling left/right when overflowing
+ * - Shows compact `◀` / `▶` arrow buttons whenever items overflow left or right (so off-screen tabs like `CSL` are 1 click away)
+ * - Optionally renders a crisp draggable `HorizontalScrollbar` underneath when overflowing
+ */
+@Composable
+fun DesktopHorizontalScrollRow(
+    modifier: Modifier = Modifier,
+    scrollState: ScrollState = rememberScrollState(),
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.spacedBy(6.dp),
+    verticalAlignment: Alignment.Vertical = Alignment.CenterVertically,
+    showArrowButtons: Boolean = true,
+    showScrollbar: Boolean = true,
+    arrowDarkSurface: Boolean = false,
+    buttonHeight: Dp = 28.dp,
+    content: @Composable RowScope.() -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val canBack = scrollState.canScrollBackward
+    val canFwd = scrollState.canScrollForward
+    val isOverflowing = scrollState.maxValue > 0
+
+    Column(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .desktopWheelHorizontalScroll(scrollState),
+            verticalAlignment = verticalAlignment,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (showArrowButtons && canBack) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (arrowDarkSurface) DesktopColors.CslNavySurface else DesktopColors.CardBg,
+                    border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .height(buttonHeight)
+                        .width(24.dp)
+                        .clickable {
+                            scope.launch {
+                                scrollState.animateScrollTo((scrollState.value - 240).coerceAtLeast(0))
+                            }
+                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "◀",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (arrowDarkSurface) Color.White else DesktopColors.CslOrange
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(scrollState),
+                horizontalArrangement = horizontalArrangement,
+                verticalAlignment = verticalAlignment,
+                content = content
+            )
+
+            if (showArrowButtons && canFwd) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (arrowDarkSurface) DesktopColors.CslNavySurface else DesktopColors.CardBg,
+                    border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .height(buttonHeight)
+                        .width(24.dp)
+                        .clickable {
+                            scope.launch {
+                                scrollState.animateScrollTo((scrollState.value + 240).coerceAtMost(scrollState.maxValue))
+                            }
+                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "▶",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (arrowDarkSurface) Color.White else DesktopColors.CslOrange
+                        )
+                    }
+                }
+            }
+        }
+
+        if (showScrollbar && isOverflowing) {
+            Spacer(Modifier.height(3.dp))
+            HorizontalScrollbar(
+                adapter = rememberScrollbarAdapter(scrollState),
+                modifier = Modifier.fillMaxWidth().height(7.dp)
+            )
+        }
     }
 }

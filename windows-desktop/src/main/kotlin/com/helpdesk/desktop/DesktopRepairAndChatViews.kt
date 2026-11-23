@@ -2,6 +2,7 @@ package com.helpdesk.desktop
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -9,7 +10,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -132,10 +135,12 @@ fun DesktopRepairWorkspace(
                     )
                 }
             )
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            DesktopHorizontalScrollRow(
+                modifier = Modifier.weight(1.15f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                showArrowButtons = true,
+                showScrollbar = false,
+                buttonHeight = 32.dp
             ) {
                 OutlinedButton(
                     onClick = { controller.refreshClientsDirectory(silent = false) },
@@ -166,25 +171,28 @@ fun DesktopRepairWorkspace(
                 ) {
                     Text("📊 Excel (.csv)", fontSize = 12.sp, maxLines = 1, softWrap = false)
                 }
-                Button(
-                    onClick = {
-                        editingItem = RepairEquipmentItem(
-                            intakeNumber = RepairEquipmentCodec.generateNextIntakeNumber(state.repairItems),
-                            assignedEngineer = controller.currentEngineerDisplayName()
-                        )
-                        showEditor = true
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-                ) {
-                    Text("+ Принять в ремонт", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                }
+            }
+            Button(
+                onClick = {
+                    editingItem = RepairEquipmentItem(
+                        intakeNumber = RepairEquipmentCodec.generateNextIntakeNumber(state.repairItems),
+                        assignedEngineer = controller.currentEngineerDisplayName()
+                    )
+                    showEditor = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+            ) {
+                Text("+ Принять в ремонт", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
             }
         }
 
-        // Sub-tabs including «Удалённые» (red audit tab)
-        Row(
+        // Sub-tabs including «Удалённые» (red audit tab) — scrollable on narrow windows
+        DesktopHorizontalScrollRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            showArrowButtons = true,
+            showScrollbar = true,
+            buttonHeight = 32.dp
         ) {
             RepairSubTab.entries.forEach { tab ->
                 val selected = activeSubTab == tab
@@ -198,12 +206,10 @@ fun DesktopRepairWorkspace(
                         1.dp,
                         if (selected) activeBg else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
                     ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { activeSubTab = tab }
+                    modifier = Modifier.clickable { activeSubTab = tab }
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -212,7 +218,8 @@ fun DesktopRepairWorkspace(
                             "$iconPrefix${tab.label} (${counts[tab] ?: 0})",
                             fontSize = 12.5.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -232,35 +239,43 @@ fun DesktopRepairWorkspace(
                 )
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(visibleItems, key = { it.id }) { item ->
-                    val resolvedEngineer = controller.formatEngineerName(item.assignedEngineer)
-                    RepairItemDesktopCard(
-                        item = item,
-                        engineerDisplayName = resolvedEngineer,
-                        onEdit = {
-                            editingItem = item.copy(assignedEngineer = resolvedEngineer)
-                            showEditor = true
-                        },
-                        onAdvanceStatus = { next ->
-                            controller.saveRepairItem(item.copy(status = next))
-                        },
-                        onPrintPdf = { attach ->
-                            controller.printOrOpenRepairReceiptPdf(item, attachToTicket = attach)
-                        },
-                        onPrintSticker = { controller.printRepairQrSticker(item) },
-                        onNotifyReady = { readyNotifyItem = item },
-                        onOpenLinkedTicket = { key ->
-                            controller.selectTab(DesktopMainTab.TICKETS)
-                            controller.selectTicket(key)
-                        },
-                        onRequestSoftDelete = { pendingDeleteItem = item },
-                        onRestore = { controller.restoreRepairItem(item) }
-                    )
+            val repairListState = rememberLazyListState()
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = repairListState,
+                    modifier = Modifier.fillMaxSize().padding(end = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(visibleItems, key = { it.id }) { item ->
+                        val resolvedEngineer = controller.formatEngineerName(item.assignedEngineer)
+                        RepairItemDesktopCard(
+                            item = item,
+                            engineerDisplayName = resolvedEngineer,
+                            onEdit = {
+                                editingItem = item.copy(assignedEngineer = resolvedEngineer)
+                                showEditor = true
+                            },
+                            onAdvanceStatus = { next ->
+                                controller.saveRepairItem(item.copy(status = next))
+                            },
+                            onPrintPdf = { attach ->
+                                controller.printOrOpenRepairReceiptPdf(item, attachToTicket = attach)
+                            },
+                            onPrintSticker = { controller.printRepairQrSticker(item) },
+                            onNotifyReady = { readyNotifyItem = item },
+                            onOpenLinkedTicket = { key ->
+                                controller.selectTab(DesktopMainTab.TICKETS)
+                                controller.selectTicket(key)
+                            },
+                            onRequestSoftDelete = { pendingDeleteItem = item },
+                            onRestore = { controller.restoreRepairItem(item) }
+                        )
+                    }
                 }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(repairListState),
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                )
             }
         }
     }
@@ -865,8 +880,11 @@ fun DesktopChatWorkspace(
                     )
                 }
             } else {
+                val chatListState = rememberLazyListState()
+                Box(modifier = Modifier.fillMaxSize()) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    state = chatListState,
+                    modifier = Modifier.fillMaxSize().padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(state.chatMessages, key = { it.id }) { msg ->
@@ -1000,6 +1018,11 @@ fun DesktopChatWorkspace(
                         }
                     }
                 }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(chatListState),
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp, top = 4.dp, bottom = 4.dp)
+                )
+                }
             }
         }
 
@@ -1027,15 +1050,21 @@ fun DesktopChatWorkspace(
         }
 
         if (colleagueHandles.isNotEmpty()) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(colleagueHandles, key = { it }) { name ->
+            DesktopHorizontalScrollRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                showArrowButtons = true,
+                showScrollbar = true,
+                buttonHeight = 28.dp
+            ) {
+                colleagueHandles.forEach { name ->
                     val handle = name.substringBefore(' ').trim()
                     AssistChip(
                         onClick = {
                             val token = "@$handle "
                             draft = if (draft.isBlank()) token else "$draft $token"
                         },
-                        label = { Text("@$handle", fontSize = 11.sp) }
+                        label = { Text("@$handle", fontSize = 11.sp, maxLines = 1, softWrap = false) }
                     )
                 }
             }

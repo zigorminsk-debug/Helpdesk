@@ -1,7 +1,9 @@
 package com.helpdesk.desktop
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.HorizontalScrollbar
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -9,7 +11,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -66,13 +70,19 @@ fun DesktopWikiWorkspace(
     var lightboxTitle by remember { mutableStateOf<String?>(null) }
     var lightboxBuffered by remember { mutableStateOf<BufferedImage?>(null) }
 
-    Row(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // --- LEFT PANE: Spaces, Search & Page Tree ---
-        Surface(
-            modifier = Modifier.width(365.dp).fillMaxHeight(),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp
-        ) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        val wikiSidebarWidth = when {
+            maxWidth >= 1420.dp -> 375.dp
+            maxWidth >= 1100.dp -> 335.dp
+            else -> 292.dp
+        }
+        Row(modifier = Modifier.fillMaxSize()) {
+            // --- LEFT PANE: Spaces, Search & Page Tree ---
+            Surface(
+                modifier = Modifier.width(wikiSidebarWidth).fillMaxHeight(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp
+            ) {
             Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Header card
                 Surface(
@@ -140,7 +150,14 @@ fun DesktopWikiWorkspace(
                             searchInput = it
                             if (it.isBlank()) controller.searchWikiPages("")
                         },
-                        placeholder = { Text("Поиск клиента, IP, инструкции в w.csl.by…", fontSize = 12.sp) },
+                        placeholder = {
+                            Text(
+                                "Поиск клиента, IP, инструкции…",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -156,14 +173,20 @@ fun DesktopWikiWorkspace(
                         colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                     ) {
-                        Text("Найти", fontSize = 12.sp)
+                        Text("Найти", fontSize = 12.sp, maxLines = 1, softWrap = false)
                     }
                 }
 
-                // Spaces strip (CSL first, Recent at end)
+                // Spaces strip (CSL first, Recent at end) — mouse-wheel + ◀/▶ buttons + HorizontalScrollbar
                 if (state.wikiSpaces.isNotEmpty()) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(state.wikiSpaces, key = { it.key }) { space ->
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 30.dp
+                    ) {
+                        state.wikiSpaces.forEach { space ->
                             val labelText = if (space.name.equals(space.key, ignoreCase = true)) {
                                 space.key
                             } else {
@@ -176,18 +199,17 @@ fun DesktopWikiWorkspace(
                                     Text(
                                         labelText,
                                         fontSize = 11.5.sp,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             )
                         }
-                        item {
-                            FilterChip(
-                                selected = state.selectedWikiSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY,
-                                onClick = { controller.selectWikiSpace(ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY) },
-                                label = { Text("🕒 Недавние", fontSize = 11.5.sp) }
-                            )
-                        }
+                        FilterChip(
+                            selected = state.selectedWikiSpaceKey == ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY,
+                            onClick = { controller.selectWikiSpace(ConfluenceWikiClient.RECENT_PSEUDO_SPACE_KEY) },
+                            label = { Text("🕒 Недавние", fontSize = 11.5.sp, maxLines = 1, softWrap = false) }
+                        )
                     }
                 }
 
@@ -349,23 +371,29 @@ fun DesktopWikiWorkspace(
                 }
 
                 if (availableLetters.isNotEmpty()) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (selectedLetter == null) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.clickable { selectedLetter = null }
-                            ) {
-                                Text(
-                                    text = "Все (${basePages.size})",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (selectedLetter == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 24.dp
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (selectedLetter == null) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.clickable { selectedLetter = null }
+                        ) {
+                            Text(
+                                text = "Все (${basePages.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedLetter == null) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
                         }
-                        items(availableLetters, key = { it }) { letter ->
+                        availableLetters.forEach { letter ->
                             val isSel = selectedLetter == letter
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
@@ -377,6 +405,8 @@ fun DesktopWikiWorkspace(
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
                                 )
                             }
@@ -413,31 +443,39 @@ fun DesktopWikiWorkspace(
                     }
                 }
 
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (displayedPages.isEmpty() && !state.isLoadingWikiList && state.wikiError == null) {
-                        item {
-                            Text(
-                                if (isSearchMode || searchInput.isNotBlank()) "Ничего не найдено по запросу «$searchInput»"
-                                else "Нет страниц для отображения. Нажмите 🔄 для загрузки из w.csl.by.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    } else {
-                        items(displayedPages, key = { it.id }) { page ->
-                            WikiTreeNodeItem(
-                                page = page,
-                                depth = 0,
-                                isSearchMode = isSearchMode,
-                                state = state,
-                                controller = controller
-                            )
+                val treeListState = rememberLazyListState()
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    LazyColumn(
+                        state = treeListState,
+                        modifier = Modifier.fillMaxSize().padding(end = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (displayedPages.isEmpty() && !state.isLoadingWikiList && state.wikiError == null) {
+                            item {
+                                Text(
+                                    if (isSearchMode || searchInput.isNotBlank()) "Ничего не найдено по запросу «$searchInput»"
+                                    else "Нет страниц для отображения. Нажмите 🔄 для загрузки из w.csl.by.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            items(displayedPages, key = { it.id }) { page ->
+                                WikiTreeNodeItem(
+                                    page = page,
+                                    depth = 0,
+                                    isSearchMode = isSearchMode,
+                                    state = state,
+                                    controller = controller
+                                )
+                            }
                         }
                     }
+                    VerticalScrollbar(
+                        adapter = rememberScrollbarAdapter(treeListState),
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                    )
                 }
             }
         }
@@ -492,6 +530,7 @@ fun DesktopWikiWorkspace(
                     )
                 }
             }
+        }
         }
     }
 
@@ -628,10 +667,12 @@ private fun ConfluencePageReaderPane(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        showArrowButtons = true,
+                        showScrollbar = false,
+                        buttonHeight = 26.dp
                     ) {
                         if (state.wikiPageHistoryStack.isNotEmpty()) {
                             OutlinedButton(
@@ -641,7 +682,9 @@ private fun ConfluencePageReaderPane(
                                 Text(
                                     "← ${state.wikiPageHistoryStack.last().title.take(24)}",
                                     fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         } else if (detail.ancestors.size > 1) {
@@ -652,7 +695,9 @@ private fun ConfluencePageReaderPane(
                                 Text(
                                     "← ${detail.ancestors.last().title.take(24)}",
                                     fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
@@ -666,6 +711,8 @@ private fun ConfluencePageReaderPane(
                                     detail.spaceName.ifBlank { detail.spaceKey },
                                     color = Color.White,
                                     fontSize = 11.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                 )
                             }
@@ -677,6 +724,8 @@ private fun ConfluencePageReaderPane(
                                 fontSize = 11.5.sp,
                                 color = DesktopColors.CslOrange,
                                 fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.clickable { controller.openWikiPage(anc.id) }
                             )
                         }
@@ -720,28 +769,29 @@ private fun ConfluencePageReaderPane(
 
                 // Sibling sub-tabs switcher when viewing a sub-page of a client
                 if (!hasSubPages && siblingPages.size > 1) {
-                    val curSibIdx = siblingPages.indexOfFirst { it.id == detail.id }.coerceAtLeast(0)
-                    ScrollableTabRow(
-                        selectedTabIndex = curSibIdx,
-                        edgePadding = 0.dp,
-                        containerColor = Color.Transparent
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 28.dp
                     ) {
                         siblingPages.forEach { sib ->
                             val selected = sib.id == detail.id
-                            Tab(
+                            FilterChip(
                                 selected = selected,
                                 onClick = {
                                     if (!selected) {
                                         controller.openWikiPage(sib.id, replaceSiblingInStack = true)
                                     }
                                 },
-                                text = {
+                                label = {
                                     Text(
                                         sib.title,
                                         fontSize = 12.sp,
                                         maxLines = 1,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (selected) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                                        softWrap = false,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                                     )
                                 }
                             )
@@ -876,73 +926,90 @@ private fun ConfluencePageReaderPane(
 
             if (detail.inlineTabs.size > 1) {
                 val safeIdx = activeInlineTabIdx.coerceIn(0, detail.inlineTabs.lastIndex)
-                ScrollableTabRow(
-                    selectedTabIndex = safeIdx,
-                    edgePadding = 16.dp,
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    detail.inlineTabs.forEachIndexed { idx, tab ->
-                        Tab(
-                            selected = safeIdx == idx,
-                            onClick = { activeInlineTabIdx = idx },
-                            text = {
-                                Text(
-                                    text = tab.title,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = if (safeIdx == idx) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (safeIdx == idx) DesktopColors.CslOrange else MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        )
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 28.dp
+                    ) {
+                        detail.inlineTabs.forEachIndexed { idx, tab ->
+                            val selected = safeIdx == idx
+                            FilterChip(
+                                selected = selected,
+                                onClick = { activeInlineTabIdx = idx },
+                                label = {
+                                    Text(
+                                        text = tab.title,
+                                        fontSize = 12.5.sp,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             }
 
             // Content blocks + attachments
-            SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    item {
-                        val metaParts = listOfNotNull(
-                            detail.updatedBy.takeIf { it.isNotBlank() }?.let { "Автор изм.: $it" },
-                            detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обновлено: $it" },
-                            "Версия v${detail.versionNumber}",
-                            "Нажмите на любую ячейку таблицы, чтобы скопировать IP/пароль"
-                        )
-                        Text(
-                            metaParts.joinToString("  ·  "),
-                            fontSize = 11.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    items(blocksToRender) { block ->
-                        ConfluenceBlockView(
-                            block = block,
-                            controller = controller,
-                            onCopied = onCopied,
-                            onOpenLightbox = onOpenLightbox
-                        )
-                    }
-
-                    if (detail.attachments.isNotEmpty()) {
+            val readerListState = rememberLazyListState()
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = readerListState,
+                        modifier = Modifier.fillMaxSize().padding(start = 24.dp, end = 28.dp, top = 16.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         item {
-                            Spacer(Modifier.height(8.dp))
-                            HorizontalDivider()
-                            Spacer(Modifier.height(8.dp))
+                            val metaParts = listOfNotNull(
+                                detail.updatedBy.takeIf { it.isNotBlank() }?.let { "Автор изм.: $it" },
+                                detail.updatedDisplay.takeIf { it.isNotBlank() }?.let { "Обновлено: $it" },
+                                "Версия v${detail.versionNumber}",
+                                "Нажмите на любую ячейку таблицы, чтобы скопировать IP/пароль"
+                            )
                             Text(
-                                "📎 Вложенные файлы страницы (${detail.attachments.size})",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
+                                metaParts.joinToString("  ·  "),
+                                fontSize = 11.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        items(detail.attachments, key = { it.id }) { att ->
-                            ConfluenceAttachmentRow(att = att, onOpen = { controller.downloadAndOpenWikiAttachment(att) })
+
+                        items(blocksToRender) { block ->
+                            ConfluenceBlockView(
+                                block = block,
+                                controller = controller,
+                                onCopied = onCopied,
+                                onOpenLightbox = onOpenLightbox
+                            )
+                        }
+
+                        if (detail.attachments.isNotEmpty()) {
+                            item {
+                                Spacer(Modifier.height(8.dp))
+                                HorizontalDivider()
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "📎 Вложенные файлы страницы (${detail.attachments.size})",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            items(detail.attachments, key = { it.id }) { att ->
+                                ConfluenceAttachmentRow(att = att, onOpen = { controller.downloadAndOpenWikiAttachment(att) })
+                            }
                         }
                     }
                 }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(readerListState),
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp, top = 6.dp, bottom = 6.dp)
+                )
             }
         }
     }
@@ -1056,14 +1123,23 @@ private fun ConfluenceBlockView(
                             Text("📋 Копировать", color = DesktopColors.CslOrange, fontSize = 11.sp)
                         }
                     }
+                    val codeScroll = rememberScrollState()
                     Text(
                         text = block.code,
                         color = Color(0xFFF8FAFC),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
                         lineHeight = 17.sp,
-                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                        modifier = Modifier
+                            .desktopWheelHorizontalScroll(codeScroll)
+                            .horizontalScroll(codeScroll)
                     )
+                    if (codeScroll.maxValue > 0) {
+                        HorizontalScrollbar(
+                            adapter = rememberScrollbarAdapter(codeScroll),
+                            modifier = Modifier.fillMaxWidth().height(7.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1072,59 +1148,73 @@ private fun ConfluenceBlockView(
                 block.headers.size,
                 block.rows.maxOfOrNull { it.size } ?: 0
             ).coerceAtLeast(1)
+            val tableScroll = rememberScrollState()
 
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                    if (block.headers.isNotEmpty()) {
-                        Row(modifier = Modifier.background(DesktopColors.CslMidnight)) {
-                            for (c in 0 until colCount) {
-                                val cellText = block.headers.getOrNull(c).orEmpty()
-                                Box(
-                                    modifier = Modifier
-                                        .widthIn(min = 140.dp, max = 280.dp)
-                                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        text = cellText,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .desktopWheelHorizontalScroll(tableScroll)
+                            .horizontalScroll(tableScroll)
+                    ) {
+                        if (block.headers.isNotEmpty()) {
+                            Row(modifier = Modifier.background(DesktopColors.CslMidnight)) {
+                                for (c in 0 until colCount) {
+                                    val cellText = block.headers.getOrNull(c).orEmpty()
+                                    Box(
+                                        modifier = Modifier
+                                            .widthIn(min = 140.dp, max = 280.dp)
+                                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = cellText,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                    block.rows.forEachIndexed { rIdx, row ->
-                        val rowBg = if (rIdx % 2 == 0) DesktopColors.CardBg else DesktopColors.SubtleBg
-                        Row(modifier = Modifier.background(rowBg)) {
-                            for (c in 0 until colCount) {
-                                val cellVal = row.getOrNull(c).orEmpty()
-                                Box(
-                                    modifier = Modifier
-                                        .widthIn(min = 140.dp, max = 280.dp)
-                                        .clickable(enabled = cellVal.isNotBlank()) {
-                                            WindowsExternalLaunchers.copyToClipboard(cellVal)
-                                            onCopied("Скопировано: ${cellVal.take(28)}")
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 7.dp)
-                                ) {
-                                    Text(
-                                        text = cellVal.ifBlank { "—" },
-                                        fontSize = 12.sp,
-                                        color = DesktopColors.TextPrimary
-                                    )
+                        block.rows.forEachIndexed { rIdx, row ->
+                            val rowBg = if (rIdx % 2 == 0) DesktopColors.CardBg else DesktopColors.SubtleBg
+                            Row(modifier = Modifier.background(rowBg)) {
+                                for (c in 0 until colCount) {
+                                    val cellVal = row.getOrNull(c).orEmpty()
+                                    Box(
+                                        modifier = Modifier
+                                            .widthIn(min = 140.dp, max = 280.dp)
+                                            .clickable(enabled = cellVal.isNotBlank()) {
+                                                WindowsExternalLaunchers.copyToClipboard(cellVal)
+                                                onCopied("Скопировано: ${cellVal.take(28)}")
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 7.dp)
+                                    ) {
+                                        Text(
+                                            text = cellVal.ifBlank { "—" },
+                                            fontSize = 12.sp,
+                                            color = DesktopColors.TextPrimary
+                                        )
+                                    }
                                 }
                             }
-                        }
-                        if (rIdx < block.rows.lastIndex) {
-                            HorizontalDivider(color = DesktopColors.BorderSubtle)
+                            if (rIdx < block.rows.lastIndex) {
+                                HorizontalDivider(color = DesktopColors.BorderSubtle)
+                            }
                         }
                     }
+                }
+                if (tableScroll.maxValue > 0) {
+                    Spacer(Modifier.height(3.dp))
+                    HorizontalScrollbar(
+                        adapter = rememberScrollbarAdapter(tableScroll),
+                        modifier = Modifier.fillMaxWidth().height(7.dp)
+                    )
                 }
             }
         }

@@ -210,9 +210,10 @@ fun DesktopTicketsWorkspace(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val leftPaneWidth = when {
-            maxWidth >= 1650.dp -> 485.dp
-            maxWidth >= 1320.dp -> 455.dp
-            else -> 415.dp
+            maxWidth >= 1650.dp -> 480.dp
+            maxWidth >= 1340.dp -> 440.dp
+            maxWidth >= 1100.dp -> 375.dp
+            else -> 332.dp
         }
 
         Row(modifier = Modifier.fillMaxSize()) {
@@ -678,24 +679,33 @@ private fun DesktopWelcomeOverviewPane(
     onOpenSerialSearch: () -> Unit,
     onOpenKnowledgeBase: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(28.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = DesktopColors.CardBg,
-            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
-            shadowElevation = 2.dp,
-            modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(26.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
+    val welcomeScroll = rememberScrollState()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val isCompactHeight = maxHeight < 760.dp
+        val outerPad = if (isCompactHeight) 14.dp else 26.dp
+        val cardPad = if (isCompactHeight) 18.dp else 24.dp
+        val itemGap = if (isCompactHeight) 12.dp else 16.dp
+        val shownPreview = if (isCompactHeight) previewTickets.take(3) else previewTickets
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(welcomeScroll)
+                    .padding(start = outerPad, end = outerPad + 8.dp, top = outerPad, bottom = outerPad),
+                contentAlignment = if (isCompactHeight) Alignment.TopCenter else Alignment.Center
             ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = DesktopColors.CardBg,
+                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(cardPad),
+                        verticalArrangement = Arrangement.spacedBy(itemGap)
+                    ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -788,7 +798,7 @@ private fun DesktopWelcomeOverviewPane(
                 }
 
                 // Quick Preview of Active Tickets (1-click jump!)
-                if (previewTickets.isNotEmpty()) {
+                if (shownPreview.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             text = "Быстрый переход к активным заявкам:",
@@ -796,7 +806,7 @@ private fun DesktopWelcomeOverviewPane(
                             fontWeight = FontWeight.Bold,
                             color = DesktopColors.TextSecondary
                         )
-                        previewTickets.forEach { t ->
+                        shownPreview.forEach { t ->
                             val isWork = t.stage == TicketStage.IN_PROGRESS
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
@@ -868,9 +878,12 @@ private fun DesktopWelcomeOverviewPane(
                 }
 
                 // Quick Action Toolbar
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                DesktopHorizontalScrollRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    showArrowButtons = true,
+                    showScrollbar = true,
+                    buttonHeight = 32.dp
                 ) {
                     Button(
                         onClick = onCreateTicket,
@@ -912,7 +925,17 @@ private fun DesktopWelcomeOverviewPane(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
+                    }
+                }
             }
+
+            VerticalScrollbar(
+                adapter = rememberScrollbarAdapter(welcomeScroll),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(end = 3.dp, top = 4.dp, bottom = 4.dp)
+            )
         }
     }
 }
@@ -1868,11 +1891,12 @@ private fun DesktopTicketInspector(
         state.clientPassports[k]
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(scroll)
-            .padding(16.dp),
+            .padding(start = 16.dp, end = 22.dp, top = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // 1. Header Card (Client Name prominent at top, Ticket Key smaller below)
@@ -1929,9 +1953,12 @@ private fun DesktopTicketInspector(
                             color = MaterialTheme.colorScheme.onSurface
                         )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        DesktopHorizontalScrollRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            showArrowButtons = true,
+                            showScrollbar = false,
+                            buttonHeight = 22.dp
                         ) {
                             Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
@@ -1944,9 +1971,12 @@ private fun DesktopTicketInspector(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                 // Primary Workflow Buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                DesktopHorizontalScrollRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    showArrowButtons = true,
+                    showScrollbar = true,
+                    buttonHeight = 32.dp
                 ) {
                     Button(
                         onClick = { controller.performTicketAction(ticket.key, TicketWorkflowAction.TAKE_IN_WORK) },
@@ -1983,10 +2013,12 @@ private fun DesktopTicketInspector(
                 }
 
                 // Secondary Engineer Actions (В ремонт, В чат, PDF-акт, Worklog, Таймер, Wiki, Техпаспорт)
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                DesktopHorizontalScrollRow(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    showArrowButtons = true,
+                    showScrollbar = true,
+                    buttonHeight = 32.dp
                 ) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -2722,6 +2754,15 @@ private fun DesktopTicketInspector(
                 }
             }
         }
+    }
+
+    VerticalScrollbar(
+        adapter = rememberScrollbarAdapter(scroll),
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .padding(end = 3.dp, top = 4.dp, bottom = 4.dp)
+    )
     }
 
     // Dialogs for Workflow Actions

@@ -2,10 +2,12 @@ package com.helpdesk.desktop
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -43,13 +45,14 @@ fun DesktopFilterWorkspace(
 ) {
     var draft by remember(state.filterSettings) { mutableStateOf(state.filterSettings) }
     val activeJqlPreview = remember(draft) { TicketFilterEngine.buildActiveJql(draft) }
+    val filterScroll = rememberScrollState()
 
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .verticalScroll(filterScroll)
+            .padding(start = 20.dp, end = 26.dp, top = 20.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Surface(
@@ -157,6 +160,11 @@ fun DesktopFilterWorkspace(
             }
         }
     }
+    VerticalScrollbar(
+        adapter = rememberScrollbarAdapter(filterScroll),
+        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp, top = 4.dp, bottom = 4.dp)
+    )
+    }
 }
 
 // =============================================================================
@@ -172,13 +180,14 @@ fun DesktopSettingsWorkspace(
     var draft by remember(state.settings) { mutableStateOf(state.settings) }
     var showSecret by remember { mutableStateOf(false) }
     val scheduleStatus = remember(draft) { BelarusWorkCalendar.evaluate(draft) }
+    val settingsScroll = rememberScrollState()
 
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .verticalScroll(settingsScroll)
+            .padding(start = 20.dp, end = 26.dp, top = 20.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Card 1: Jira Connection
@@ -409,10 +418,12 @@ fun DesktopSettingsWorkspace(
                         fontSize = 13.sp,
                         color = DesktopColors.CslOrange
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 28.dp
                     ) {
                         desktopOffOptions.forEach { (mins, label) ->
                             FilterChip(
@@ -422,7 +433,7 @@ fun DesktopSettingsWorkspace(
                                     draft = updated
                                     controller.saveSettings(updated)
                                 },
-                                label = { Text(label, fontSize = 11.5.sp) }
+                                label = { Text(label, fontSize = 11.5.sp, maxLines = 1, softWrap = false) }
                             )
                         }
                     }
@@ -684,6 +695,11 @@ fun DesktopSettingsWorkspace(
                 }
             }
         }
+    }
+    VerticalScrollbar(
+        adapter = rememberScrollbarAdapter(settingsScroll),
+        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp, top = 4.dp, bottom = 4.dp)
+    )
     }
 }
 

@@ -2,13 +2,16 @@ package com.helpdesk.desktop
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -265,10 +268,12 @@ fun DesktopZabbixWorkspace(
 
                     Spacer(Modifier.width(10.dp))
 
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.weight(1.35f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        showArrowButtons = true,
+                        showScrollbar = false,
+                        buttonHeight = 32.dp
                     ) {
                         if (filterMode != 3 && filteredActiveProblems.isNotEmpty()) {
                             OutlinedButton(
@@ -292,13 +297,15 @@ fun DesktopZabbixWorkspace(
                         OutlinedButton(onClick = { showAuthPanel = !showAuthPanel }) {
                             Text(if (showAuthPanel) "Скрыть вход" else "⚙️ Логин / Настройки", maxLines = 1, softWrap = false)
                         }
-                        Button(
-                            onClick = { controller.refreshZabbix(silent = false) },
-                            enabled = !state.isLoadingZabbix,
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-                        ) {
-                            Text("🔄 Обновить", maxLines = 1, softWrap = false)
-                        }
+                    }
+
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { controller.refreshZabbix(silent = false) },
+                        enabled = !state.isLoadingZabbix,
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    ) {
+                        Text("🔄 Обновить", maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -393,17 +400,19 @@ fun DesktopZabbixWorkspace(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    DesktopHorizontalScrollRow(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        showArrowButtons = true,
+                        showScrollbar = true,
+                        buttonHeight = 32.dp
                     ) {
-                        Text("Порог баннера:", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                        Text("Порог баннера:", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
                         DESKTOP_ZABBIX_THRESHOLDS.forEach { (lvl, label) ->
                             FilterChip(
                                 selected = minSeverityDraft == lvl,
                                 onClick = { minSeverityDraft = lvl },
-                                label = { Text(label, fontSize = 12.sp) }
+                                label = { Text(label, fontSize = 12.sp, maxLines = 1, softWrap = false) }
                             )
                         }
                         Spacer(Modifier.width(12.dp))
@@ -422,7 +431,7 @@ fun DesktopZabbixWorkspace(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
                         ) {
-                            Text("Войти и загрузить данные")
+                            Text("Войти и загрузить данные", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -456,52 +465,63 @@ fun DesktopZabbixWorkspace(
         }
 
         if (snapshot != null) {
-            // KPI Strip + Search Bar
+            // KPI Strip + Search Bar (responsive + scrollable so search never gets crushed on narrow windows)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                DesktopZabbixStatBadge("Аварии (5)", activeDisasterCount, Color(0xFFD93025))
-                DesktopZabbixStatBadge("Критич. (4)", activeHighCount, Color(0xFFE65100))
-                DesktopZabbixStatBadge("Ошибки (3)", activeAverageCount, DesktopColors.CslOrange)
-                DesktopZabbixStatBadge("Предупр. (2)", activeWarningCount, DesktopColors.StatusAmber)
+                DesktopHorizontalScrollRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    showArrowButtons = true,
+                    showScrollbar = true,
+                    buttonHeight = 32.dp
+                ) {
+                    DesktopZabbixStatBadge("Аварии (5)", activeDisasterCount, Color(0xFFD93025))
+                    DesktopZabbixStatBadge("Критич. (4)", activeHighCount, Color(0xFFE65100))
+                    DesktopZabbixStatBadge("Ошибки (3)", activeAverageCount, DesktopColors.CslOrange)
+                    DesktopZabbixStatBadge("Предупр. (2)", activeWarningCount, DesktopColors.StatusAmber)
 
-                Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(4.dp))
 
-                FilterChip(
-                    selected = filterMode == 0,
-                    onClick = { filterMode = 0 },
-                    label = { Text("Новые / активные (${activeProblems.size})") }
-                )
-                FilterChip(
-                    selected = filterMode == 1,
-                    onClick = { filterMode = 1 },
-                    label = { Text("Ошибки и критич. ($activeCritAndErrorCount)") }
-                )
-                FilterChip(
-                    selected = filterMode == 2,
-                    onClick = { filterMode = 2 },
-                    label = { Text("Неподтв. ($activeUnackedCount)") }
-                )
-                FilterChip(
-                    selected = filterMode == 3,
-                    onClick = { filterMode = 3 },
-                    label = { Text("🔕 Скрытые ($hiddenTotalCount)") }
-                )
+                    FilterChip(
+                        selected = filterMode == 0,
+                        onClick = { filterMode = 0 },
+                        label = { Text("Новые / активные (${activeProblems.size})", maxLines = 1, softWrap = false) }
+                    )
+                    FilterChip(
+                        selected = filterMode == 1,
+                        onClick = { filterMode = 1 },
+                        label = { Text("Ошибки и критич. ($activeCritAndErrorCount)", maxLines = 1, softWrap = false) }
+                    )
+                    FilterChip(
+                        selected = filterMode == 2,
+                        onClick = { filterMode = 2 },
+                        label = { Text("Неподтв. ($activeUnackedCount)", maxLines = 1, softWrap = false) }
+                    )
+                    FilterChip(
+                        selected = filterMode == 3,
+                        onClick = { filterMode = 3 },
+                        label = { Text("🔕 Скрытые ($hiddenTotalCount)", maxLines = 1, softWrap = false) }
+                    )
+                }
 
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Поиск по узлу, IP или проблеме…", fontSize = 12.sp) },
+                    placeholder = { Text("Поиск по узлу, IP или проблеме…", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     singleLine = true,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.widthIn(min = 210.dp, max = 300.dp)
                 )
             }
 
             if (filterMode == 3) {
+                val hiddenListState = rememberLazyListState()
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    state = hiddenListState,
+                    modifier = Modifier.fillMaxSize().padding(end = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     item(key = "desktop_muted_rules_card") {
@@ -670,6 +690,11 @@ fun DesktopZabbixWorkspace(
                         }
                     }
                 }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(hiddenListState),
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                )
+                }
             } else if (filteredActiveProblems.isEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -701,8 +726,11 @@ fun DesktopZabbixWorkspace(
                     }
                 }
             } else {
+                val activeListState = rememberLazyListState()
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    state = activeListState,
+                    modifier = Modifier.fillMaxSize().padding(end = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(filteredActiveProblems, key = { it.alertKey }) { prob ->
@@ -836,6 +864,11 @@ fun DesktopZabbixWorkspace(
                             }
                         }
                     }
+                }
+                VerticalScrollbar(
+                    adapter = rememberScrollbarAdapter(activeListState),
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+                )
                 }
             }
         }

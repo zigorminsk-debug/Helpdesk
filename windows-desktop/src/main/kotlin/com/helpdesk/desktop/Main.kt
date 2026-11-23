@@ -68,8 +68,21 @@ fun main(args: Array<String>) = application {
     var showQrDialog by remember { mutableStateOf(false) }
     var showFullGuide by remember { mutableStateOf(false) }
 
+    val initialWindowSize = remember {
+        val bounds = runCatching {
+            java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        }.getOrNull()
+        if (bounds != null && bounds.width > 0 && bounds.height > 0) {
+            val targetW = (bounds.width * 0.90f).toInt().coerceIn(960, 1480)
+            val targetH = (bounds.height * 0.90f).toInt().coerceIn(620, 900)
+            DpSize(targetW.dp, targetH.dp)
+        } else {
+            DpSize(1280.dp, 780.dp)
+        }
+    }
+
     val mainWindowState = rememberWindowState(
-        size = DpSize(1340.dp, 860.dp),
+        size = initialWindowSize,
         position = WindowPosition(Alignment.Center)
     )
 
@@ -188,7 +201,7 @@ fun main(args: Array<String>) = application {
     ) {
         SideEffect {
             mainComposeWindow = window
-            val minDim = java.awt.Dimension(1024, 660)
+            val minDim = java.awt.Dimension(860, 560)
             if (window.minimumSize != minDim) {
                 window.minimumSize = minDim
             }
@@ -395,10 +408,12 @@ private fun DesktopTopNavigationHeader(
 
     @Composable
     fun NavTabsRow(modifier: Modifier = Modifier) {
-        Row(
-            modifier = modifier.horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        DesktopHorizontalScrollRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            showScrollbar = false,
+            arrowDarkSurface = true,
+            buttonHeight = 32.dp
         ) {
             DesktopMainTab.entries.forEach { tab ->
                 val selected = state.activeTab == tab
@@ -491,77 +506,82 @@ private fun DesktopTopNavigationHeader(
     }
 
     @Composable
-    fun RightToolbarRow() {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+    fun UtilityPillsItems(compactSyncText: Boolean) {
+        // Compact Connection Status Pill
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = DesktopColors.CslNavySurface.copy(alpha = 0.85f),
+            border = BorderStroke(1.dp, DesktopColors.CslNavyBorder),
+            modifier = Modifier.height(32.dp)
         ) {
-            // Compact Connection Status Pill
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = DesktopColors.CslNavySurface.copy(alpha = 0.85f),
-                border = BorderStroke(1.dp, DesktopColors.CslNavyBorder),
-                modifier = Modifier.height(32.dp)
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(connectionDotColor)
-                    )
-                    Text(
-                        text = connectionTitle,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                    Text(
-                        text = "· $alertModeLabel · ${state.lastSyncDisplay.removePrefix("обновлено в ")}",
-                        fontSize = 10.5.sp,
-                        color = Color.White.copy(alpha = 0.65f),
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-            }
-
-            HeaderUtilityPill(if (state.darkTheme) "☀️ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
-            HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
-            HeaderUtilityPill("📊 Смена", onOpenAnalytics)
-            HeaderUtilityPill("📲 QR", onOpenQr)
-            HeaderUtilityPill("📖 Гайд", onOpenGuide)
-
-            Button(
-                onClick = onRefresh,
-                enabled = !state.isRefreshing,
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = DesktopColors.CslOrange,
-                    disabledContainerColor = DesktopColors.CslOrange.copy(alpha = 0.5f)
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                modifier = Modifier.height(32.dp)
-            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(connectionDotColor)
+                )
                 Text(
-                    text = if (state.isRefreshing) "Синхр…" else "🔄 Обновить",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
+                    text = connectionTitle,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false
+                )
+                val syncShort = state.lastSyncDisplay.removePrefix("обновлено в ")
+                val suffix = if (compactSyncText && syncShort.contains("не синхр", ignoreCase = true)) {
+                    "· $alertModeLabel"
+                } else {
+                    "· $alertModeLabel · $syncShort"
+                }
+                Text(
+                    text = suffix,
+                    fontSize = 10.5.sp,
+                    color = Color.White.copy(alpha = 0.65f),
                     maxLines = 1,
                     softWrap = false
                 )
             }
         }
+
+        HeaderUtilityPill(if (state.darkTheme) "☀️ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
+        HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
+        HeaderUtilityPill("📊 Смена", onOpenAnalytics)
+        HeaderUtilityPill("📲 QR", onOpenQr)
+        HeaderUtilityPill("📖 Гайд", onOpenGuide)
+    }
+
+    @Composable
+    fun RefreshActionButton() {
+        Button(
+            onClick = onRefresh,
+            enabled = !state.isRefreshing,
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = DesktopColors.CslOrange,
+                disabledContainerColor = DesktopColors.CslOrange.copy(alpha = 0.5f)
+            ),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+            modifier = Modifier.height(32.dp)
+        ) {
+            Text(
+                text = if (state.isRefreshing) "Синхр…" else "🔄 Обновить",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isWideSingleRow = maxWidth >= 1460.dp
+        val isWideSingleRow = maxWidth >= 1680.dp
+        val isCompactToolbar = maxWidth < 1360.dp
 
         Surface(
             color = DesktopColors.CslMidnight,
@@ -574,83 +594,82 @@ private fun DesktopTopNavigationHeader(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp)
-                        ) {
-                            Image(
-                                bitmap = appIconBitmap,
-                                contentDescription = "Help-CSL",
-                                modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp))
+                        Image(
+                            bitmap = appIconBitmap,
+                            contentDescription = "Help-CSL",
+                            modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp))
+                        )
+                        Column {
+                            Text(
+                                "Help-CSL",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp,
+                                lineHeight = 16.sp,
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false
                             )
-                            Column {
-                                Text(
-                                    "Help-CSL",
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 15.sp,
-                                    lineHeight = 16.sp,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                                Text(
-                                    "v$version",
-                                    fontSize = 10.sp,
-                                    lineHeight = 11.sp,
-                                    color = DesktopColors.CslOrange,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
+                            Text(
+                                "v$version",
+                                fontSize = 10.sp,
+                                lineHeight = 11.sp,
+                                color = DesktopColors.CslOrange,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
-
-                        NavTabsRow()
                     }
 
-                    Spacer(Modifier.width(10.dp))
-                    RightToolbarRow()
+                    NavTabsRow(modifier = Modifier.weight(1f))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        UtilityPillsItems(compactSyncText = false)
+                        RefreshActionButton()
+                    }
                 }
             } else {
-                // Clean 2-tier layout for normal/restored windows & 125%-150% DPI laptops (zero vertical crushing!)
+                // Clean 2-tier layout for normal/restored windows & 125%-150% DPI laptops (zero clipping!)
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 14.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Image(
                                 bitmap = appIconBitmap,
                                 contentDescription = "Help-CSL",
-                                modifier = Modifier.size(30.dp).clip(RoundedCornerShape(7.dp))
+                                modifier = Modifier.size(28.dp).clip(RoundedCornerShape(7.dp))
                             )
                             Row(
                                 verticalAlignment = Alignment.Bottom,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Text(
                                     "Help-CSL",
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 15.sp,
+                                    fontSize = 14.5.sp,
                                     color = Color.White,
                                     maxLines = 1,
                                     softWrap = false
                                 )
                                 Text(
-                                    "Windows v$version",
+                                    "v$version",
                                     fontSize = 10.5.sp,
                                     color = DesktopColors.CslOrange,
                                     fontWeight = FontWeight.SemiBold,
@@ -660,12 +679,17 @@ private fun DesktopTopNavigationHeader(
                             }
                         }
 
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            verticalAlignment = Alignment.CenterVertically
+                        DesktopHorizontalScrollRow(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                            showScrollbar = false,
+                            arrowDarkSurface = true,
+                            buttonHeight = 30.dp
                         ) {
-                            RightToolbarRow()
+                            UtilityPillsItems(compactSyncText = isCompactToolbar)
                         }
+
+                        RefreshActionButton()
                     }
 
                     HorizontalDivider(thickness = 1.dp, color = DesktopColors.CslNavyBorder.copy(alpha = 0.7f))
