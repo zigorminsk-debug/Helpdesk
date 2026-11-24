@@ -681,35 +681,50 @@ fun TicketDetailScreen(
                         }
 
                         // Client Tech Passport + Wiki + Knowledge Archive row
+                        val detailBtnFontSize = with(LocalDensity.current) { 11.5.dp.toSp() }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             OutlinedButton(
                                 onClick = { showPassportDialog = true },
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1.16f),
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
                             ) {
                                 Text(
                                     if (clientPassport != null && !clientPassport.isEmpty) "🏢 Паспорт ✓" else "🏢 Паспорт",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    fontSize = detailBtnFontSize,
+                                    lineHeight = detailBtnFontSize,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { onOpenClientInWiki(ticket.reporterName) },
+                                modifier = Modifier.weight(0.84f),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    "📘 Wiki",
+                                    fontSize = detailBtnFontSize,
+                                    lineHeight = detailBtnFontSize,
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
                             OutlinedButton(
-                                onClick = { onOpenClientInWiki(ticket.reporterName) },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
-                            ) {
-                                Text("📘 Wiki", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
-                            }
-                            OutlinedButton(
                                 onClick = { showKbArchiveDialog = true },
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1.0f),
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 7.dp)
                             ) {
-                                Text("📚 Решения", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                                Text(
+                                    "📚 Решения",
+                                    fontSize = detailBtnFontSize,
+                                    lineHeight = detailBtnFontSize,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
 
@@ -796,11 +811,14 @@ fun TicketDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Занести технику во вкладку «В ремонт»",
+                                text = "Передать технику во вкладку «Ремонт»",
                                 color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = detailBtnFontSize,
+                                lineHeight = detailBtnFontSize,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                softWrap = false
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         OutlinedButton(

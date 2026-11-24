@@ -10,9 +10,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -784,25 +787,31 @@ private fun FreshAndPastFilterRow(
     onSelect: (TicketAgeFilter) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val density = LocalDensity.current
+    val pillFontSize = with(density) { 11.5.dp.toSp() }
+
     data class AgeOption(
         val filter: TicketAgeFilter,
         val label: String,
-        val accent: Color
+        val accent: Color,
+        val weight: Float
     )
     val options = listOf(
-        AgeOption(TicketAgeFilter.ALL, "Все ($allCount)", CslOrange),
-        AgeOption(TicketAgeFilter.FRESH_TODAY, "🟢 Свежие ($freshCount)", CslSuccessGreen),
-        AgeOption(TicketAgeFilter.PAST_HANGING, "⏳ Прошлые ($pastCount)", Color(0xFFE65100))
+        AgeOption(TicketAgeFilter.ALL, "Все ($allCount)", CslOrange, 0.74f),
+        AgeOption(TicketAgeFilter.FRESH_TODAY, "Свежие ($freshCount)", CslSuccessGreen, 1.11f),
+        AgeOption(TicketAgeFilter.PAST_HANGING, "Прошлые ($pastCount)", Color(0xFFE65100), 1.15f)
     )
     Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        modifier = modifier.height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         options.forEach { opt ->
             val isSelected = selected == opt.filter
             Surface(
                 onClick = { onSelect(opt.filter) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(opt.weight)
+                    .fillMaxHeight(),
                 shape = RoundedCornerShape(8.dp),
                 color = if (isSelected) opt.accent.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface,
                 border = BorderStroke(
@@ -810,17 +819,45 @@ private fun FreshAndPastFilterRow(
                     color = if (isSelected) opt.accent else MaterialTheme.colorScheme.outlineVariant
                 )
             ) {
-                Text(
-                    text = opt.label,
-                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 5.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    when (opt.filter) {
+                        TicketAgeFilter.FRESH_TODAY -> {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .background(CslSuccessGreen, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        TicketAgeFilter.PAST_HANGING -> {
+                            Icon(
+                                imageVector = Icons.Default.Schedule,
+                                contentDescription = null,
+                                tint = opt.accent,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                        }
+                        TicketAgeFilter.ALL -> Unit
+                    }
+                    Text(
+                        text = opt.label,
+                        fontSize = pillFontSize,
+                        lineHeight = pillFontSize,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }
@@ -894,20 +931,30 @@ private fun AssigneeScopeRow(
     onSelect: (AssigneeScopeFilter) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val density = LocalDensity.current
+    val pillFontSize = with(density) { 11.5.dp.toSp() }
+
+    data class ScopeOption(
+        val mode: AssigneeScopeFilter,
+        val label: String,
+        val weight: Float
+    )
     val options = listOf(
-        Triple(AssigneeScopeFilter.ALL, "Все", allCount),
-        Triple(AssigneeScopeFilter.MINE, "Мои", mineCount),
-        Triple(AssigneeScopeFilter.UNASSIGNED, "Свободные", freeCount)
+        ScopeOption(AssigneeScopeFilter.ALL, "Все ($allCount)", 0.78f),
+        ScopeOption(AssigneeScopeFilter.MINE, "Мои ($mineCount)", 0.82f),
+        ScopeOption(AssigneeScopeFilter.UNASSIGNED, "Свободные ($freeCount)", 1.40f)
     )
     Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        modifier = modifier.height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        options.forEach { (mode, title, count) ->
-            val isSelected = selected == mode
+        options.forEach { opt ->
+            val isSelected = selected == opt.mode
             Surface(
-                onClick = { onSelect(mode) },
-                modifier = Modifier.weight(1f),
+                onClick = { onSelect(opt.mode) },
+                modifier = Modifier
+                    .weight(opt.weight)
+                    .fillMaxHeight(),
                 shape = RoundedCornerShape(8.dp),
                 color = if (isSelected) CslMidnight else MaterialTheme.colorScheme.surface,
                 border = BorderStroke(
@@ -915,16 +962,24 @@ private fun AssigneeScopeRow(
                     color = if (isSelected) CslOrange else MaterialTheme.colorScheme.outlineVariant
                 )
             ) {
-                Text(
-                    text = "$title ($count)",
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    softWrap = false,
-                    textAlign = TextAlign.Center
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 5.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = opt.label,
+                        fontSize = pillFontSize,
+                        lineHeight = pillFontSize,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }
@@ -1184,7 +1239,9 @@ private fun AdaptiveFourTabsBar(
         if (useTwoRows) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     tabs.take(2).forEach { tab ->
@@ -1192,12 +1249,16 @@ private fun AdaptiveFourTabsBar(
                             tab = tab,
                             selected = selectedMode == tab.mode,
                             onClick = { onSelect(tab.mode) },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
                         )
                     }
                 }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     tabs.drop(2).forEach { tab ->
@@ -1205,14 +1266,18 @@ private fun AdaptiveFourTabsBar(
                             tab = tab,
                             selected = selectedMode == tab.mode,
                             onClick = { onSelect(tab.mode) },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
                         )
                     }
                 }
             }
         } else {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 tabs.forEach { tab ->
@@ -1220,7 +1285,9 @@ private fun AdaptiveFourTabsBar(
                         tab = tab,
                         selected = selectedMode == tab.mode,
                         onClick = { onSelect(tab.mode) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                     )
                 }
             }
@@ -1265,10 +1332,10 @@ private fun CompactTabSegment(
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(horizontal = 4.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1457,11 +1524,12 @@ private fun TicketListCard(
                     }
 
                     if (freshnessInfo != null) {
+                        val badgeFontSize = with(LocalDensity.current) { 11.5.dp.toSp() }
                         val (freshBg, freshFg, freshIcon) = when (freshnessInfo.severity) {
                             TicketHangingSeverity.FRESH_TODAY -> Triple(
                                 CslSuccessGreen.copy(alpha = 0.15f),
                                 CslSuccessGreen,
-                                "🟢"
+                                "●"
                             )
                             TicketHangingSeverity.PAST_RECENT -> Triple(
                                 Color(0xFFE65100).copy(alpha = 0.16f),
@@ -1481,9 +1549,12 @@ private fun TicketListCard(
                             Text(
                                 text = "$freshIcon ${freshnessInfo.fullBadgeLabel}",
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                style = MaterialTheme.typography.labelMedium,
+                                fontSize = badgeFontSize,
+                                lineHeight = badgeFontSize,
                                 fontWeight = FontWeight.Bold,
-                                color = freshFg
+                                color = freshFg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }

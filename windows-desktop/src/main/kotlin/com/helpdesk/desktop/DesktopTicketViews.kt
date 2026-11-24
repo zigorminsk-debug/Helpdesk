@@ -504,14 +504,15 @@ fun DesktopTicketsWorkspace(
                             .height(30.dp)
                             .clickable(onClick = onClick)
                     ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 5.dp)) {
                             Text(
                                 text = label,
-                                fontSize = 11.5.sp,
+                                fontSize = 11.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (selected) accentColor else DesktopColors.TextSecondary,
                                 maxLines = 1,
-                                softWrap = false
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -527,21 +528,21 @@ fun DesktopTicketsWorkspace(
                             label = "Все (${searchAndScopeFiltered.size})",
                             selected = ageFilter == TicketAgeFilter.ALL,
                             accentColor = DesktopColors.CslOrange,
-                            modifier = Modifier.weight(0.85f),
+                            modifier = Modifier.weight(0.74f),
                             onClick = { ageFilter = TicketAgeFilter.ALL }
                         )
                         SubScopePill(
-                            label = "🟢 Свежие (${freshQueueList.size})",
+                            label = "● Свежие (${freshQueueList.size})",
                             selected = ageFilter == TicketAgeFilter.FRESH_TODAY,
                             accentColor = DesktopColors.StatusGreen,
-                            modifier = Modifier.weight(1.08f),
+                            modifier = Modifier.weight(1.11f),
                             onClick = { ageFilter = TicketAgeFilter.FRESH_TODAY }
                         )
                         SubScopePill(
-                            label = "⏳ Прошлые (${pastQueueList.size})",
+                            label = "◷ Прошлые (${pastQueueList.size})",
                             selected = ageFilter == TicketAgeFilter.PAST_HANGING,
                             accentColor = DesktopColors.StatusAmber,
-                            modifier = Modifier.weight(1.12f),
+                            modifier = Modifier.weight(1.15f),
                             onClick = { ageFilter = TicketAgeFilter.PAST_HANGING }
                         )
                     }

@@ -575,6 +575,7 @@ private fun GifAndStatusTopBlock(
             )
 
             if (showRefreshButton) {
+                val btnFontSize = with(LocalDensity.current) { 12.dp.toSp() }
                 FilledTonalButton(
                     onClick = onRefreshNow,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -587,13 +588,16 @@ private fun GifAndStatusTopBlock(
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = null,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text = "Обновить",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = btnFontSize,
+                        lineHeight = btnFontSize,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -608,6 +612,11 @@ private fun HabrFeedHeaderCard(
     onSelectCategory: (HabrFeedCategory) -> Unit,
     onRefreshFeed: () -> Unit
 ) {
+    val density = LocalDensity.current
+    val badgeFontSize = with(density) { 10.5.dp.toSp() }
+    val headerFontSize = with(density) { 13.dp.toSp() }
+    val catFontSize = with(density) { 12.dp.toSp() }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -630,23 +639,45 @@ private fun HabrFeedHeaderCard(
                     Text(
                         text = "ХАБР",
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = badgeFontSize,
+                        lineHeight = badgeFontSize,
                         fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
 
                 Spacer(Modifier.width(8.dp))
 
                 Text(
-                    text = "Свежее на habr.com · Чтение в приложении",
+                    text = "Свежее на habr.com",
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
+                    fontSize = headerFontSize,
+                    lineHeight = headerFontSize,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color.White.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        text = "в приложении",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        fontSize = badgeFontSize,
+                        lineHeight = badgeFontSize,
+                        color = Color.White.copy(alpha = 0.78f),
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+
+                Spacer(Modifier.width(4.dp))
 
                 IconButton(
                     onClick = onRefreshFeed,
@@ -681,10 +712,14 @@ private fun HabrFeedHeaderCard(
                             text = cat.title,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 5.dp),
-                            style = MaterialTheme.typography.labelMedium,
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            fontSize = catFontSize,
+                            lineHeight = catFontSize,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             color = if (selected) Color.White else Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -732,44 +767,56 @@ private fun HabrNewsItemCard(
                 .padding(start = 13.dp, end = 11.dp, top = 9.dp, bottom = 9.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            val metaFontSize = with(LocalDensity.current) { 11.dp.toSp() }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (item.publishedLabel.isNotBlank()) {
-                    Text(
-                        text = item.publishedLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = CslOrange
-                    )
-                }
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    if (item.publishedLabel.isNotBlank()) {
+                        Text(
+                            text = item.publishedLabel,
+                            fontSize = metaFontSize,
+                            lineHeight = metaFontSize,
+                            fontWeight = FontWeight.SemiBold,
+                            color = CslOrange,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
 
-                item.author?.let { author ->
-                    Text(
-                        text = "• @$author",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    item.author?.let { author ->
+                        Text(
+                            text = "• @$author",
+                            fontSize = metaFontSize,
+                            lineHeight = metaFontSize,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-
-                Spacer(Modifier.weight(1f))
 
                 item.tags.firstOrNull()?.let { tag ->
+                    val shortTag = if (tag.length > 16) tag.take(15).trimEnd() + "…" else tag
                     Surface(
                         shape = RoundedCornerShape(5.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = tag,
+                            text = shortTag,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = metaFontSize,
+                            lineHeight = metaFontSize,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            softWrap = false
                         )
                     }
                 }
