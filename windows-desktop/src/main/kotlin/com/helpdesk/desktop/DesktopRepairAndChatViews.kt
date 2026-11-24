@@ -191,7 +191,7 @@ fun DesktopRepairWorkspace(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             showArrowButtons = true,
-            showScrollbar = true,
+            showScrollbar = false,
             buttonHeight = 32.dp
         ) {
             RepairSubTab.entries.forEach { tab ->

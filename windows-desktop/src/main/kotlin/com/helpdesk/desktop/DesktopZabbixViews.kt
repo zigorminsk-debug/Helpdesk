@@ -46,6 +46,7 @@ private val DESKTOP_ZABBIX_THRESHOLDS = listOf(
     2 to "Warning и выше (2–5)"
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopZabbixWorkspace(
     state: DesktopUiState,
@@ -400,14 +401,14 @@ fun DesktopZabbixWorkspace(
                         }
                     }
 
-                    DesktopHorizontalScrollRow(
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        showArrowButtons = true,
-                        showScrollbar = true,
-                        buttonHeight = 32.dp
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Порог баннера:", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                        Box(modifier = Modifier.height(32.dp), contentAlignment = Alignment.CenterStart) {
+                            Text("Порог баннера:", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                        }
                         DESKTOP_ZABBIX_THRESHOLDS.forEach { (lvl, label) ->
                             FilterChip(
                                 selected = minSeverityDraft == lvl,
@@ -415,7 +416,7 @@ fun DesktopZabbixWorkspace(
                                 label = { Text(label, fontSize = 12.sp, maxLines = 1, softWrap = false) }
                             )
                         }
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(8.dp))
                         Button(
                             onClick = {
                                 controller.saveAndConnectZabbix(
@@ -475,7 +476,7 @@ fun DesktopZabbixWorkspace(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     showArrowButtons = true,
-                    showScrollbar = true,
+                    showScrollbar = false,
                     buttonHeight = 32.dp
                 ) {
                     DesktopZabbixStatBadge("Аварии (5)", activeDisasterCount, Color(0xFFD93025))

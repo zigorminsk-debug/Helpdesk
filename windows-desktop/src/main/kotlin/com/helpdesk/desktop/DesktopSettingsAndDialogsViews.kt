@@ -171,6 +171,7 @@ fun DesktopFilterWorkspace(
 //  2. SETTINGS WORKSPACE (JIRA, RB CALENDAR, SOUND, TRAY, AUTO-UPDATE)
 // =============================================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopSettingsWorkspace(
     state: DesktopUiState,
@@ -418,12 +419,10 @@ fun DesktopSettingsWorkspace(
                         fontSize = 13.sp,
                         color = DesktopColors.CslOrange
                     )
-                    DesktopHorizontalScrollRow(
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        showArrowButtons = true,
-                        showScrollbar = true,
-                        buttonHeight = 28.dp
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         desktopOffOptions.forEach { (mins, label) ->
                             FilterChip(

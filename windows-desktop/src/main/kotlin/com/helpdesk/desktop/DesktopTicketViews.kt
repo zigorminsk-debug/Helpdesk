@@ -410,7 +410,7 @@ fun DesktopTicketsWorkspace(
 
                 Spacer(Modifier.height(8.dp))
 
-                // 3. Modern Segmented Queue Control
+                // 3. Modern Segmented Queue Control (uniform height across all 4 tabs)
                 val closedTabAccent = if (LocalDesktopDarkTheme.current) DesktopColors.StatusGreen else Color(0xFF0F172A)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -420,6 +420,7 @@ fun DesktopTicketsWorkspace(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .height(IntrinsicSize.Min)
                             .padding(3.dp),
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
@@ -430,11 +431,6 @@ fun DesktopTicketsWorkspace(
                             Triple(TicketQueueTab.SERVICE, serviceCount, Color(0xFF475569))
                         ).forEach { (tab, count, activeColor) ->
                             val selected = !showHabrPanel && queueTab == tab
-                            val subSplit = when (tab) {
-                                TicketQueueTab.NEW -> if (newCount > 0) "сег ${newFreshAll.size}·пр ${newPastAll.size}" else null
-                                TicketQueueTab.IN_PROGRESS -> if (inWorkCount > 0) "сег ${inWorkFreshAll.size}·пр ${inWorkPastAll.size}" else null
-                                else -> null
-                            }
                             Surface(
                                 color = if (selected) activeColor else Color.Transparent,
                                 contentColor = if (selected) Color.White else DesktopColors.TextSecondary,
@@ -442,14 +438,16 @@ fun DesktopTicketsWorkspace(
                                 shadowElevation = if (selected) 1.dp else 0.dp,
                                 modifier = Modifier
                                     .weight(1f)
+                                    .fillMaxHeight()
                                     .clickable {
                                         showHabrPanel = false
                                         queueTab = tab
                                     }
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
                                 ) {
                                     Text(
                                         text = tab.title,
@@ -458,33 +456,21 @@ fun DesktopTicketsWorkspace(
                                         maxLines = 1,
                                         softWrap = false
                                     )
-                                    Spacer(Modifier.height(1.dp))
                                     Text(
                                         text = count.toString(),
-                                        fontSize = 12.sp,
+                                        fontSize = 12.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         color = if (selected) Color.White else DesktopColors.TextPrimary,
                                         maxLines = 1,
                                         softWrap = false
                                     )
-                                    if (subSplit != null) {
-                                        Text(
-                                            text = subSplit,
-                                            fontSize = 9.sp,
-                                            lineHeight = 10.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (selected) Color.White.copy(alpha = 0.88f) else DesktopColors.TextMuted,
-                                            maxLines = 1,
-                                            softWrap = false
-                                        )
-                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // 4. Clean Sub-filter Pills (no lavender purple!)
+                // 4. Clean Harmonized Sub-filter Pills
                 @Composable
                 fun SubScopePill(
                     label: String,
@@ -501,7 +487,7 @@ fun DesktopTicketsWorkspace(
                             if (selected) accentColor else DesktopColors.BorderSubtle
                         ),
                         modifier = modifier
-                            .height(30.dp)
+                            .height(29.dp)
                             .clickable(onClick = onClick)
                     ) {
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 5.dp)) {
@@ -548,34 +534,37 @@ fun DesktopTicketsWorkspace(
                     }
                 }
 
-                if (!showHabrPanel && queueTab == TicketQueueTab.NEW && (staleNewCount > 0 || filterOnlyStaleNew)) {
-                    Spacer(Modifier.height(7.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                if (!showHabrPanel && queueTab == TicketQueueTab.NEW && filterOnlyStaleNew) {
+                    Spacer(Modifier.height(5.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = DesktopColors.StatusRed.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, DesktopColors.StatusRed.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { filterOnlyStaleNew = false }
                     ) {
-                        SubScopePill(
-                            label = "Все новые ($newCount)",
-                            selected = !filterOnlyStaleNew,
-                            accentColor = DesktopColors.CslOrange,
-                            modifier = Modifier.weight(1f),
-                            onClick = { filterOnlyStaleNew = false }
-                        )
-                        SubScopePill(
-                            label = "🔥 Ждут >${staleThresholdMin}м ($staleNewCount)",
-                            selected = filterOnlyStaleNew,
-                            accentColor = DesktopColors.StatusRed,
-                            modifier = Modifier.weight(1f),
-                            onClick = { filterOnlyStaleNew = !filterOnlyStaleNew }
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Фильтр: ждут >${staleThresholdMin}м ($staleNewCount)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = DesktopColors.StatusRed
+                            )
+                            Text("✕ Сбросить", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, color = DesktopColors.TextSecondary)
+                        }
                     }
                 } else if (!showHabrPanel && (queueTab == TicketQueueTab.IN_PROGRESS || queueTab == TicketQueueTab.CLOSED)) {
                     val activeScope = if (queueTab == TicketQueueTab.IN_PROGRESS) inWorkScope else closedScope
                     val accent = if (queueTab == TicketQueueTab.IN_PROGRESS) DesktopColors.StatusBlue else closedTabAccent
-                    Spacer(Modifier.height(7.dp))
+                    Spacer(Modifier.height(5.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         AssigneeScope.entries.forEach { scopeOpt ->
                             SubScopePill(
@@ -619,11 +608,6 @@ fun DesktopTicketsWorkspace(
                             verticalArrangement = Arrangement.spacedBy(7.dp)
                         ) {
                             if (isFreshPastTab) {
-                                val pastCaption = if (queueTab == TicketQueueTab.NEW) {
-                                    "Поступили в прошлые дни и ждут принятия"
-                                } else {
-                                    "Висят в работе с прошлых дней"
-                                }
                                 when (ageFilter) {
                                     TicketAgeFilter.ALL -> {
                                         if (freshQueueList.isNotEmpty()) {
@@ -631,7 +615,7 @@ fun DesktopTicketsWorkspace(
                                                 DesktopAgeSectionBanner(
                                                     isFresh = true,
                                                     count = freshQueueList.size,
-                                                    subtitle = "Поступили сегодня в течение рабочего дня"
+                                                    rightHint = "за сегодня"
                                                 )
                                             }
                                             items(freshQueueList, key = { it.key }) { ticket ->
@@ -643,26 +627,6 @@ fun DesktopTicketsWorkspace(
                                                     onClick = { controller.selectTicket(ticket.key) }
                                                 )
                                             }
-                                        } else if (pastQueueList.isNotEmpty()) {
-                                            item(key = "desk_no_fresh_today") {
-                                                Surface(
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    color = DesktopColors.SubtleBg,
-                                                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
-                                                    modifier = Modifier.fillMaxWidth()
-                                                ) {
-                                                    Text(
-                                                        text = if (queueTab == TicketQueueTab.NEW) {
-                                                            "☀ Сегодня новых заявок пока не поступало — ниже прошлые"
-                                                        } else {
-                                                            "☀ Сегодня новых заявок в работе пока нет — ниже прошлые"
-                                                        },
-                                                        fontSize = 11.sp,
-                                                        color = DesktopColors.TextMuted,
-                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                                    )
-                                                }
-                                            }
                                         }
 
                                         if (pastQueueList.isNotEmpty()) {
@@ -670,7 +634,7 @@ fun DesktopTicketsWorkspace(
                                                 DesktopAgeSectionBanner(
                                                     isFresh = false,
                                                     count = pastQueueList.size,
-                                                    subtitle = pastCaption
+                                                    rightHint = if (freshQueueList.isEmpty()) "сегодня новых: 0" else "с прошлых дней"
                                                 )
                                             }
                                             items(pastQueueList, key = { it.key }) { ticket ->
@@ -689,7 +653,7 @@ fun DesktopTicketsWorkspace(
                                             DesktopAgeSectionBanner(
                                                 isFresh = true,
                                                 count = freshQueueList.size,
-                                                subtitle = "Поступили сегодня в течение рабочего дня"
+                                                rightHint = "поступили сегодня"
                                             )
                                         }
                                         items(freshQueueList, key = { it.key }) { ticket ->
@@ -707,7 +671,7 @@ fun DesktopTicketsWorkspace(
                                             DesktopAgeSectionBanner(
                                                 isFresh = false,
                                                 count = pastQueueList.size,
-                                                subtitle = pastCaption
+                                                rightHint = "с прошлых дней"
                                             )
                                         }
                                         items(pastQueueList, key = { it.key }) { ticket ->
@@ -775,16 +739,21 @@ fun DesktopTicketsWorkspace(
                     else -> {
                         DesktopWelcomeOverviewPane(
                             newCount = newCount,
+                            newFreshCount = newFreshAll.size,
+                            newPastCount = newPastAll.size,
                             inWorkCount = inWorkCount,
-                            staleNewCount = staleNewCount,
+                            inWorkFreshCount = inWorkFreshAll.size,
+                            inWorkPastCount = inWorkPastAll.size,
                             closedCount = closedCount,
-                            staleThresholdMin = staleThresholdMin,
+                            settings = state.settings,
+                            nowMillis = nowMs,
                             previewTickets = (clientTickets.filter { it.stage == TicketStage.IN_PROGRESS } +
                                 clientTickets.filter { it.stage == TicketStage.NEW }).take(4),
-                            onJumpToQueue = { targetTab, staleOnly ->
+                            onJumpToQueue = { targetTab, targetAgeFilter ->
                                 showHabrPanel = false
                                 queueTab = targetTab
-                                filterOnlyStaleNew = staleOnly
+                                ageFilter = targetAgeFilter
+                                filterOnlyStaleNew = false
                             },
                             onOpenTicket = { key -> controller.selectTicket(key) },
                             onCreateTicket = { showCreateDialog = true },
@@ -847,15 +816,20 @@ fun DesktopTicketsWorkspace(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DesktopWelcomeOverviewPane(
     newCount: Int,
+    newFreshCount: Int,
+    newPastCount: Int,
     inWorkCount: Int,
-    staleNewCount: Int,
+    inWorkFreshCount: Int,
+    inWorkPastCount: Int,
     closedCount: Int,
-    staleThresholdMin: Int,
+    settings: com.helpdesk.jiraagent.model.AppSettings,
+    nowMillis: Long,
     previewTickets: List<HelpdeskTicket>,
-    onJumpToQueue: (TicketQueueTab, Boolean) -> Unit,
+    onJumpToQueue: (TicketQueueTab, TicketAgeFilter) -> Unit,
     onOpenTicket: (String) -> Unit,
     onCreateTicket: () -> Unit,
     onOpenHabr: () -> Unit,
@@ -863,8 +837,10 @@ private fun DesktopWelcomeOverviewPane(
     onOpenKnowledgeBase: () -> Unit
 ) {
     val welcomeScroll = rememberScrollState()
+    val totalPastCount = newPastCount + inWorkPastCount
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isCompactHeight = maxHeight < 760.dp
+        val isNarrowCard = maxWidth < 620.dp
         val outerPad = if (isCompactHeight) 14.dp else 26.dp
         val cardPad = if (isCompactHeight) 18.dp else 24.dp
         val itemGap = if (isCompactHeight) 12.dp else 16.dp
@@ -889,225 +865,323 @@ private fun DesktopWelcomeOverviewPane(
                         modifier = Modifier.padding(cardPad),
                         verticalArrangement = Arrangement.spacedBy(itemGap)
                     ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(
-                            text = "Рабочее место инженера Help-CSL",
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = DesktopColors.TextPrimary
-                        )
-                        Text(
-                            text = "Выберите заявку слева для работы со звонками, AnyDesk/RustDesk/RDP, комментариями и PDF-актами",
-                            fontSize = 12.5.sp,
-                            color = DesktopColors.TextMuted
-                        )
-                    }
-                }
-
-                // 4 Clickable KPI Summary Cards
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    @Composable
-                    fun KpiTile(
-                        title: String,
-                        count: Int,
-                        accent: Color,
-                        modifier: Modifier = Modifier,
-                        onClick: () -> Unit
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = accent.copy(alpha = 0.11f),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.32f)),
-                            modifier = modifier.clickable(onClick = onClick)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(
-                                    text = title,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = DesktopColors.TextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = "Рабочее место инженера Help-CSL",
+                                    fontSize = 19.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = DesktopColors.TextPrimary
                                 )
                                 Text(
-                                    text = count.toString(),
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = accent
+                                    text = "Выберите заявку слева для работы со звонками, AnyDesk/RustDesk/RDP, комментариями и PDF-актами",
+                                    fontSize = 12.5.sp,
+                                    color = DesktopColors.TextMuted
                                 )
                             }
                         }
-                    }
 
-                    KpiTile(
-                        title = "Новые",
-                        count = newCount,
-                        accent = DesktopColors.CslOrange,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onJumpToQueue(TicketQueueTab.NEW, false) }
-                    )
-                    KpiTile(
-                        title = "В работе",
-                        count = inWorkCount,
-                        accent = DesktopColors.StatusBlue,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onJumpToQueue(TicketQueueTab.IN_PROGRESS, false) }
-                    )
-                    KpiTile(
-                        title = "Ждут >${staleThresholdMin}м",
-                        count = staleNewCount,
-                        accent = if (staleNewCount > 0) DesktopColors.StatusRed else DesktopColors.TextMuted,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onJumpToQueue(TicketQueueTab.NEW, true) }
-                    )
-                    KpiTile(
-                        title = "Закрытые",
-                        count = closedCount,
-                        accent = DesktopColors.StatusGreen,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onJumpToQueue(TicketQueueTab.CLOSED, false) }
-                    )
-                }
-
-                // Quick Preview of Active Tickets (1-click jump!)
-                if (shownPreview.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = "Быстрый переход к активным заявкам:",
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = DesktopColors.TextSecondary
-                        )
-                        shownPreview.forEach { t ->
-                            val isWork = t.stage == TicketStage.IN_PROGRESS
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = DesktopColors.SubtleBg,
-                                border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onOpenTicket(t.key) }
+                        // 4 Symmetrical Clickable KPI Summary Cards
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            @Composable
+                            fun KpiTile(
+                                title: String,
+                                count: Int,
+                                subNote: String,
+                                accent: Color,
+                                modifier: Modifier = Modifier,
+                                onClick: () -> Unit
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = accent.copy(alpha = 0.11f),
+                                    border = BorderStroke(1.dp, accent.copy(alpha = 0.32f)),
+                                    modifier = modifier
+                                        .fillMaxHeight()
+                                        .clickable(onClick = onClick)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = if (isWork) DesktopColors.StatusBlueContainer else DesktopColors.CslOrangeContainer
-                                        ) {
-                                            Text(
-                                                text = t.key,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
-                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                            )
-                                        }
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = t.reporterName.ifBlank { "Клиент" },
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = DesktopColors.TextPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = t.summary,
-                                                fontSize = 12.sp,
-                                                color = DesktopColors.TextSecondary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.width(10.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (isWork) DesktopColors.StatusBlue.copy(alpha = 0.12f)
-                                        else DesktopColors.CslOrange.copy(alpha = 0.12f)
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
                                         Text(
-                                            text = if (isWork) "В работе →" else "Открыть →",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            text = title,
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = DesktopColors.TextSecondary,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = count.toString(),
+                                            fontSize = 23.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = accent
+                                        )
+                                        Text(
+                                            text = subNote,
+                                            fontSize = 10.sp,
+                                            color = DesktopColors.TextMuted,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
                             }
+
+                            KpiTile(
+                                title = "Новые",
+                                count = newCount,
+                                subNote = "сег: $newFreshCount · пр: $newPastCount",
+                                accent = DesktopColors.CslOrange,
+                                modifier = Modifier.weight(1f),
+                                onClick = { onJumpToQueue(TicketQueueTab.NEW, TicketAgeFilter.ALL) }
+                            )
+                            KpiTile(
+                                title = "В работе",
+                                count = inWorkCount,
+                                subNote = "сег: $inWorkFreshCount · пр: $inWorkPastCount",
+                                accent = DesktopColors.StatusBlue,
+                                modifier = Modifier.weight(1f),
+                                onClick = { onJumpToQueue(TicketQueueTab.IN_PROGRESS, TicketAgeFilter.ALL) }
+                            )
+                            KpiTile(
+                                title = "Прошлые (висят)",
+                                count = totalPastCount,
+                                subNote = "не закрыты ранее",
+                                accent = if (totalPastCount > 0) DesktopColors.StatusAmber else DesktopColors.TextMuted,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    val target = if (newPastCount > 0) TicketQueueTab.NEW else TicketQueueTab.IN_PROGRESS
+                                    onJumpToQueue(target, TicketAgeFilter.PAST_HANGING)
+                                }
+                            )
+                            KpiTile(
+                                title = "Закрытые",
+                                count = closedCount,
+                                subNote = "выполнено в выборке",
+                                accent = DesktopColors.StatusGreen,
+                                modifier = Modifier.weight(1f),
+                                onClick = { onJumpToQueue(TicketQueueTab.CLOSED, TicketAgeFilter.ALL) }
+                            )
                         }
-                    }
-                }
 
-                // Quick Action Toolbar
-                DesktopHorizontalScrollRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    showArrowButtons = true,
-                    showScrollbar = true,
-                    buttonHeight = 32.dp
-                ) {
-                    Button(
-                        onClick = onCreateTicket,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
-                        shape = RoundedCornerShape(9.dp)
-                    ) {
-                        Text("+ Создать заявку", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                    }
-                    OutlinedButton(
-                        onClick = onOpenSerialSearch,
-                        shape = RoundedCornerShape(9.dp)
-                    ) {
-                        Text("🔎 История по S/N", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
-                    }
-                    OutlinedButton(
-                        onClick = onOpenKnowledgeBase,
-                        shape = RoundedCornerShape(9.dp)
-                    ) {
-                        Text("📚 Архив решений", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
-                    }
-                    OutlinedButton(
-                        onClick = onOpenHabr,
-                        shape = RoundedCornerShape(9.dp)
-                    ) {
-                        Text("📰 Свежее на Habr.com", fontSize = 12.5.sp, maxLines = 1, softWrap = false)
-                    }
-                }
+                        // Quick Preview of Active Tickets (1-click jump with aligned key badges & age indicator!)
+                        if (shownPreview.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Быстрый переход к активным заявкам:",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = DesktopColors.TextSecondary
+                                )
+                                shownPreview.forEach { t ->
+                                    val isWork = t.stage == TicketStage.IN_PROGRESS
+                                    val ageInfo = remember(t.key, t.createdEpochMillis, nowMillis) {
+                                        TicketFreshnessClassifier.classify(t, settings, nowMillis)
+                                    }
+                                    val ageColor = when (ageInfo.severity) {
+                                        TicketHangingSeverity.FRESH_TODAY -> DesktopColors.StatusGreen
+                                        TicketHangingSeverity.PAST_RECENT -> DesktopColors.StatusAmber
+                                        TicketHangingSeverity.PAST_LONG -> DesktopColors.StatusRed
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = DesktopColors.SubtleBg,
+                                        border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onOpenTicket(t.key) }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = if (isWork) DesktopColors.StatusBlueContainer else DesktopColors.CslOrangeContainer,
+                                                    modifier = Modifier.widthIn(min = 78.dp)
+                                                ) {
+                                                    Text(
+                                                        text = t.key,
+                                                        fontSize = 11.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                    )
+                                                }
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = t.reporterName.ifBlank { "Клиент" },
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = DesktopColors.TextPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = t.summary,
+                                                        fontSize = 12.sp,
+                                                        color = DesktopColors.TextSecondary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                            Spacer(Modifier.width(10.dp))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = ageColor.copy(alpha = 0.14f)
+                                                ) {
+                                                    Text(
+                                                        text = ageInfo.compactBadgeLabel,
+                                                        fontSize = 10.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = ageColor,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                                                    )
+                                                }
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = if (isWork) DesktopColors.StatusBlue.copy(alpha = 0.14f)
+                                                    else DesktopColors.CslOrange.copy(alpha = 0.14f)
+                                                ) {
+                                                    Text(
+                                                        text = if (isWork) "В работе →" else "Открыть →",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isWork) DesktopColors.StatusBlue else DesktopColors.CslOrange,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = DesktopColors.SubtleBg,
-                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "💡 Горячие клавиши: F5 — обновить · Ctrl+V — вставить скриншот буфера в комментарий · Перетащите файлы мышью в окно для прикрепления к заявке",
-                        fontSize = 11.5.sp,
-                        color = DesktopColors.TextMuted,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
+                        // Symmetrical 4-Column Quick Action Toolbar (zero scrollbar, organic full-width fit!)
+                        if (isNarrowCard) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = onCreateTicket,
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    shape = RoundedCornerShape(9.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("+ Создать заявку", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenSerialSearch,
+                                    shape = RoundedCornerShape(9.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("🔎 История S/N", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenKnowledgeBase,
+                                    shape = RoundedCornerShape(9.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("📚 Архив решений", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenHabr,
+                                    shape = RoundedCornerShape(9.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("📰 Лента Habr", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(
+                                    onClick = onCreateTicket,
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    shape = RoundedCornerShape(9.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.weight(1.08f).height(36.dp)
+                                ) {
+                                    Text("+ Создать заявку", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenSerialSearch,
+                                    shape = RoundedCornerShape(9.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.weight(0.95f).height(36.dp)
+                                ) {
+                                    Text("🔎 История S/N", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenKnowledgeBase,
+                                    shape = RoundedCornerShape(9.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.weight(1.02f).height(36.dp)
+                                ) {
+                                    Text("📚 Архив решений", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenHabr,
+                                    shape = RoundedCornerShape(9.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    modifier = Modifier.weight(0.95f).height(36.dp)
+                                ) {
+                                    Text("📰 Лента Habr", fontSize = 12.sp, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = DesktopColors.SubtleBg,
+                            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "💡 Горячие клавиши: F5 — обновить · Ctrl+V — вставить скриншот буфера в комментарий · Перетащите файлы мышью в окно для прикрепления к заявке",
+                                fontSize = 11.5.sp,
+                                color = DesktopColors.TextMuted,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1133,34 +1207,47 @@ private fun DesktopWelcomeOverviewPane(
 private fun DesktopAgeSectionBanner(
     isFresh: Boolean,
     count: Int,
-    subtitle: String
+    rightHint: String
 ) {
     val accent = if (isFresh) DesktopColors.StatusGreen else DesktopColors.StatusAmber
     val title = if (isFresh) {
-        "🟢 Свежие заявки · сегодня ($count)"
+        "Свежие заявки ($count)"
     } else {
-        "⏳ Прошлые заявки · висят давно ($count)"
+        "Прошлые заявки ($count)"
     }
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = accent.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.48f)),
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(accent)
+        )
+        Text(
+            text = title,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+            color = accent,
+            maxLines = 1,
+            softWrap = false
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            thickness = 1.dp,
+            color = DesktopColors.BorderSubtle
+        )
+        if (rightHint.isNotBlank()) {
             Text(
-                text = title,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Bold,
-                color = accent
-            )
-            Text(
-                text = subtitle,
+                text = rightHint,
                 fontSize = 10.5.sp,
-                color = DesktopColors.TextSecondary
+                color = DesktopColors.TextMuted,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -2099,6 +2186,7 @@ private fun AnimatedResourceGifImage(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DesktopTicketInspector(
     ticket: HelpdeskTicket,
@@ -2203,12 +2291,10 @@ private fun DesktopTicketInspector(
                             color = MaterialTheme.colorScheme.onSurface
                         )
 
-                        DesktopHorizontalScrollRow(
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            showArrowButtons = true,
-                            showScrollbar = false,
-                            buttonHeight = 22.dp
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text("Номер: ${ticket.key}", fontSize = 12.sp, color = DesktopColors.CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                             Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
@@ -2220,13 +2306,11 @@ private fun DesktopTicketInspector(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // Primary Workflow Buttons
-                DesktopHorizontalScrollRow(
+                // Primary Workflow Buttons (organic wrap, zero horizontal scrollbar)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    showArrowButtons = true,
-                    showScrollbar = true,
-                    buttonHeight = 32.dp
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
                         onClick = { controller.performTicketAction(ticket.key, TicketWorkflowAction.TAKE_IN_WORK) },
@@ -2262,13 +2346,11 @@ private fun DesktopTicketInspector(
                     }
                 }
 
-                // Secondary Engineer Actions (В ремонт, В чат, PDF-акт, Worklog, Таймер, Wiki, Техпаспорт)
-                DesktopHorizontalScrollRow(
+                // Secondary Engineer Actions (organic wrap, all tools visible at once)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    showArrowButtons = true,
-                    showScrollbar = true,
-                    buttonHeight = 32.dp
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),

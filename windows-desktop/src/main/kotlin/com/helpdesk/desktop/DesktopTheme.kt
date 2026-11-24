@@ -292,11 +292,11 @@ fun DesktopHorizontalScrollRow(
             }
         }
 
-        if (showScrollbar && isOverflowing) {
-            Spacer(Modifier.height(3.dp))
+        if (showScrollbar && scrollState.maxValue > 12) {
+            Spacer(Modifier.height(2.dp))
             HorizontalScrollbar(
                 adapter = rememberScrollbarAdapter(scrollState),
-                modifier = Modifier.fillMaxWidth().height(7.dp)
+                modifier = Modifier.fillMaxWidth().height(4.dp)
             )
         }
     }

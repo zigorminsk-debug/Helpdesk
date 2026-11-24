@@ -534,25 +534,27 @@ private fun DesktopTopNavigationHeader(
                     softWrap = false
                 )
                 val syncShort = state.lastSyncDisplay.removePrefix("обновлено в ")
-                val suffix = if (compactSyncText && syncShort.contains("не синхр", ignoreCase = true)) {
-                    "· $alertModeLabel"
-                } else {
-                    "· $alertModeLabel · $syncShort"
+                val isNotSyncedYet = syncShort.contains("не синхр", ignoreCase = true)
+                val suffix = when {
+                    state.isRefreshing -> "· $alertModeLabel · синхр…"
+                    isNotSyncedYet && state.tickets.isNotEmpty() -> "· $alertModeLabel · кэш (${state.tickets.size})"
+                    isNotSyncedYet && compactSyncText -> "· $alertModeLabel"
+                    else -> "· $alertModeLabel · $syncShort"
                 }
                 Text(
                     text = suffix,
                     fontSize = 10.5.sp,
-                    color = Color.White.copy(alpha = 0.65f),
+                    color = Color.White.copy(alpha = 0.68f),
                     maxLines = 1,
                     softWrap = false
                 )
             }
         }
 
-        HeaderUtilityPill(if (state.darkTheme) "☀️ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
+        HeaderUtilityPill(if (state.darkTheme) "☀ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
         HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
         HeaderUtilityPill("📊 Смена", onOpenAnalytics)
-        HeaderUtilityPill("📲 QR", onOpenQr)
+        HeaderUtilityPill("⊞ QR", onOpenQr)
         HeaderUtilityPill("📖 Гайд", onOpenGuide)
     }
 

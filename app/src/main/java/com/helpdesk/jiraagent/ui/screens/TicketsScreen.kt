@@ -58,6 +58,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -81,6 +82,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -412,11 +414,7 @@ fun TicketsScreen(
 
             val tabSpecs = remember(
                 newTickets.size,
-                newFreshAll.size,
-                newPastAll.size,
                 inProgressTickets.size,
-                inProgressFreshAll.size,
-                inProgressPastAll.size,
                 closedTickets.size,
                 serviceFilteredTickets.size
             ) {
@@ -425,15 +423,13 @@ fun TicketsScreen(
                         mode = TicketTabMode.NEW,
                         title = "Новые",
                         count = newTickets.size,
-                        icon = Icons.Default.FiberNew,
-                        freshSubLabel = if (newTickets.isNotEmpty()) "сег ${newFreshAll.size} · пр ${newPastAll.size}" else null
+                        icon = Icons.Default.FiberNew
                     ),
                     TabItemSpec(
                         mode = TicketTabMode.IN_PROGRESS,
                         title = "В работе",
                         count = inProgressTickets.size,
-                        icon = Icons.Default.Build,
-                        freshSubLabel = if (inProgressTickets.isNotEmpty()) "сег ${inProgressFreshAll.size} · пр ${inProgressPastAll.size}" else null
+                        icon = Icons.Default.Build
                     ),
                     TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
                     TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceFilteredTickets.size, Icons.Default.SmartToy)
@@ -688,11 +684,6 @@ fun TicketsScreen(
                                 )
                             }
                         } else if (isFreshPastStage) {
-                            val pastSubtitle = if (tabMode == TicketTabMode.NEW) {
-                                "Поступили в прошлые дни и ждут принятия"
-                            } else {
-                                "Взяты ранее и висят в работе с прошлых дней"
-                            }
                             when (ageFilter) {
                                 TicketAgeFilter.ALL -> {
                                     if (freshDisplayed.isNotEmpty()) {
@@ -700,15 +691,11 @@ fun TicketsScreen(
                                             TicketAgeSectionHeader(
                                                 isFresh = true,
                                                 count = freshDisplayed.size,
-                                                subtitle = "Поступили сегодня в течение рабочего дня"
+                                                rightHint = "за сегодня"
                                             )
                                         }
                                         items(freshDisplayed, key = { it.key }) { ticket ->
                                             RenderTicketItemRow(ticket)
-                                        }
-                                    } else if (pastDisplayed.isNotEmpty()) {
-                                        item(key = "section_no_fresh_today") {
-                                            TodayNoFreshBanner(tabMode = tabMode)
                                         }
                                     }
 
@@ -717,7 +704,7 @@ fun TicketsScreen(
                                             TicketAgeSectionHeader(
                                                 isFresh = false,
                                                 count = pastDisplayed.size,
-                                                subtitle = pastSubtitle
+                                                rightHint = if (freshDisplayed.isEmpty()) "сегодня: 0" else "с прошлых дней"
                                             )
                                         }
                                         items(pastDisplayed, key = { it.key }) { ticket ->
@@ -730,7 +717,7 @@ fun TicketsScreen(
                                         TicketAgeSectionHeader(
                                             isFresh = true,
                                             count = freshDisplayed.size,
-                                            subtitle = "Поступили сегодня в течение рабочего дня"
+                                            rightHint = "поступили сегодня"
                                         )
                                     }
                                     items(freshDisplayed, key = { it.key }) { ticket ->
@@ -742,7 +729,7 @@ fun TicketsScreen(
                                         TicketAgeSectionHeader(
                                             isFresh = false,
                                             count = pastDisplayed.size,
-                                            subtitle = pastSubtitle
+                                            rightHint = "с прошлых дней"
                                         )
                                     }
                                     items(pastDisplayed, key = { it.key }) { ticket ->
@@ -867,58 +854,49 @@ private fun FreshAndPastFilterRow(
 private fun TicketAgeSectionHeader(
     isFresh: Boolean,
     count: Int,
-    subtitle: String
+    rightHint: String
 ) {
     val accent = if (isFresh) CslSuccessGreen else Color(0xFFE65100)
     val title = if (isFresh) {
-        "🟢 Свежие заявки · сегодня ($count)"
+        "Свежие заявки ($count)"
     } else {
-        "⏳ Прошлые заявки · висят давно ($count)"
+        "Прошлые заявки ($count)"
     }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(9.dp),
-        color = accent.copy(alpha = 0.13f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.48f))
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(accent)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = accent,
+            maxLines = 1,
+            softWrap = false
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant
+        )
+        if (rightHint.isNotBlank()) {
             Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = accent
-            )
-            Text(
-                text = subtitle,
+                text = rightHint,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false
             )
         }
-    }
-}
-
-@Composable
-private fun TodayNoFreshBanner(tabMode: TicketTabMode) {
-    val text = if (tabMode == TicketTabMode.NEW) {
-        "☀ Сегодня новых заявок пока не поступало — ниже прошлые заявки"
-    } else {
-        "☀ Сегодня новых заявок в работе пока нет — ниже прошлые заявки"
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
