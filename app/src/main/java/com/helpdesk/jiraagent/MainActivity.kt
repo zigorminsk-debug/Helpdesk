@@ -707,7 +707,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                                 .height(22.dp)
                                 .background(CslOrange, RoundedCornerShape(2.dp))
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         val dotColor = when {
                             !appSettings.isConfigured -> Color(0xFF97A0AF)
                             syncStatus.lastError != null -> Color(0xFFF44A40)
@@ -716,22 +716,26 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         }
                         Box(
                             modifier = Modifier
-                                .size(9.dp)
+                                .size(8.dp)
                                 .clip(CircleShape)
                                 .background(dotColor)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "Help-CSL",
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                             maxLines = 1,
+                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showKbArchiveDialog = true }) {
+                    IconButton(
+                        onClick = { showKbArchiveDialog = true },
+                        modifier = Modifier.size(38.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "База решений",
@@ -744,31 +748,43 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         AppThemeMode.LIGHT -> false
                         AppThemeMode.SYSTEM -> systemDarkNow
                     }
-                    IconButton(onClick = {
-                        val nextMode = if (isCurrentlyDark) AppThemeMode.LIGHT else AppThemeMode.DARK
-                        viewModel.saveAppSettings(appSettings.copy(themeMode = nextMode))
-                    }) {
+                    IconButton(
+                        onClick = {
+                            val nextMode = if (isCurrentlyDark) AppThemeMode.LIGHT else AppThemeMode.DARK
+                            viewModel.saveAppSettings(appSettings.copy(themeMode = nextMode))
+                        },
+                        modifier = Modifier.size(38.dp)
+                    ) {
                         Icon(
                             imageVector = if (isCurrentlyDark) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Переключить тему",
                             tint = Color.White
                         )
                     }
-                    IconButton(onClick = { showToolboxDialog = true }) {
+                    IconButton(
+                        onClick = { showToolboxDialog = true },
+                        modifier = Modifier.size(38.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Handyman,
                             contentDescription = "Инструменты сисадмина",
                             tint = Color.White
                         )
                     }
-                    IconButton(onClick = { showShiftAnalytics = true }) {
+                    IconButton(
+                        onClick = { showShiftAnalytics = true },
+                        modifier = Modifier.size(38.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.BarChart,
                             contentDescription = "Статистика смены",
                             tint = Color.White
                         )
                     }
-                    IconButton(onClick = { showFullGuide = true }) {
+                    IconButton(
+                        onClick = { showFullGuide = true },
+                        modifier = Modifier.size(38.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.MenuBook,
                             contentDescription = "Полный гайд",
@@ -776,15 +792,18 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         )
                     }
                     if (appSettings.isConfigured || appSettings.isZabbixConfigured || postponedTickets.isNotEmpty()) {
-                        IconButton(onClick = {
-                            when (currentTab) {
-                                BottomDestination.ZABBIX -> viewModel.refreshZabbix(manual = true)
-                                BottomDestination.REPAIR -> viewModel.syncRepairRegistry()
-                                BottomDestination.WIKI -> viewModel.refreshWikiSpacesAndPages()
-                                BottomDestination.CHAT -> viewModel.refreshAdminChat()
-                                else -> viewModel.refreshNow()
-                            }
-                        }) {
+                        IconButton(
+                            onClick = {
+                                when (currentTab) {
+                                    BottomDestination.ZABBIX -> viewModel.refreshZabbix(manual = true)
+                                    BottomDestination.REPAIR -> viewModel.syncRepairRegistry()
+                                    BottomDestination.WIKI -> viewModel.refreshWikiSpacesAndPages()
+                                    BottomDestination.CHAT -> viewModel.refreshAdminChat()
+                                    else -> viewModel.refreshNow()
+                                }
+                            },
+                            modifier = Modifier.size(38.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = "Обновить",

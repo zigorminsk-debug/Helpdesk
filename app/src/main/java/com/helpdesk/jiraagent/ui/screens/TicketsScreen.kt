@@ -91,7 +91,10 @@ import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
+import com.helpdesk.jiraagent.domain.TicketAgeFilter
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.domain.TicketFreshnessClassifier
+import com.helpdesk.jiraagent.domain.TicketHangingSeverity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.helpdesk.jiraagent.model.AppSettings
@@ -135,7 +138,8 @@ private data class TabItemSpec(
     val mode: TicketTabMode,
     val title: String,
     val count: Int,
-    val icon: ImageVector
+    val icon: ImageVector,
+    val freshSubLabel: String? = null
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -167,6 +171,7 @@ fun TicketsScreen(
     val context = LocalContext.current
     var tabMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
     var assigneeScope by rememberSaveable { mutableStateOf(AssigneeScopeFilter.ALL) }
+    var ageFilter by rememberSaveable { mutableStateOf(TicketAgeFilter.ALL) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var multiSelectMode by rememberSaveable { mutableStateOf(false) }
@@ -245,6 +250,14 @@ fun TicketsScreen(
     val closedTickets = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.CLOSED } }
     val serviceFilteredTickets = remember(tickets) { tickets.filter { !it.isClientTicket } }
 
+    val nowMillis = remember(tickets, syncStatus.lastSyncEpochMillis) { System.currentTimeMillis() }
+    val (newFreshAll, newPastAll) = remember(newTickets, nowMillis) {
+        TicketFreshnessClassifier.partitionFreshAndPast(newTickets, nowMillis)
+    }
+    val (inProgressFreshAll, inProgressPastAll) = remember(inProgressTickets, nowMillis) {
+        TicketFreshnessClassifier.partitionFreshAndPast(inProgressTickets, nowMillis)
+    }
+
     val baseList = when (tabMode) {
         TicketTabMode.NEW -> newTickets
         TicketTabMode.IN_PROGRESS -> inProgressTickets
@@ -269,7 +282,7 @@ fun TicketsScreen(
         }
     }
 
-    val displayedTickets = remember(scopeFilteredList, searchQuery) {
+    val searchFilteredTickets = remember(scopeFilteredList, searchQuery) {
         val q = searchQuery.trim().lowercase()
         if (q.isEmpty()) {
             scopeFilteredList
@@ -283,6 +296,27 @@ fun TicketsScreen(
                     (t.assigneeName?.lowercase()?.contains(q) == true) ||
                     t.description.lowercase().contains(q) ||
                     t.phoneNumbers.any { it.e164.contains(q) || it.formattedDisplay.lowercase().contains(q) }
+            }
+        }
+    }
+
+    val isFreshPastStage = tabMode == TicketTabMode.NEW || tabMode == TicketTabMode.IN_PROGRESS
+    val (freshDisplayed, pastDisplayed) = remember(searchFilteredTickets, isFreshPastStage, nowMillis) {
+        if (isFreshPastStage) {
+            TicketFreshnessClassifier.partitionFreshAndPast(searchFilteredTickets, nowMillis)
+        } else {
+            emptyList<HelpdeskTicket>() to emptyList()
+        }
+    }
+
+    val displayedTickets = remember(searchFilteredTickets, isFreshPastStage, ageFilter, freshDisplayed, pastDisplayed) {
+        if (!isFreshPastStage) {
+            searchFilteredTickets
+        } else {
+            when (ageFilter) {
+                TicketAgeFilter.ALL -> freshDisplayed + pastDisplayed
+                TicketAgeFilter.FRESH_TODAY -> freshDisplayed
+                TicketAgeFilter.PAST_HANGING -> pastDisplayed
             }
         }
     }
@@ -375,13 +409,29 @@ fun TicketsScreen(
 
             val tabSpecs = remember(
                 newTickets.size,
+                newFreshAll.size,
+                newPastAll.size,
                 inProgressTickets.size,
+                inProgressFreshAll.size,
+                inProgressPastAll.size,
                 closedTickets.size,
                 serviceFilteredTickets.size
             ) {
                 listOf(
-                    TabItemSpec(TicketTabMode.NEW, "Новые", newTickets.size, Icons.Default.FiberNew),
-                    TabItemSpec(TicketTabMode.IN_PROGRESS, "В работе", inProgressTickets.size, Icons.Default.Build),
+                    TabItemSpec(
+                        mode = TicketTabMode.NEW,
+                        title = "Новые",
+                        count = newTickets.size,
+                        icon = Icons.Default.FiberNew,
+                        freshSubLabel = if (newTickets.isNotEmpty()) "сег ${newFreshAll.size} · пр ${newPastAll.size}" else null
+                    ),
+                    TabItemSpec(
+                        mode = TicketTabMode.IN_PROGRESS,
+                        title = "В работе",
+                        count = inProgressTickets.size,
+                        icon = Icons.Default.Build,
+                        freshSubLabel = if (inProgressTickets.isNotEmpty()) "сег ${inProgressFreshAll.size} · пр ${inProgressPastAll.size}" else null
+                    ),
                     TabItemSpec(TicketTabMode.CLOSED, "Закрытые", closedTickets.size, Icons.Default.CheckCircleOutline),
                     TabItemSpec(TicketTabMode.FILTERED_SERVICE, "Сервисные", serviceFilteredTickets.size, Icons.Default.SmartToy)
                 )
@@ -395,6 +445,19 @@ fun TicketsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 4.dp)
             )
+
+            if (isFreshPastStage) {
+                FreshAndPastFilterRow(
+                    selected = ageFilter,
+                    allCount = searchFilteredTickets.size,
+                    freshCount = freshDisplayed.size,
+                    pastCount = pastDisplayed.size,
+                    onSelect = { ageFilter = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                )
+            }
 
             AssigneeScopeRow(
                 selected = assigneeScope,
@@ -505,11 +568,82 @@ fun TicketsScreen(
                 onRefresh = onRefresh,
                 modifier = Modifier.fillMaxSize()
             ) {
+                val hasActiveFilters = searchQuery.isNotBlank() ||
+                    assigneeScope != AssigneeScopeFilter.ALL ||
+                    (isFreshPastStage && ageFilter != TicketAgeFilter.ALL)
+
+                @Composable
+                fun RenderTicketItemRow(ticket: HelpdeskTicket) {
+                    val isSelectedInBatch = ticket.key in selectedKeys
+                    if (multiSelectMode) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    selectedKeys = if (isSelectedInBatch) {
+                                        selectedKeys - ticket.key
+                                    } else {
+                                        selectedKeys + ticket.key
+                                    }
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isSelectedInBatch) {
+                                        Icons.Default.CheckBox
+                                    } else {
+                                        Icons.Default.CheckBoxOutlineBlank
+                                    },
+                                    contentDescription = null,
+                                    tint = if (isSelectedInBatch) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TicketListCard(
+                                ticket = ticket,
+                                appSettings = appSettings,
+                                nowMillis = nowMillis,
+                                onClick = {
+                                    selectedKeys = if (isSelectedInBatch) {
+                                        selectedKeys - ticket.key
+                                    } else {
+                                        selectedKeys + ticket.key
+                                    }
+                                }
+                            )
+                        }
+                    } else {
+                        SwipeableTicketListItem(
+                            ticket = ticket,
+                            appSettings = appSettings,
+                            nowMillis = nowMillis,
+                            onClick = { onTicketClick(ticket.key) },
+                            onSwipeTakeInWork = { onQuickTakeInWork(ticket.key) },
+                            onSwipeLeftAction = {
+                                val primaryPhone = ticket.phoneNumbers.firstOrNull()
+                                if (primaryPhone != null) {
+                                    DialerLauncher.openSystemDialer(
+                                        context = context,
+                                        phoneInput = primaryPhone.e164,
+                                        ticketKey = ticket.key,
+                                        clientName = ticket.reporterName
+                                    )
+                                } else {
+                                    onDiscussTicketInChat(ticket)
+                                }
+                            }
+                        )
+                    }
+                }
+
                 if (displayedTickets.isEmpty() && postponedTickets.isEmpty() && offlineQueuedActions.isEmpty()) {
                     EmptyTicketsPlaceholder(
                         appSettings = appSettings,
                         isConfigured = appSettings.isConfigured,
                         tabMode = tabMode,
+                        ageFilter = if (isFreshPastStage) ageFilter else TicketAgeFilter.ALL,
                         hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
                         onRefresh = onRefresh
                     )
@@ -544,71 +678,78 @@ fun TicketsScreen(
                                     appSettings = appSettings,
                                     isConfigured = appSettings.isConfigured,
                                     tabMode = tabMode,
+                                    ageFilter = if (isFreshPastStage) ageFilter else TicketAgeFilter.ALL,
                                     hasSearch = searchQuery.isNotBlank() || assigneeScope != AssigneeScopeFilter.ALL,
                                     onRefresh = onRefresh,
                                     scrollable = false
                                 )
                             }
-                        } else {
-                            items(displayedTickets, key = { it.key }) { ticket ->
-                                val isSelectedInBatch = ticket.key in selectedKeys
-                                if (multiSelectMode) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        IconButton(
-                                            onClick = {
-                                                selectedKeys = if (isSelectedInBatch) {
-                                                    selectedKeys - ticket.key
-                                                } else {
-                                                    selectedKeys + ticket.key
-                                                }
-                                            },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isSelectedInBatch) {
-                                                    Icons.Default.CheckBox
-                                                } else {
-                                                    Icons.Default.CheckBoxOutlineBlank
-                                                },
-                                                contentDescription = null,
-                                                tint = if (isSelectedInBatch) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                        } else if (isFreshPastStage) {
+                            val pastSubtitle = if (tabMode == TicketTabMode.NEW) {
+                                "Поступили в прошлые дни и ждут принятия"
+                            } else {
+                                "Взяты ранее и висят в работе с прошлых дней"
+                            }
+                            when (ageFilter) {
+                                TicketAgeFilter.ALL -> {
+                                    if (freshDisplayed.isNotEmpty()) {
+                                        item(key = "section_header_fresh") {
+                                            TicketAgeSectionHeader(
+                                                isFresh = true,
+                                                count = freshDisplayed.size,
+                                                subtitle = "Поступили сегодня в течение рабочего дня"
                                             )
                                         }
-                                        TicketListCard(
-                                            ticket = ticket,
-                                            onClick = {
-                                                selectedKeys = if (isSelectedInBatch) {
-                                                    selectedKeys - ticket.key
-                                                } else {
-                                                    selectedKeys + ticket.key
-                                                }
-                                            }
+                                        items(freshDisplayed, key = { it.key }) { ticket ->
+                                            RenderTicketItemRow(ticket)
+                                        }
+                                    } else if (pastDisplayed.isNotEmpty()) {
+                                        item(key = "section_no_fresh_today") {
+                                            TodayNoFreshBanner(tabMode = tabMode)
+                                        }
+                                    }
+
+                                    if (pastDisplayed.isNotEmpty()) {
+                                        item(key = "section_header_past") {
+                                            TicketAgeSectionHeader(
+                                                isFresh = false,
+                                                count = pastDisplayed.size,
+                                                subtitle = pastSubtitle
+                                            )
+                                        }
+                                        items(pastDisplayed, key = { it.key }) { ticket ->
+                                            RenderTicketItemRow(ticket)
+                                        }
+                                    }
+                                }
+                                TicketAgeFilter.FRESH_TODAY -> {
+                                    item(key = "section_header_fresh_only") {
+                                        TicketAgeSectionHeader(
+                                            isFresh = true,
+                                            count = freshDisplayed.size,
+                                            subtitle = "Поступили сегодня в течение рабочего дня"
                                         )
                                     }
-                                } else {
-                                    SwipeableTicketListItem(
-                                        ticket = ticket,
-                                        onClick = { onTicketClick(ticket.key) },
-                                        onSwipeTakeInWork = { onQuickTakeInWork(ticket.key) },
-                                        onSwipeLeftAction = {
-                                            val primaryPhone = ticket.phoneNumbers.firstOrNull()
-                                            if (primaryPhone != null) {
-                                                DialerLauncher.openSystemDialer(
-                                                    context = context,
-                                                    phoneInput = primaryPhone.e164,
-                                                    ticketKey = ticket.key,
-                                                    clientName = ticket.reporterName
-                                                )
-                                            } else {
-                                                onDiscussTicketInChat(ticket)
-                                            }
-                                        }
-                                    )
+                                    items(freshDisplayed, key = { it.key }) { ticket ->
+                                        RenderTicketItemRow(ticket)
+                                    }
                                 }
+                                TicketAgeFilter.PAST_HANGING -> {
+                                    item(key = "section_header_past_only") {
+                                        TicketAgeSectionHeader(
+                                            isFresh = false,
+                                            count = pastDisplayed.size,
+                                            subtitle = pastSubtitle
+                                        )
+                                    }
+                                    items(pastDisplayed, key = { it.key }) { ticket ->
+                                        RenderTicketItemRow(ticket)
+                                    }
+                                }
+                            }
+                        } else {
+                            items(displayedTickets, key = { it.key }) { ticket ->
+                                RenderTicketItemRow(ticket)
                             }
                         }
                     }
@@ -631,6 +772,116 @@ fun TicketsScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun FreshAndPastFilterRow(
+    selected: TicketAgeFilter,
+    allCount: Int,
+    freshCount: Int,
+    pastCount: Int,
+    onSelect: (TicketAgeFilter) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    data class AgeOption(
+        val filter: TicketAgeFilter,
+        val label: String,
+        val accent: Color
+    )
+    val options = listOf(
+        AgeOption(TicketAgeFilter.ALL, "Все ($allCount)", CslOrange),
+        AgeOption(TicketAgeFilter.FRESH_TODAY, "🟢 Свежие ($freshCount)", CslSuccessGreen),
+        AgeOption(TicketAgeFilter.PAST_HANGING, "⏳ Прошлые ($pastCount)", Color(0xFFE65100))
+    )
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.forEach { opt ->
+            val isSelected = selected == opt.filter
+            Surface(
+                onClick = { onSelect(opt.filter) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(8.dp),
+                color = if (isSelected) opt.accent.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface,
+                border = BorderStroke(
+                    width = if (isSelected) 1.5.dp else 1.dp,
+                    color = if (isSelected) opt.accent else MaterialTheme.colorScheme.outlineVariant
+                )
+            ) {
+                Text(
+                    text = opt.label,
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TicketAgeSectionHeader(
+    isFresh: Boolean,
+    count: Int,
+    subtitle: String
+) {
+    val accent = if (isFresh) CslSuccessGreen else Color(0xFFE65100)
+    val title = if (isFresh) {
+        "🟢 Свежие заявки · сегодня ($count)"
+    } else {
+        "⏳ Прошлые заявки · висят давно ($count)"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(9.dp),
+        color = accent.copy(alpha = 0.13f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.48f))
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = accent
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun TodayNoFreshBanner(tabMode: TicketTabMode) {
+    val text = if (tabMode == TicketTabMode.NEW) {
+        "☀ Сегодня новых заявок пока не поступало — ниже прошлые заявки"
+    } else {
+        "☀ Сегодня новых заявок в работе пока нет — ниже прошлые заявки"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -756,6 +1007,8 @@ private fun OfflineActionsQueueCard(
 @Composable
 private fun SwipeableTicketListItem(
     ticket: HelpdeskTicket,
+    appSettings: AppSettings? = null,
+    nowMillis: Long = System.currentTimeMillis(),
     onClick: () -> Unit,
     onSwipeTakeInWork: () -> Unit,
     onSwipeLeftAction: () -> Unit
@@ -830,6 +1083,8 @@ private fun SwipeableTicketListItem(
     ) {
         TicketListCard(
             ticket = ticket,
+            appSettings = appSettings,
+            nowMillis = nowMillis,
             onClick = onClick
         )
     }
@@ -983,6 +1238,7 @@ private fun CompactTabSegment(
     val density = LocalDensity.current
     val countTextSize = with(density) { 12.dp.toSp() }
     val titleTextSize = with(density) { 11.dp.toSp() }
+    val subTextSize = with(density) { 8.8.dp.toSp() }
 
     val containerColor = if (selected) {
         MaterialTheme.colorScheme.primaryContainer
@@ -1010,7 +1266,7 @@ private fun CompactTabSegment(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 7.dp),
+                .padding(horizontal = 4.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
@@ -1045,6 +1301,19 @@ private fun CompactTabSegment(
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
+            if (tab.freshSubLabel != null) {
+                Text(
+                    text = tab.freshSubLabel,
+                    fontSize = subTextSize,
+                    lineHeight = subTextSize,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (selected) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }
@@ -1053,6 +1322,8 @@ private fun CompactTabSegment(
 @Composable
 private fun TicketListCard(
     ticket: HelpdeskTicket,
+    appSettings: AppSettings? = null,
+    nowMillis: Long = System.currentTimeMillis(),
     onClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1060,9 +1331,15 @@ private fun TicketListCard(
         formatShortTime(ticket.createdEpochMillis)
     }
     val stage = ticket.stage
+    val freshnessInfo = remember(ticket.key, ticket.createdEpochMillis, stage, ticket.isClientTicket, nowMillis) {
+        if (ticket.isClientTicket && (stage == TicketStage.NEW || stage == TicketStage.IN_PROGRESS)) {
+            TicketFreshnessClassifier.classify(ticket, appSettings, nowMillis)
+        } else null
+    }
 
     val leftStripeColor: Color = when {
         !ticket.isClientTicket -> MaterialTheme.colorScheme.outline
+        freshnessInfo?.severity == TicketHangingSeverity.PAST_LONG -> CslDangerRed
         stage == TicketStage.NEW -> CslOrange
         stage == TicketStage.IN_PROGRESS -> CslInfoBlue
         else -> CslSuccessGreen
@@ -1175,6 +1452,38 @@ private fun TicketListCard(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (freshnessInfo != null) {
+                        val (freshBg, freshFg, freshIcon) = when (freshnessInfo.severity) {
+                            TicketHangingSeverity.FRESH_TODAY -> Triple(
+                                CslSuccessGreen.copy(alpha = 0.15f),
+                                CslSuccessGreen,
+                                "🟢"
+                            )
+                            TicketHangingSeverity.PAST_RECENT -> Triple(
+                                Color(0xFFE65100).copy(alpha = 0.16f),
+                                Color(0xFFE65100),
+                                "⏳"
+                            )
+                            TicketHangingSeverity.PAST_LONG -> Triple(
+                                CslDangerRed.copy(alpha = 0.16f),
+                                CslDangerRed,
+                                "🔥"
+                            )
+                        }
+                        Surface(
+                            color = freshBg,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "$freshIcon ${freshnessInfo.fullBadgeLabel}",
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = freshFg
                             )
                         }
                     }
@@ -1418,6 +1727,7 @@ private fun EmptyTicketsPlaceholder(
     appSettings: AppSettings,
     isConfigured: Boolean,
     tabMode: TicketTabMode,
+    ageFilter: TicketAgeFilter = TicketAgeFilter.ALL,
     hasSearch: Boolean,
     onRefresh: () -> Unit,
     scrollable: Boolean = true
@@ -1425,6 +1735,10 @@ private fun EmptyTicketsPlaceholder(
     val emptyMessage = when {
         hasSearch -> "По вашему поисковому запросу заявки не найдены"
         !isConfigured -> "Настройте подключение к Jira или отправьте тестовый баннер из раздела «Настройки»"
+        (tabMode == TicketTabMode.NEW || tabMode == TicketTabMode.IN_PROGRESS) && ageFilter == TicketAgeFilter.FRESH_TODAY ->
+            "Сегодня свежих заявок пока не поступало"
+        (tabMode == TicketTabMode.NEW || tabMode == TicketTabMode.IN_PROGRESS) && ageFilter == TicketAgeFilter.PAST_HANGING ->
+            "Зависших заявок с прошлых дней нет"
         tabMode == TicketTabMode.NEW -> "Новых необработанных заявок сейчас нет"
         tabMode == TicketTabMode.IN_PROGRESS -> "Заявок со статусом «В работе» сейчас нет"
         tabMode == TicketTabMode.CLOSED -> "Закрытых заявок клиентов в выборке пока нет"

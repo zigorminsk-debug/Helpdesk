@@ -54,6 +54,9 @@ import com.helpdesk.jiraagent.domain.QuickReplyTemplates
 import com.helpdesk.jiraagent.domain.SlaCalculator
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
+import com.helpdesk.jiraagent.domain.TicketAgeFilter
+import com.helpdesk.jiraagent.domain.TicketFreshnessClassifier
+import com.helpdesk.jiraagent.domain.TicketHangingSeverity
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.HelpdeskTicket
@@ -111,6 +114,7 @@ fun DesktopTicketsWorkspace(
     var queueTab by remember { mutableStateOf(TicketQueueTab.NEW) }
     var inWorkScope by remember { mutableStateOf(AssigneeScope.ALL) }
     var closedScope by remember { mutableStateOf(AssigneeScope.ALL) }
+    var ageFilter by remember { mutableStateOf(TicketAgeFilter.ALL) }
     var filterOnlyStaleNew by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -139,49 +143,54 @@ fun DesktopTicketsWorkspace(
 
     val clientTickets = remember(state.tickets) { state.tickets.filter { it.isClientTicket } }
     val serviceTickets = remember(state.tickets) { state.tickets.filter { !it.isClientTicket } }
+    val nowMs = nowTick.toEpochMilli()
 
-    val newCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.NEW } }
+    val newAllList = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.NEW } }
+    val inWorkAllList = remember(clientTickets) { clientTickets.filter { it.stage == TicketStage.IN_PROGRESS } }
+    val (newFreshAll, newPastAll) = remember(newAllList, nowMs) {
+        TicketFreshnessClassifier.partitionFreshAndPast(newAllList, nowMs)
+    }
+    val (inWorkFreshAll, inWorkPastAll) = remember(inWorkAllList, nowMs) {
+        TicketFreshnessClassifier.partitionFreshAndPast(inWorkAllList, nowMs)
+    }
+
+    val newCount = newAllList.size
     val staleThresholdMin = state.settings.staleTicketReminderMinutes.coerceIn(5, 120)
-    val staleNewCount = remember(clientTickets, staleThresholdMin, nowTick) {
-        val nowMs = nowTick.toEpochMilli()
-        clientTickets.count { t ->
-            t.stage == TicketStage.NEW &&
-                t.createdEpochMillis > 0L &&
+    val staleNewCount = remember(newAllList, staleThresholdMin, nowMs) {
+        newAllList.count { t ->
+            t.createdEpochMillis > 0L &&
                 (nowMs - t.createdEpochMillis) >= staleThresholdMin * 60_000L
         }
     }
-    val inWorkCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.IN_PROGRESS } }
+    val inWorkCount = inWorkAllList.size
     val closedCount = remember(clientTickets) { clientTickets.count { it.stage == TicketStage.CLOSED } }
     val serviceCount = serviceTickets.size
 
-    val filteredList = remember(
+    val searchAndScopeFiltered = remember(
         state.tickets,
         queueTab,
         inWorkScope,
         closedScope,
         filterOnlyStaleNew,
         staleThresholdMin,
-        nowTick,
+        nowMs,
         searchQuery,
         state.connectedUserName,
         state.settings.usernameOrEmail
     ) {
         val base = when (queueTab) {
             TicketQueueTab.NEW -> {
-                val list = clientTickets.filter { it.stage == TicketStage.NEW }
                 if (filterOnlyStaleNew) {
-                    val nowMs = nowTick.toEpochMilli()
-                    list.filter { t ->
+                    newAllList.filter { t ->
                         t.createdEpochMillis > 0L &&
                             (nowMs - t.createdEpochMillis) >= staleThresholdMin * 60_000L
                     }
-                } else list
+                } else newAllList
             }
             TicketQueueTab.IN_PROGRESS -> {
-                val list = clientTickets.filter { it.stage == TicketStage.IN_PROGRESS }
                 if (inWorkScope == AssigneeScope.MINE) {
-                    list.filter { it.isAssignedToAgent(state.connectedUserName, state.settings.usernameOrEmail) }
-                } else list
+                    inWorkAllList.filter { it.isAssignedToAgent(state.connectedUserName, state.settings.usernameOrEmail) }
+                } else inWorkAllList
             }
             TicketQueueTab.CLOSED -> {
                 val list = clientTickets.filter { it.stage == TicketStage.CLOSED }
@@ -201,6 +210,27 @@ fun DesktopTicketsWorkspace(
                 t.description.lowercase().contains(q) ||
                 (t.assigneeName?.lowercase()?.contains(q) == true) ||
                 t.phoneNumbers.any { it.e164.contains(q) || it.formattedDisplay.contains(q) }
+        }
+    }
+
+    val isFreshPastTab = queueTab == TicketQueueTab.NEW || queueTab == TicketQueueTab.IN_PROGRESS
+    val (freshQueueList, pastQueueList) = remember(searchAndScopeFiltered, isFreshPastTab, nowMs) {
+        if (isFreshPastTab) {
+            TicketFreshnessClassifier.partitionFreshAndPast(searchAndScopeFiltered, nowMs)
+        } else {
+            emptyList<HelpdeskTicket>() to emptyList()
+        }
+    }
+
+    val filteredList = remember(searchAndScopeFiltered, isFreshPastTab, ageFilter, freshQueueList, pastQueueList) {
+        if (!isFreshPastTab) {
+            searchAndScopeFiltered
+        } else {
+            when (ageFilter) {
+                TicketAgeFilter.ALL -> freshQueueList + pastQueueList
+                TicketAgeFilter.FRESH_TODAY -> freshQueueList
+                TicketAgeFilter.PAST_HANGING -> pastQueueList
+            }
         }
     }
 
@@ -400,6 +430,11 @@ fun DesktopTicketsWorkspace(
                             Triple(TicketQueueTab.SERVICE, serviceCount, Color(0xFF475569))
                         ).forEach { (tab, count, activeColor) ->
                             val selected = !showHabrPanel && queueTab == tab
+                            val subSplit = when (tab) {
+                                TicketQueueTab.NEW -> if (newCount > 0) "сег ${newFreshAll.size}·пр ${newPastAll.size}" else null
+                                TicketQueueTab.IN_PROGRESS -> if (inWorkCount > 0) "сег ${inWorkFreshAll.size}·пр ${inWorkPastAll.size}" else null
+                                else -> null
+                            }
                             Surface(
                                 color = if (selected) activeColor else Color.Transparent,
                                 contentColor = if (selected) Color.White else DesktopColors.TextSecondary,
@@ -413,7 +448,7 @@ fun DesktopTicketsWorkspace(
                                     }
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+                                    modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     Text(
@@ -432,6 +467,17 @@ fun DesktopTicketsWorkspace(
                                         maxLines = 1,
                                         softWrap = false
                                     )
+                                    if (subSplit != null) {
+                                        Text(
+                                            text = subSplit,
+                                            fontSize = 9.sp,
+                                            lineHeight = 10.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (selected) Color.White.copy(alpha = 0.88f) else DesktopColors.TextMuted,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -468,6 +514,36 @@ fun DesktopTicketsWorkspace(
                                 softWrap = false
                             )
                         }
+                    }
+                }
+
+                if (!showHabrPanel && isFreshPastTab) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        SubScopePill(
+                            label = "Все (${searchAndScopeFiltered.size})",
+                            selected = ageFilter == TicketAgeFilter.ALL,
+                            accentColor = DesktopColors.CslOrange,
+                            modifier = Modifier.weight(0.85f),
+                            onClick = { ageFilter = TicketAgeFilter.ALL }
+                        )
+                        SubScopePill(
+                            label = "🟢 Свежие (${freshQueueList.size})",
+                            selected = ageFilter == TicketAgeFilter.FRESH_TODAY,
+                            accentColor = DesktopColors.StatusGreen,
+                            modifier = Modifier.weight(1.08f),
+                            onClick = { ageFilter = TicketAgeFilter.FRESH_TODAY }
+                        )
+                        SubScopePill(
+                            label = "⏳ Прошлые (${pastQueueList.size})",
+                            selected = ageFilter == TicketAgeFilter.PAST_HANGING,
+                            accentColor = DesktopColors.StatusAmber,
+                            modifier = Modifier.weight(1.12f),
+                            onClick = { ageFilter = TicketAgeFilter.PAST_HANGING }
+                        )
                     }
                 }
 
@@ -541,13 +617,119 @@ fun DesktopTicketsWorkspace(
                             modifier = Modifier.fillMaxSize().padding(end = 6.dp),
                             verticalArrangement = Arrangement.spacedBy(7.dp)
                         ) {
-                            items(filteredList, key = { it.key }) { ticket ->
-                                CompactDesktopTicketCard(
-                                    ticket = ticket,
-                                    isSelected = ticket.key == state.selectedTicketKey,
-                                    settings = state.settings,
-                                    onClick = { controller.selectTicket(ticket.key) }
-                                )
+                            if (isFreshPastTab) {
+                                val pastCaption = if (queueTab == TicketQueueTab.NEW) {
+                                    "Поступили в прошлые дни и ждут принятия"
+                                } else {
+                                    "Висят в работе с прошлых дней"
+                                }
+                                when (ageFilter) {
+                                    TicketAgeFilter.ALL -> {
+                                        if (freshQueueList.isNotEmpty()) {
+                                            item(key = "desk_sec_fresh") {
+                                                DesktopAgeSectionBanner(
+                                                    isFresh = true,
+                                                    count = freshQueueList.size,
+                                                    subtitle = "Поступили сегодня в течение рабочего дня"
+                                                )
+                                            }
+                                            items(freshQueueList, key = { it.key }) { ticket ->
+                                                CompactDesktopTicketCard(
+                                                    ticket = ticket,
+                                                    isSelected = ticket.key == state.selectedTicketKey,
+                                                    settings = state.settings,
+                                                    nowMillis = nowMs,
+                                                    onClick = { controller.selectTicket(ticket.key) }
+                                                )
+                                            }
+                                        } else if (pastQueueList.isNotEmpty()) {
+                                            item(key = "desk_no_fresh_today") {
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = DesktopColors.SubtleBg,
+                                                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Text(
+                                                        text = if (queueTab == TicketQueueTab.NEW) {
+                                                            "☀ Сегодня новых заявок пока не поступало — ниже прошлые"
+                                                        } else {
+                                                            "☀ Сегодня новых заявок в работе пока нет — ниже прошлые"
+                                                        },
+                                                        fontSize = 11.sp,
+                                                        color = DesktopColors.TextMuted,
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        if (pastQueueList.isNotEmpty()) {
+                                            item(key = "desk_sec_past") {
+                                                DesktopAgeSectionBanner(
+                                                    isFresh = false,
+                                                    count = pastQueueList.size,
+                                                    subtitle = pastCaption
+                                                )
+                                            }
+                                            items(pastQueueList, key = { it.key }) { ticket ->
+                                                CompactDesktopTicketCard(
+                                                    ticket = ticket,
+                                                    isSelected = ticket.key == state.selectedTicketKey,
+                                                    settings = state.settings,
+                                                    nowMillis = nowMs,
+                                                    onClick = { controller.selectTicket(ticket.key) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                    TicketAgeFilter.FRESH_TODAY -> {
+                                        item(key = "desk_sec_fresh_only") {
+                                            DesktopAgeSectionBanner(
+                                                isFresh = true,
+                                                count = freshQueueList.size,
+                                                subtitle = "Поступили сегодня в течение рабочего дня"
+                                            )
+                                        }
+                                        items(freshQueueList, key = { it.key }) { ticket ->
+                                            CompactDesktopTicketCard(
+                                                ticket = ticket,
+                                                isSelected = ticket.key == state.selectedTicketKey,
+                                                settings = state.settings,
+                                                nowMillis = nowMs,
+                                                onClick = { controller.selectTicket(ticket.key) }
+                                            )
+                                        }
+                                    }
+                                    TicketAgeFilter.PAST_HANGING -> {
+                                        item(key = "desk_sec_past_only") {
+                                            DesktopAgeSectionBanner(
+                                                isFresh = false,
+                                                count = pastQueueList.size,
+                                                subtitle = pastCaption
+                                            )
+                                        }
+                                        items(pastQueueList, key = { it.key }) { ticket ->
+                                            CompactDesktopTicketCard(
+                                                ticket = ticket,
+                                                isSelected = ticket.key == state.selectedTicketKey,
+                                                settings = state.settings,
+                                                nowMillis = nowMs,
+                                                onClick = { controller.selectTicket(ticket.key) }
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                items(filteredList, key = { it.key }) { ticket ->
+                                    CompactDesktopTicketCard(
+                                        ticket = ticket,
+                                        isSelected = ticket.key == state.selectedTicketKey,
+                                        settings = state.settings,
+                                        nowMillis = nowMs,
+                                        onClick = { controller.selectTicket(ticket.key) }
+                                    )
+                                }
                             }
                         }
                         VerticalScrollbar(
@@ -947,22 +1129,68 @@ private fun DesktopWelcomeOverviewPane(
  * - ZERO empty blank space inside the card below ticket info.
  */
 @Composable
+private fun DesktopAgeSectionBanner(
+    isFresh: Boolean,
+    count: Int,
+    subtitle: String
+) {
+    val accent = if (isFresh) DesktopColors.StatusGreen else DesktopColors.StatusAmber
+    val title = if (isFresh) {
+        "🟢 Свежие заявки · сегодня ($count)"
+    } else {
+        "⏳ Прошлые заявки · висят давно ($count)"
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = accent.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.48f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = title,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = accent
+            )
+            Text(
+                text = subtitle,
+                fontSize = 10.5.sp,
+                color = DesktopColors.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
 private fun CompactDesktopTicketCard(
     ticket: HelpdeskTicket,
     isSelected: Boolean,
     settings: com.helpdesk.jiraagent.model.AppSettings,
+    nowMillis: Long = System.currentTimeMillis(),
     onClick: () -> Unit
 ) {
-    val slaBadge = remember(ticket.key, ticket.stage, ticket.createdEpochMillis) {
+    val freshnessInfo = remember(ticket.key, ticket.stage, ticket.createdEpochMillis, ticket.isClientTicket, nowMillis) {
+        if (ticket.isClientTicket && (ticket.stage == TicketStage.NEW || ticket.stage == TicketStage.IN_PROGRESS)) {
+            TicketFreshnessClassifier.classify(ticket, settings, nowMillis)
+        } else null
+    }
+
+    val slaBadge = remember(ticket.key, ticket.stage, ticket.createdEpochMillis, nowMillis) {
         if (ticket.isClientTicket && ticket.stage == TicketStage.NEW) {
             SlaCalculator.computeWaitBadge(
-                createdEpochMillis = ticket.createdEpochMillis
+                createdEpochMillis = ticket.createdEpochMillis,
+                nowMillis = nowMillis
             )
         } else null
     }
 
     val stageAccent = when {
         !ticket.isClientTicket -> DesktopColors.TextMuted
+        freshnessInfo?.severity == TicketHangingSeverity.PAST_LONG -> DesktopColors.StatusRed
         ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue
         ticket.stage == TicketStage.CLOSED -> DesktopColors.StatusGreen
         slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed
@@ -971,6 +1199,7 @@ private fun CompactDesktopTicketCard(
 
     val borderColor = when {
         isSelected -> DesktopColors.CslOrange
+        freshnessInfo?.severity == TicketHangingSeverity.PAST_LONG -> DesktopColors.StatusRed.copy(alpha = 0.45f)
         ticket.stage == TicketStage.IN_PROGRESS -> DesktopColors.StatusBlue.copy(alpha = 0.45f)
         slaBadge?.urgency == SlaUrgency.OVERDUE -> DesktopColors.StatusRed.copy(alpha = 0.42f)
         else -> DesktopColors.BorderSubtle
@@ -1017,7 +1246,27 @@ private fun CompactDesktopTicketCard(
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(Modifier.width(6.dp))
-                    if (slaBadge != null) {
+                    if (freshnessInfo != null) {
+                        val (badgeColor, icon) = when (freshnessInfo.severity) {
+                            TicketHangingSeverity.FRESH_TODAY -> DesktopColors.StatusGreen to "🟢"
+                            TicketHangingSeverity.PAST_RECENT -> DesktopColors.StatusAmber to "⏳"
+                            TicketHangingSeverity.PAST_LONG -> DesktopColors.StatusRed to "🔥"
+                        }
+                        Surface(
+                            color = badgeColor.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "$icon ${freshnessInfo.compactBadgeLabel}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = badgeColor,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else if (slaBadge != null) {
                         val slaColor = when (slaBadge.urgency) {
                             SlaUrgency.FRESH -> DesktopColors.StatusGreen
                             SlaUrgency.WARNING -> DesktopColors.StatusAmber
