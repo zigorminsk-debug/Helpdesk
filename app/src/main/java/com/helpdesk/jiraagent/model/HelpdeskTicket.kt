@@ -1,5 +1,9 @@
 package com.helpdesk.jiraagent.model
 
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
 enum class TicketStage {
     NEW,
     IN_PROGRESS,
@@ -116,6 +120,8 @@ data class HelpdeskTicket(
     val createdEpochMillis: Long,
     val updatedIso: String,
     val updatedEpochMillis: Long = 0L,
+    val resolvedIso: String = "",
+    val resolvedEpochMillis: Long = 0L,
     val labels: List<String>,
     val phoneNumbers: List<PhoneMatch>,
     val telegramHandles: List<String>? = emptyList(),
@@ -127,6 +133,29 @@ data class HelpdeskTicket(
 ) {
     val stage: TicketStage
         get() = TicketStage.fromJiraStatus(status, statusCategoryKey)
+
+    /**
+     * Exact closure timestamp in epoch milliseconds when the ticket is closed:
+     * prefers Jira's `resolutiondate` ([resolvedEpochMillis]), falling back to [updatedEpochMillis]
+     * (or [createdEpochMillis]) for workflows that close issues without setting a Jira Resolution.
+     */
+    val effectiveClosedEpochMillis: Long
+        get() = when {
+            resolvedEpochMillis > 0L -> resolvedEpochMillis
+            stage == TicketStage.CLOSED -> if (updatedEpochMillis > 0L) updatedEpochMillis else createdEpochMillis
+            else -> 0L
+        }
+
+    /**
+     * Resolution duration in whole minutes from arrival ([createdEpochMillis]) to closure ([effectiveClosedEpochMillis]),
+     * or `null` if the ticket is not yet closed or timestamps are unavailable.
+     */
+    val resolutionDurationMinutes: Long?
+        get() {
+            val closedAt = effectiveClosedEpochMillis
+            if (closedAt <= 0L || createdEpochMillis <= 0L || closedAt < createdEpochMillis) return null
+            return (closedAt - createdEpochMillis) / 60_000L
+        }
 
     fun isAssignedToAgent(connectedUserDisplayName: String?, usernameOrEmail: String): Boolean {
         val display = assigneeName?.trim().orEmpty()
@@ -156,3 +185,67 @@ data class SyncStatus(
     val lastError: String? = null,
     val connectedUser: String? = null
 )
+
+/**
+ * Formats ticket arrival (`Поступила`), closure (`Закрыта`), and resolution duration in Minsk time (`Europe/Minsk`).
+ */
+object TicketTimingFormatter {
+
+    private val MINSK_ZONE: ZoneId = ZoneId.of("Europe/Minsk")
+    private val FULL_DATE_TIME_FMT: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(MINSK_ZONE)
+    private val SHORT_DATE_TIME_FMT: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("dd.MM HH:mm").withZone(MINSK_ZONE)
+    private val TIME_ONLY_FMT: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("HH:mm").withZone(MINSK_ZONE)
+
+    fun formatFullMinsk(epochMillis: Long): String {
+        if (epochMillis <= 0L) return "—"
+        return runCatching { FULL_DATE_TIME_FMT.format(Instant.ofEpochMilli(epochMillis)) }
+            .getOrDefault("—")
+    }
+
+    fun formatCompactMinsk(epochMillis: Long, nowMillis: Long = System.currentTimeMillis()): String {
+        if (epochMillis <= 0L) return "—"
+        return runCatching {
+            val dt = Instant.ofEpochMilli(epochMillis).atZone(MINSK_ZONE)
+            val today = Instant.ofEpochMilli(nowMillis).atZone(MINSK_ZONE).toLocalDate()
+            when (dt.toLocalDate()) {
+                today -> "сегодня ${TIME_ONLY_FMT.format(dt)}"
+                today.minusDays(1) -> "вчера ${TIME_ONLY_FMT.format(dt)}"
+                else -> SHORT_DATE_TIME_FMT.format(dt)
+            }
+        }.getOrDefault("—")
+    }
+
+    fun formatDurationMinutes(minutes: Long?): String {
+        if (minutes == null || minutes < 0L) return "—"
+        return when {
+            minutes < 1L -> "< 1 мин"
+            minutes < 60L -> "$minutes мин"
+            minutes < 24L * 60L -> {
+                val h = minutes / 60L
+                val m = minutes % 60L
+                if (m == 0L) "$h ч" else "$h ч $m мин"
+            }
+            else -> {
+                val d = minutes / (24L * 60L)
+                val remH = (minutes % (24L * 60L)) / 60L
+                if (remH == 0L) "$d дн." else "$d дн. $remH ч"
+            }
+        }
+    }
+
+    fun buildCardTimingSummary(ticket: HelpdeskTicket, nowMillis: Long = System.currentTimeMillis()): String {
+        val arrived = formatCompactMinsk(ticket.createdEpochMillis, nowMillis)
+        val closedMs = ticket.effectiveClosedEpochMillis
+        return if (ticket.stage == TicketStage.CLOSED && closedMs > 0L) {
+            val closed = formatCompactMinsk(closedMs, nowMillis)
+            val dur = ticket.resolutionDurationMinutes?.let { " (${formatDurationMinutes(it)})" }.orEmpty()
+            "📥 $arrived  ·  ✅ Закрыта: $closed$dur"
+        } else {
+            "📥 Поступила: $arrived"
+        }
+    }
+}
+

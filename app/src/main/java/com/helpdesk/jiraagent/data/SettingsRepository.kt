@@ -726,11 +726,22 @@ class SettingsRepository private constructor(context: Context) {
     }
 
     private fun updateTicketsCache(list: List<HelpdeskTicket>) {
-        if (_tickets.value == list) return
-        _tickets.value = list
-        runCatching { mergeClientDirectoryEntries(extractEntriesFromTickets(list)) }
+        val prevResolvedByKey = _tickets.value
+            .filter { it.resolvedEpochMillis > 0L }
+            .associateBy({ it.key.uppercase() }, { it.resolvedIso to it.resolvedEpochMillis })
+        val mergedList = list.map { t ->
+            if (t.stage == TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
+                val prev = prevResolvedByKey[t.key.uppercase()]
+                if (prev != null) t.copy(resolvedIso = prev.first, resolvedEpochMillis = prev.second) else t
+            } else {
+                t
+            }
+        }
+        if (_tickets.value == mergedList) return
+        _tickets.value = mergedList
+        runCatching { mergeClientDirectoryEntries(extractEntriesFromTickets(mergedList)) }
         runCatching {
-            val trimmed = list.take(60)
+            val trimmed = mergedList.take(60)
             cachePrefs.edit().putString(KEY_CACHED_TICKETS_JSON, gson.toJson(trimmed)).apply()
         }
         runCatching { HelpCslAppWidgetProvider.requestUpdateAll(appContext) }
@@ -749,7 +760,8 @@ class SettingsRepository private constructor(context: Context) {
         val json = cachePrefs.getString(KEY_CACHED_TICKETS_JSON, null) ?: return emptyList()
         return runCatching {
             val type = object : TypeToken<List<HelpdeskTicket>>() {}.type
-            gson.fromJson<List<HelpdeskTicket>>(json, type) ?: emptyList()
+            val raw = gson.fromJson<List<HelpdeskTicket>>(json, type) ?: emptyList()
+            raw.map { t -> t.copy(resolvedIso = (t.resolvedIso as String?).orEmpty()) }
         }.getOrDefault(emptyList())
     }
 

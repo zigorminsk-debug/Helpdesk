@@ -286,6 +286,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val securityWipeNotice by viewModel.securityWipeNotice.collectAsStateWithLifecycle()
     val knowledgeResults by viewModel.knowledgeArchiveResults.collectAsStateWithLifecycle()
     val isSearchingKnowledge by viewModel.isSearchingKnowledge.collectAsStateWithLifecycle()
+    val kpiSampleTickets by viewModel.kpiSampleTickets.collectAsStateWithLifecycle()
+    val isLoadingKpi by viewModel.isLoadingKpi.collectAsStateWithLifecycle()
     val isCleaningSystemRooms by viewModel.isCleaningSystemRooms.collectAsStateWithLifecycle()
     val systemRoomsCleanupMessage by viewModel.systemRoomsCleanupMessage.collectAsStateWithLifecycle()
 
@@ -448,8 +450,17 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     if (showShiftAnalytics) {
         ShiftAnalyticsDialog(
             tickets = tickets,
+            kpiSampleTickets = kpiSampleTickets,
+            isLoadingKpi = isLoadingKpi,
+            isJiraConfigured = appSettings.isConfigured,
+            stopwatches = ticketStopwatches,
             connectedUserDisplayName = syncStatus.connectedUser,
             usernameOrEmail = appSettings.usernameOrEmail,
+            onRefreshKpi = { viewModel.refreshEmployeeKpi(30) },
+            onOpenTicket = { key ->
+                showShiftAnalytics = false
+                viewModel.openTicket(key)
+            },
             onSelectClientFilter = { client ->
                 currentTab = BottomDestination.TICKETS
                 externalSearchFilter = client
@@ -797,15 +808,33 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             tint = Color.White
                         )
                     }
-                    IconButton(
+                    Surface(
                         onClick = { showShiftAnalytics = true },
-                        modifier = Modifier.size(38.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        color = CslOrange.copy(alpha = 0.25f),
+                        border = BorderStroke(1.dp, CslOrange),
+                        modifier = Modifier.padding(horizontal = 2.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.BarChart,
-                            contentDescription = "Статистика смены",
-                            tint = Color.White
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.BarChart,
+                                contentDescription = "KPI по сотрудникам",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "KPI",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                     IconButton(
                         onClick = { showFullGuide = true },

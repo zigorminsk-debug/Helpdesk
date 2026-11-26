@@ -149,7 +149,11 @@ class DesktopStorage {
                 .map { it.copy(status = it.status ?: RepairStatus.RECEIVED) }
             val safeTickets = (raw.cachedTickets ?: emptyList()).map { t ->
                 val eval = TicketFilterEngine.evaluate(t, safeFilter, safeApp.usernameOrEmail)
-                t.copy(isClientTicket = eval.isClientTicket, filterReason = eval.reason)
+                t.copy(
+                    resolvedIso = (t.resolvedIso as String?).orEmpty(),
+                    isClientTicket = eval.isClientTicket,
+                    filterReason = eval.reason
+                )
             }
 
             val ticketClients = safeTickets.mapNotNull { t ->

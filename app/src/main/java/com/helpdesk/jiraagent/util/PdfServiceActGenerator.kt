@@ -21,6 +21,7 @@ import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import java.io.File
 import java.io.FileOutputStream
 import java.time.Instant
@@ -629,6 +630,7 @@ object PdfServiceActGenerator {
             "Поступило обращений за период" to summary.createdInPeriod.toString(),
             "Закрыто за период (всего / мной)" to "${summary.closedInPeriod} / ${summary.closedByMeInPeriod}",
             "Сейчас в очереди (Новые / В работе)" to "${summary.activeNewCount} / ${summary.activeInProgressCount}",
+            "Среднее время решения по команде" to TicketTimingFormatter.formatDurationMinutes(summary.avgTeamResolutionMinutes),
             "Среднее ожидание в «Новых»" to "${summary.avgQueueWaitMinutes} мин.",
             "Доля заявок в зелёной зоне SLA (< 15 мин)" to "${summary.slaGreenPercent}%"
         )
@@ -647,18 +649,23 @@ object PdfServiceActGenerator {
         paint.color = orange
         paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         paint.textSize = 12f
-        canvas.drawText("2. Выработка инженеров техподдержки:", 36f, y, paint)
+        canvas.drawText("2. KPI и активность сотрудников техподдержки:", 36f, y, paint)
         y += 20f
 
-        for (eng in summary.engineerStats.take(10)) {
+        for (eng in summary.employeeKpis.take(12)) {
             paint.color = dark
             paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            paint.textSize = 10.5f
-            canvas.drawText(eng.engineerName.take(40), 44f, y, paint)
+            paint.textSize = 9.8f
+            canvas.drawText(eng.engineerName.take(34), 44f, y, paint)
             paint.color = muted
             paint.typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            canvas.drawText("Закрыто: ${eng.closedCount}  |  В работе: ${eng.inProgressCount}", 320f, y, paint)
-            y += 16f
+            canvas.drawText(
+                "Закр.: ${eng.closedCount} (${eng.shareOfTeamClosedPercent}%) | В раб.: ${eng.inProgressCount} | Ср.: ${TicketTimingFormatter.formatDurationMinutes(eng.avgResolutionMinutes)}",
+                235f,
+                y,
+                paint
+            )
+            y += 15f
         }
 
         y += 10f

@@ -97,6 +97,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.SlaCalculator
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import com.helpdesk.jiraagent.domain.SlaUrgency
 import com.helpdesk.jiraagent.domain.TicketAgeFilter
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
@@ -1674,6 +1675,18 @@ private fun TicketListCard(
                             fontWeight = FontWeight.SemiBold
                         )
                     }
+                }
+
+                // 4b. Arrival & Closure Timestamps fixed on every ticket card
+                if (ticket.createdEpochMillis > 0L || ticket.effectiveClosedEpochMillis > 0L) {
+                    Text(
+                        text = TicketTimingFormatter.buildCardTimingSummary(ticket, nowMillis),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (stage == TicketStage.CLOSED) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (stage == TicketStage.CLOSED) CslSuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 if (!ticket.isClientTicket && ticket.filterReason != null) {

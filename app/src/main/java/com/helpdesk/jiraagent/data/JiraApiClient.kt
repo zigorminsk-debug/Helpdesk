@@ -854,7 +854,21 @@ class JiraApiClient {
 
                 executeTransition(baseUrl, preferCloud, issueKey, chosenTransition, action, settings)
 
-                val refreshed = fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+                val closedNowMs = System.currentTimeMillis()
+                val closedNowIso = Instant.ofEpochMilli(closedNowMs).toString()
+                val rawRefreshed = fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
+                val refreshed = if (
+                    rawRefreshed != null &&
+                    (action == TicketWorkflowAction.COMPLETE || action == TicketWorkflowAction.REJECT) &&
+                    rawRefreshed.resolvedEpochMillis <= 0L
+                ) {
+                    rawRefreshed.copy(
+                        resolvedIso = closedNowIso,
+                        resolvedEpochMillis = closedNowMs
+                    )
+                } else {
+                    rawRefreshed
+                }
                 val statusLabel = refreshed?.status ?: chosenTransition.toStatusName
                 val msg = when (action) {
                     TicketWorkflowAction.TAKE_IN_WORK ->
@@ -2810,6 +2824,72 @@ class JiraApiClient {
         }
     }
 
+    /**
+     * Fetches a broad, locale-safe team ticket sample over the requested [daysBack] window
+     * (including `created`, `updated`, and `resolutiondate` across all staff members) so the
+     * Employee KPI & Activity Monitor (`📈 KPI сотрудников`) displays complete, accurate metrics
+     * even when hundreds of tickets were closed over 7 or 30 days.
+     */
+    suspend fun fetchEmployeeKpiTickets(
+        daysBack: Int,
+        settings: AppSettings,
+        filterSettings: FilterSettings,
+        maxTotal: Int = 500
+    ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeServerUrl(settings.serverUrl)
+            val preferCloud = isCloudEndpoint(baseUrl, settings.serverType)
+            val safeDays = (daysBack + 1).coerceIn(1, 45)
+
+            val projectKeys = filterSettings.projectKeys
+                .split(',', ';', ' ')
+                .map { it.trim().uppercase(Locale.ROOT) }
+                .filter { it.matches(Regex("[A-Z][A-Z0-9_]{0,19}")) }
+                .distinct()
+
+            val projectPrefix = if (projectKeys.isNotEmpty()) {
+                "project in (${projectKeys.joinToString(",")}) AND "
+            } else {
+                ""
+            }
+
+            val candidates = buildList {
+                add("${projectPrefix}(created >= \"-${safeDays}d\" OR updated >= \"-${safeDays}d\") ORDER BY updated DESC")
+                if (projectPrefix.isNotEmpty()) {
+                    add("(created >= \"-${safeDays}d\" OR updated >= \"-${safeDays}d\") ORDER BY updated DESC")
+                }
+                add("${projectPrefix}ORDER BY updated DESC")
+                add("ORDER BY updated DESC")
+            }.distinct()
+
+            for (jql in candidates) {
+                val list = runCatching {
+                    executePaginatedHistorySearch(
+                        baseUrl = baseUrl,
+                        jql = jql,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        filterSettings = filterSettings,
+                        maxTotal = maxTotal
+                    )
+                }.getOrNull()
+                if (!list.isNullOrEmpty()) {
+                    return@runCatching list
+                        .filterNot {
+                            AdminChatCodec.isAdminChatStorageIssue(
+                                issueKey = it.key,
+                                summary = it.summary,
+                                labels = it.labels,
+                                configuredChatKey = settings.adminChatIssueKey
+                            )
+                        }
+                        .distinctBy { it.key.uppercase(Locale.ROOT) }
+                }
+            }
+            emptyList()
+        }
+    }
+
     private fun executePaginatedHistorySearch(
         baseUrl: String,
         jql: String,
@@ -2848,7 +2928,7 @@ class JiraApiClient {
         filterSettings: FilterSettings,
         maxTotal: Int
     ): List<HelpdeskTicket> {
-        val fieldsCsv = "summary,status,priority,issuetype,project,reporter,creator,assignee,created,updated,labels"
+        val fieldsCsv = "summary,status,priority,issuetype,project,reporter,creator,assignee,created,updated,resolutiondate,labels"
         val encodedJql = URLEncoder.encode(jql, "UTF-8")
         val collected = mutableListOf<HelpdeskTicket>()
         var startAt = 0
@@ -2891,7 +2971,7 @@ class JiraApiClient {
     ): List<HelpdeskTicket> {
         val fieldsList = listOf(
             "summary", "status", "priority", "issuetype", "project",
-            "reporter", "creator", "assignee", "created", "updated", "labels"
+            "reporter", "creator", "assignee", "created", "updated", "resolutiondate", "labels"
         )
         val collected = mutableListOf<HelpdeskTicket>()
         var nextPageToken: String? = null

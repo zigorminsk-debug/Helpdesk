@@ -1,15 +1,19 @@
 package com.helpdesk.jiraagent.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -27,9 +32,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -37,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,49 +52,133 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.helpdesk.jiraagent.domain.EmployeeActivityStatus
+import com.helpdesk.jiraagent.domain.EmployeeKpiItem
 import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
+import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import com.helpdesk.jiraagent.ui.theme.CslMidnight
 import com.helpdesk.jiraagent.ui.theme.CslOrange
 import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
 
 /**
- * Shift Statistics Dashboard (`📊 Статистика смены`).
+ * Employee KPI & Shift Activity Monitor (`📈 KPI по сотрудникам и мониторинг активности`).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ShiftAnalyticsDialog(
     tickets: List<HelpdeskTicket>,
+    kpiSampleTickets: List<HelpdeskTicket> = emptyList(),
+    isLoadingKpi: Boolean = false,
+    isJiraConfigured: Boolean = false,
+    stopwatches: Map<String, TicketStopwatchEntry> = emptyMap(),
     connectedUserDisplayName: String?,
     usernameOrEmail: String,
+    onRefreshKpi: () -> Unit = {},
+    onOpenTicket: (String) -> Unit = {},
     onSelectClientFilter: (String) -> Unit,
     onExportPdf: (PeriodAnalyticsSummary) -> Unit = {},
     onExportCsv: (PeriodAnalyticsSummary) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var period by rememberSaveable { mutableStateOf(ShiftReportPeriod.TODAY) }
-    val summary = remember(tickets, connectedUserDisplayName, usernameOrEmail, period) {
+    var employeeSearch by rememberSaveable { mutableStateOf("") }
+    var expandedEmployee by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (isJiraConfigured && kpiSampleTickets.isEmpty()) {
+            onRefreshKpi()
+        }
+    }
+
+    val combinedTickets = remember(tickets, kpiSampleTickets) {
+        val byKey = LinkedHashMap<String, HelpdeskTicket>()
+        tickets.forEach { byKey[it.key.uppercase()] = it }
+        kpiSampleTickets.forEach { sample ->
+            val k = sample.key.uppercase()
+            val existing = byKey[k]
+            if (existing == null) {
+                byKey[k] = sample
+            } else if (existing.resolvedEpochMillis <= 0L && sample.resolvedEpochMillis > 0L) {
+                byKey[k] = existing.copy(
+                    resolvedIso = sample.resolvedIso,
+                    resolvedEpochMillis = sample.resolvedEpochMillis
+                )
+            }
+        }
+        byKey.values.toList()
+    }
+
+    val summary = remember(combinedTickets, connectedUserDisplayName, usernameOrEmail, stopwatches, period) {
         ShiftAnalyticsCalculator.computeForPeriod(
-            tickets = tickets,
+            tickets = combinedTickets,
             period = period,
             connectedUserDisplayName = connectedUserDisplayName,
-            usernameOrEmail = usernameOrEmail
+            usernameOrEmail = usernameOrEmail,
+            stopwatches = stopwatches
         )
+    }
+
+    val visibleEmployees = remember(summary.employeeKpis, employeeSearch) {
+        val q = employeeSearch.trim().lowercase()
+        if (q.isEmpty()) summary.employeeKpis
+        else summary.employeeKpis.filter { it.engineerName.lowercase().contains(q) }
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth(0.95f)
+            .heightIn(max = 680.dp),
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.BarChart, contentDescription = null, tint = CslOrange)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Статистика смены Help-CSL", fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.BarChart, contentDescription = null, tint = CslOrange)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text(
+                            "KPI сотрудников",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            "Мониторинг активности (${summary.periodRangeDisplay})",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (isJiraConfigured) {
+                    IconButton(
+                        onClick = onRefreshKpi,
+                        enabled = !isLoadingKpi
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Обновить KPI из Jira",
+                            tint = CslOrange
+                        )
+                    }
+                }
             }
         },
         text = {
@@ -96,6 +188,13 @@ fun ShiftAnalyticsDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (isLoadingKpi) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = CslOrange
+                    )
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -103,13 +202,19 @@ fun ShiftAnalyticsDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     ShiftReportPeriod.entries.forEach { p ->
+                        val selected = period == p
                         FilterChip(
-                            selected = period == p,
+                            selected = selected,
                             onClick = { period = p },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CslOrange,
+                                selectedLabelColor = Color.White
+                            ),
                             label = {
                                 Text(
                                     p.title,
                                     style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -117,11 +222,6 @@ fun ShiftAnalyticsDialog(
                         )
                     }
                 }
-                Text(
-                    text = "Период: ${summary.periodRangeDisplay}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -135,9 +235,14 @@ fun ShiftAnalyticsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    KpiMiniBox("В очереди", "${summary.activeNewCount}", CslOrange, Modifier.weight(1f))
+                    KpiMiniBox("Нов / Раб", "${summary.activeNewCount}/${summary.activeInProgressCount}", CslOrange, Modifier.weight(1f))
+                    KpiMiniBox(
+                        "Ср. решен.",
+                        TicketTimingFormatter.formatDurationMinutes(summary.avgTeamResolutionMinutes),
+                        MaterialTheme.colorScheme.onSurface,
+                        Modifier.weight(1f)
+                    )
                     KpiMiniBox("SLA <15м", "${summary.slaGreenPercent}%", CslSuccessGreen, Modifier.weight(1f))
-                    KpiMiniBox("Ср. ожид.", "${summary.avgQueueWaitMinutes} м", MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
                 }
 
                 Row(
@@ -146,53 +251,71 @@ fun ShiftAnalyticsDialog(
                 ) {
                     Button(
                         onClick = { onExportPdf(summary) },
-                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CslOrange,
+                            contentColor = Color.White
+                        ),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("📄 PDF", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                        Text("📄 PDF KPI", style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         onClick = { onExportCsv(summary) },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("📊 CSV", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                        Text("📊 Excel (.csv)", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                     }
                 }
 
-                if (summary.engineerStats.isNotEmpty()) {
-                    HorizontalDivider()
+                HorizontalDivider()
+
+                Text(
+                    text = "👨‍💻 KPI и мониторинг активности сотрудников (${visibleEmployees.size}):",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                OutlinedTextField(
+                    value = employeeSearch,
+                    onValueChange = { employeeSearch = it },
+                    placeholder = { Text("Поиск по ФИО сотрудника…", style = MaterialTheme.typography.bodySmall) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (visibleEmployees.isEmpty()) {
                     Text(
-                        text = "Нагрузка по инженерам (${period.title}):",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = CslOrange
+                        text = "За выбранный период (${period.title}) назначенных или закрытых заявок по сотрудникам не найдено.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    summary.engineerStats.forEach { eng ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(eng.engineerName, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                            Text(
-                                text = "В работе: ${eng.inProgressCount} · Закр.: ${eng.closedCount}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                } else {
+                    visibleEmployees.forEachIndexed { idx, emp ->
+                        val isExpanded = expandedEmployee == emp.engineerName
+                        AndroidEmployeeKpiCard(
+                            rank = idx + 1,
+                            item = emp,
+                            isExpanded = isExpanded,
+                            onToggleExpand = {
+                                expandedEmployee = if (isExpanded) null else emp.engineerName
+                            },
+                            onOpenTicket = onOpenTicket
+                        )
                     }
                 }
 
                 if (summary.topClients.isNotEmpty()) {
                     HorizontalDivider()
                     Text(
-                        text = "Топ клиентов по обращениям (нажмите для поиска):",
+                        text = "🏢 Топ клиентов по обращениям (нажмите для фильтра):",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         color = CslOrange
                     )
-                    summary.topClients.forEach { cl ->
+                    summary.topClients.take(8).forEach { cl ->
                         Surface(
                             onClick = {
                                 onDismiss()
@@ -231,6 +354,169 @@ fun ShiftAnalyticsDialog(
             TextButton(onClick = onDismiss) { Text("Закрыть") }
         }
     )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AndroidEmployeeKpiCard(
+    rank: Int,
+    item: EmployeeKpiItem,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onOpenTicket: (String) -> Unit
+) {
+    val rankLabel = when (rank) {
+        1 -> "🥇"
+        2 -> "🥈"
+        3 -> "🥉"
+        else -> "#$rank"
+    }
+    val statusColor = when (item.activityStatus) {
+        EmployeeActivityStatus.ACTIVE_NOW -> CslSuccessGreen
+        EmployeeActivityStatus.ACTIVE_RECENT -> CslOrange
+        EmployeeActivityStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (item.isCurrentUser) CslOrange.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(
+            width = if (item.isCurrentUser) 1.5.dp else 1.dp,
+            color = if (item.isCurrentUser) CslOrange else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggleExpand)
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "$rankLabel ${item.engineerName}" + if (item.isCurrentUser) " (Вы)" else "",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = item.activityStatus.badgeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = statusColor,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "✅ Закрыто: ${item.closedCount} (${item.shareOfTeamClosedPercent}%)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CslSuccessGreen,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "· 🔧 В работе: ${item.inProgressCount}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "· ⏱ Ср.: ${TicketTimingFormatter.formatDurationMinutes(item.avgResolutionMinutes)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (item.closedCount > 0) {
+                    Text(
+                        text = "· ⚡ <1ч: ${item.fastCloseUnder1hPercent}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CslOrange
+                    )
+                }
+            }
+
+            if (item.lastActivityEpochMs > 0L) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Посл. активность: ${TicketTimingFormatter.formatCompactMinsk(item.lastActivityEpochMs)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (isExpanded) "▲ Скрыть" else "▼ Заявки (${item.tickets.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = CslOrange
+                    )
+                }
+            }
+
+            LinearProgressIndicator(
+                progress = { (item.shareOfTeamClosedPercent / 100f).coerceIn(0.03f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(99.dp)),
+                color = CslSuccessGreen,
+                trackColor = MaterialTheme.colorScheme.outlineVariant
+            )
+
+            if (isExpanded && item.tickets.isNotEmpty()) {
+                HorizontalDivider()
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    item.tickets.take(25).forEach { t ->
+                        val closedAt = t.effectiveClosedEpochMillis
+                        val timingLine = if (t.stage == TicketStage.CLOSED && closedAt > 0L) {
+                            val dur = t.resolutionDurationMinutes?.let { " · ⏱ ${TicketTimingFormatter.formatDurationMinutes(it)}" }.orEmpty()
+                            "📥 ${TicketTimingFormatter.formatFullMinsk(t.createdEpochMillis)} → ✅ ${TicketTimingFormatter.formatFullMinsk(closedAt)}$dur"
+                        } else {
+                            "📥 ${TicketTimingFormatter.formatFullMinsk(t.createdEpochMillis)} · [${t.status}]"
+                        }
+                        Surface(
+                            onClick = { onOpenTicket(t.key) },
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = "${t.key} · ${t.reporterName} — ${t.summary}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = timingLine,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (t.stage == TicketStage.CLOSED) CslSuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

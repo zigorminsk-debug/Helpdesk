@@ -62,6 +62,7 @@ import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1471,6 +1472,18 @@ private fun CompactDesktopTicketCard(
                         )
                     }
                 }
+
+                // 4. Arrival & Closure Timestamps (fixed on every ticket card)
+                if (ticket.createdEpochMillis > 0L || ticket.effectiveClosedEpochMillis > 0L) {
+                    Text(
+                        text = TicketTimingFormatter.buildCardTimingSummary(ticket, nowMillis),
+                        fontSize = 10.5.sp,
+                        fontWeight = if (ticket.stage == TicketStage.CLOSED) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (ticket.stage == TicketStage.CLOSED) DesktopColors.StatusGreen else DesktopColors.TextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -2369,6 +2382,68 @@ private fun DesktopTicketInspector(
                             Text("Статус: ${ticket.status}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                             Text("Приоритет: ${ticket.priority}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                             Text("Исполнитель: ${ticket.assigneeName ?: "Не назначен"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                        }
+
+                        // Dedicated Arrival & Closure Timing Strip
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(7.dp),
+                                color = DesktopColors.SubtleBg,
+                                border = BorderStroke(1.dp, DesktopColors.BorderSubtle)
+                            ) {
+                                Text(
+                                    text = "📥 Поступила: ${TicketTimingFormatter.formatFullMinsk(ticket.createdEpochMillis)}",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = DesktopColors.TextPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            val closedMs = ticket.effectiveClosedEpochMillis
+                            if (ticket.stage == TicketStage.CLOSED && closedMs > 0L) {
+                                Surface(
+                                    shape = RoundedCornerShape(7.dp),
+                                    color = DesktopColors.StatusGreen.copy(alpha = 0.15f),
+                                    border = BorderStroke(1.dp, DesktopColors.StatusGreen.copy(alpha = 0.55f))
+                                ) {
+                                    val durLabel = ticket.resolutionDurationMinutes?.let {
+                                        " · ⏱ решена за ${TicketTimingFormatter.formatDurationMinutes(it)}"
+                                    }.orEmpty()
+                                    Text(
+                                        text = "✅ Закрыта: ${TicketTimingFormatter.formatFullMinsk(closedMs)}$durLabel",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = DesktopColors.StatusGreen,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                    )
+                                }
+                            } else if (ticket.createdEpochMillis > 0L) {
+                                val openMins = ((System.currentTimeMillis() - ticket.createdEpochMillis).coerceAtLeast(0L)) / 60_000L
+                                Surface(
+                                    shape = RoundedCornerShape(7.dp),
+                                    color = DesktopColors.SubtleBg,
+                                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle)
+                                ) {
+                                    Text(
+                                        text = "⏳ Открыта: ${TicketTimingFormatter.formatDurationMinutes(openMins)} (не закрыта)",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = DesktopColors.TextSecondary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }

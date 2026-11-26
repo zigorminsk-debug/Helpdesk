@@ -627,12 +627,36 @@ private fun DesktopTopNavigationHeader(
             }
         }
 
+        // Prominent Employee KPI & Activity Monitor button right in the top header
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = DesktopColors.CslOrange.copy(alpha = 0.22f),
+            border = BorderStroke(1.2.dp, DesktopColors.CslOrange),
+            contentColor = Color.White,
+            modifier = Modifier
+                .height(32.dp)
+                .clickable(onClick = onOpenAnalytics)
+        ) {
+            Box(
+                modifier = Modifier.padding(horizontal = 11.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "📈 KPI сотрудников",
+                    fontSize = 11.8.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+
         HeaderUtilityPill(if (state.darkTheme) "☀ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
         if (state.darkTheme) {
             HeaderUtilityPill("🎨 ${state.settings.darkThemePreset.shortTitle}", onCycleDarkPreset)
         }
         HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
-        HeaderUtilityPill("📊 Смена", onOpenAnalytics)
         HeaderUtilityPill("⊞ QR", onOpenQr)
         HeaderUtilityPill("📖 Гайд", onOpenGuide)
     }

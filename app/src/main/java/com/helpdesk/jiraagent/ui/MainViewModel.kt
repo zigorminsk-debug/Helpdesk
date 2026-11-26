@@ -657,13 +657,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     status = "Выполнена",
                     statusCategoryKey = "done",
                     updatedIso = nowIso,
-                    updatedEpochMillis = nowMillis
+                    updatedEpochMillis = nowMillis,
+                    resolvedIso = nowIso,
+                    resolvedEpochMillis = nowMillis
                 )
                 TicketWorkflowAction.REJECT -> existing.copy(
                     status = "Отклонена",
                     statusCategoryKey = "done",
                     updatedIso = nowIso,
-                    updatedEpochMillis = nowMillis
+                    updatedEpochMillis = nowMillis,
+                    resolvedIso = nowIso,
+                    resolvedEpochMillis = nowMillis
                 )
             }
             repository.upsertSingleTicket(updated)
@@ -776,13 +780,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     status = "Выполнена (офлайн)",
                     statusCategoryKey = "done",
                     updatedIso = nowIso,
-                    updatedEpochMillis = nowMs
+                    updatedEpochMillis = nowMs,
+                    resolvedIso = nowIso,
+                    resolvedEpochMillis = nowMs
                 )
                 TicketWorkflowAction.REJECT -> existing.copy(
                     status = "Отклонена (офлайн)",
                     statusCategoryKey = "done",
                     updatedIso = nowIso,
-                    updatedEpochMillis = nowMs
+                    updatedEpochMillis = nowMs,
+                    resolvedIso = nowIso,
+                    resolvedEpochMillis = nowMs
                 )
             }
             repository.upsertSingleTicket(optimistic)
@@ -2915,7 +2923,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Shift Analytics PDF & Excel CSV Share ---
+    // --- Shift Analytics & Employee KPI Monitoring ---
+
+    private val _kpiSampleTickets = MutableStateFlow<List<HelpdeskTicket>>(emptyList())
+    val kpiSampleTickets: StateFlow<List<HelpdeskTicket>> = _kpiSampleTickets.asStateFlow()
+
+    private val _isLoadingKpi = MutableStateFlow(false)
+    val isLoadingKpi: StateFlow<Boolean> = _isLoadingKpi.asStateFlow()
+
+    fun refreshEmployeeKpi(daysBack: Int = 30) {
+        val settings = appSettings.value
+        if (!settings.isConfigured || _isLoadingKpi.value) return
+        _isLoadingKpi.value = true
+        viewModelScope.launch {
+            apiClient.fetchEmployeeKpiTickets(
+                daysBack = daysBack,
+                settings = settings,
+                filterSettings = filterSettings.value,
+                maxTotal = 500
+            ).onSuccess { list ->
+                val prevClosedTimestamps = tickets.value
+                    .filter { it.resolvedEpochMillis > 0L }
+                    .associateBy({ it.key.uppercase() }, { it.resolvedIso to it.resolvedEpochMillis })
+                _kpiSampleTickets.value = list.map { t ->
+                    if (t.stage == TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
+                        val prev = prevClosedTimestamps[t.key.uppercase()]
+                        if (prev != null) t.copy(resolvedIso = prev.first, resolvedEpochMillis = prev.second) else t
+                    } else {
+                        t
+                    }
+                }
+                _isLoadingKpi.value = false
+            }.onFailure {
+                _isLoadingKpi.value = false
+            }
+        }
+    }
 
     fun shareShiftAnalyticsPdf(summary: PeriodAnalyticsSummary) {
         viewModelScope.launch {

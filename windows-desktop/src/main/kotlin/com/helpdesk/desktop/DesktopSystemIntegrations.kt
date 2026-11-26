@@ -15,6 +15,7 @@ import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
 import com.helpdesk.jiraagent.model.RepairStatus
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -1543,6 +1544,7 @@ object DesktopPdfGenerator {
                     "Поступило клиентских обращений за период" to summary.createdInPeriod.toString(),
                     "Выполнено и закрыто за период (всего / мной)" to "${summary.closedInPeriod} / ${summary.closedByMeInPeriod}",
                     "Текущая очередь: Новые / В работе" to "${summary.activeNewCount} / ${summary.activeInProgressCount}",
+                    "Среднее время решения по команде" to TicketTimingFormatter.formatDurationMinutes(summary.avgTeamResolutionMinutes),
                     "Среднее время ожидания в «Новых»" to "${summary.avgQueueWaitMinutes} мин.",
                     "Доля заявок в зелёной зоне SLA (< 15 мин)" to "${summary.slaGreenPercent}%"
                 )
@@ -1553,24 +1555,24 @@ object DesktopPdfGenerator {
                 }
 
                 y -= 10f
-                drawTextSafe(cs, fontBold, 11f, Color(247, 99, 27), 36f, y, "2. Выработка инженеров техподдержки:")
+                drawTextSafe(cs, fontBold, 11f, Color(247, 99, 27), 36f, y, "2. KPI и активность сотрудников техподдержки:")
                 y -= 18f
-                if (summary.engineerStats.isEmpty()) {
+                if (summary.employeeKpis.isEmpty()) {
                     drawTextSafe(cs, fontRegular, 10f, Color(100, 116, 139), 44f, y, "Нет данных по назначенным заявкам за выбранный период.")
                     y -= 16f
                 } else {
-                    for (eng in summary.engineerStats.take(10)) {
-                        drawTextSafe(cs, fontBold, 10f, Color(15, 23, 42), 44f, y, eng.engineerName.take(44))
+                    for (eng in summary.employeeKpis.take(12)) {
+                        drawTextSafe(cs, fontBold, 9.5f, Color(15, 23, 42), 44f, y, eng.engineerName.take(36))
                         drawTextSafe(
                             cs,
                             fontRegular,
-                            10f,
+                            9.5f,
                             Color(51, 65, 85),
-                            320f,
+                            235f,
                             y,
-                            "Закрыто: ${eng.closedCount}   |   В работе: ${eng.inProgressCount}"
+                            "Закр.: ${eng.closedCount} (${eng.shareOfTeamClosedPercent}%) | В раб.: ${eng.inProgressCount} | Ср. реш.: ${TicketTimingFormatter.formatDurationMinutes(eng.avgResolutionMinutes)} | <1ч: ${eng.fastCloseUnder1hPercent}%"
                         )
-                        y -= 15f
+                        y -= 14f
                     }
                 }
 

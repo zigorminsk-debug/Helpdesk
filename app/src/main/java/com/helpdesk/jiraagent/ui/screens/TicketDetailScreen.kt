@@ -110,6 +110,8 @@ import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.model.ClientTechPassport
+import com.helpdesk.jiraagent.model.TicketStage
+import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import com.helpdesk.jiraagent.ui.components.AssignColleagueDialog
 import com.helpdesk.jiraagent.ui.components.ClientDossierCard
 import com.helpdesk.jiraagent.ui.components.ClientTechPassportAndroidDialog
@@ -882,6 +884,22 @@ fun TicketDetailScreen(
                             MetadataRow("Проект", "${ticket.projectName} (${ticket.projectKey})")
                             MetadataRow("Тип обращения", ticket.customerRequestType ?: ticket.issueType)
                             MetadataRow("Статус", ticket.status)
+                            MetadataRow(
+                                "Время поступления",
+                                TicketTimingFormatter.formatFullMinsk(ticket.createdEpochMillis)
+                            )
+                            val closedAtMs = ticket.effectiveClosedEpochMillis
+                            if (ticket.stage == TicketStage.CLOSED && closedAtMs > 0L) {
+                                val durText = ticket.resolutionDurationMinutes?.let {
+                                    " (решена за ${TicketTimingFormatter.formatDurationMinutes(it)})"
+                                }.orEmpty()
+                                MetadataRow(
+                                    "Время закрытия",
+                                    "${TicketTimingFormatter.formatFullMinsk(closedAtMs)}$durText"
+                                )
+                            } else {
+                                MetadataRow("Время закрытия", "В работе / не закрыта")
+                            }
                             if (ticket.priority.isNotBlank()) {
                                 MetadataRow("Приоритет", ticket.priority)
                             }

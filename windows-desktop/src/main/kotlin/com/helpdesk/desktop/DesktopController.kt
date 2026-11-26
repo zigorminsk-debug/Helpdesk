@@ -129,6 +129,8 @@ data class DesktopUiState(
     val isSearchingSerial: Boolean = false,
     val knowledgeArchiveResults: List<HelpdeskTicket> = emptyList(),
     val isSearchingKnowledge: Boolean = false,
+    val kpiSampleTickets: List<HelpdeskTicket> = emptyList(),
+    val isLoadingKpi: Boolean = false,
     val clientPassports: Map<String, ClientTechPassport> = emptyMap(),
     val ticketStopwatches: Map<String, TicketStopwatchEntry> = emptyMap(),
     val diagnosticReport: HostDiagnosticReport? = null,
@@ -1037,12 +1039,23 @@ class DesktopController(
                     )
 
                     _state.update { st ->
+                        val prevClosedTimestamps = st.tickets
+                            .filter { it.resolvedEpochMillis > 0L }
+                            .associateBy({ it.key.uppercase() }, { it.resolvedIso to it.resolvedEpochMillis })
+                        val mergedFetched = fetched.map { t ->
+                            if (t.stage == TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
+                                val prev = prevClosedTimestamps[t.key.uppercase()]
+                                if (prev != null) t.copy(resolvedIso = prev.first, resolvedEpochMillis = prev.second) else t
+                            } else {
+                                t
+                            }
+                        }
                         st.copy(
-                            tickets = fetched,
+                            tickets = mergedFetched,
                             clientsDirectory = grownDirectory,
                             isRefreshing = false,
                             lastSyncDisplay = "обновлено в $nowStr",
-                            emptyGifIndex = if (fetched.none { it.isClientTicket && it.stage == TicketStage.NEW }) {
+                            emptyGifIndex = if (mergedFetched.none { it.isClientTicket && it.stage == TicketStage.NEW }) {
                                 (st.emptyGifIndex + 1) % 2
                             } else st.emptyGifIndex
                         )
@@ -2600,11 +2613,22 @@ class DesktopController(
 
     private fun replaceTicketInMemory(updated: HelpdeskTicket) {
         _state.update { st ->
-            val exists = st.tickets.any { it.key == updated.key }
-            val nextList = if (exists) {
-                st.tickets.map { if (it.key == updated.key) updated else it }
+            val prev = st.tickets.firstOrNull { it.key.equals(updated.key, ignoreCase = true) }
+            val safeUpdated = if (
+                updated.stage == com.helpdesk.jiraagent.model.TicketStage.CLOSED &&
+                updated.resolvedEpochMillis <= 0L &&
+                prev != null &&
+                prev.resolvedEpochMillis > 0L
+            ) {
+                updated.copy(resolvedIso = prev.resolvedIso, resolvedEpochMillis = prev.resolvedEpochMillis)
             } else {
-                listOf(updated) + st.tickets
+                updated
+            }
+            val exists = prev != null
+            val nextList = if (exists) {
+                st.tickets.map { if (it.key.equals(safeUpdated.key, ignoreCase = true)) safeUpdated else it }
+            } else {
+                listOf(safeUpdated) + st.tickets
             }
             st.copy(tickets = nextList)
         }
@@ -3023,7 +3047,41 @@ class DesktopController(
         }
     }
 
-    // --- Shift Analytics PDF & Excel CSV Export ---
+    // --- Shift Analytics & Employee KPI Monitoring ---
+
+    fun refreshEmployeeKpi(daysBack: Int = 30) {
+        val cur = _state.value
+        if (!cur.settings.isConfigured || cur.isLoadingKpi) return
+        _state.update { it.copy(isLoadingKpi = true) }
+        scope.launch {
+            apiClient.fetchEmployeeKpiTickets(
+                daysBack = daysBack,
+                settings = cur.settings,
+                filterSettings = cur.filterSettings,
+                maxTotal = 500
+            ).onSuccess { list ->
+                _state.update { st ->
+                    val prevClosedTimestamps = st.tickets
+                        .filter { it.resolvedEpochMillis > 0L }
+                        .associateBy({ it.key.uppercase() }, { it.resolvedIso to it.resolvedEpochMillis })
+                    val enriched = list.map { t ->
+                        if (t.stage == TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
+                            val prev = prevClosedTimestamps[t.key.uppercase()]
+                            if (prev != null) t.copy(resolvedIso = prev.first, resolvedEpochMillis = prev.second) else t
+                        } else {
+                            t
+                        }
+                    }
+                    st.copy(
+                        kpiSampleTickets = enriched,
+                        isLoadingKpi = false
+                    )
+                }
+            }.onFailure {
+                _state.update { it.copy(isLoadingKpi = false) }
+            }
+        }
+    }
 
     fun exportShiftAnalyticsPdf(summary: PeriodAnalyticsSummary) {
         scope.launch(Dispatchers.IO) {
