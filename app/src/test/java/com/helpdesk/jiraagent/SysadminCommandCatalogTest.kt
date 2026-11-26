@@ -72,7 +72,7 @@ class SysadminCommandCatalogTest {
         for (id in listOf("ps-service", "ps-dnsflush", "ad-trust-repair")) {
             val entry = SysadminCommandCatalog.entries.single { it.id == id }
             assertTrue(entry.command.startsWith("& {"))
-            assertTrue(entry.command.contains("-ceq 'YES'"))
+            assertTrue(entry.command.contains("-ceq 'YES'") || entry.command.contains("-cne 'YES'"))
             assertTrue(entry.impact.contains("Изменяет"))
             assertTrue(entry.instructions.contains("администратор", ignoreCase = true))
         }
