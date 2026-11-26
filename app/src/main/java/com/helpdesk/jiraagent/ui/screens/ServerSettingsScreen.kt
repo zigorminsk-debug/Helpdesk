@@ -2,17 +2,22 @@ package com.helpdesk.jiraagent.ui.screens
 
 import android.app.Activity
 import android.app.role.RoleManager
+import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -25,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -68,6 +74,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -79,6 +86,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -93,6 +102,7 @@ import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AppThemeMode
 import com.helpdesk.jiraagent.model.AuthType
+import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.TtsReadoutMode
@@ -289,6 +299,76 @@ fun ServerSettingsScreen(
                                 Text(mode.title, maxLines = 1, softWrap = false)
                             }
                         )
+                    }
+                }
+
+                Text(
+                    text = "🎨 Вариант оформления тёмной темы (6 палитр):",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DarkThemePreset.entries.forEach { preset ->
+                        val isSelected = draft.darkThemePreset == preset
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(preset.previewSurfaceHex),
+                            border = BorderStroke(
+                                width = if (isSelected) 2.dp else 1.dp,
+                                color = if (isSelected) Color(preset.previewAccentHex) else Color(0xFF475569)
+                            ),
+                            modifier = Modifier.clickable {
+                                val updated = draft.copy(
+                                    themeMode = AppThemeMode.DARK,
+                                    darkThemePreset = preset
+                                )
+                                draft = updated
+                                onSaveSettings(updated)
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(preset.previewBgHex)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(preset.previewAccentHex))
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isSelected) "✓ ${preset.title}" else preset.title,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = Color(0xFFF8FAFC),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                    Text(
+                                        text = preset.subtitle,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFCBD5E1),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -613,6 +693,61 @@ fun ServerSettingsScreen(
                     checked = draft.pollingEnabled,
                     onCheckedChange = { draft = draft.copy(pollingEnabled = it) }
                 )
+
+                val powerManager = remember(context) {
+                    context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                }
+                var isIgnoringBatteryOpt by remember {
+                    mutableStateOf(
+                        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                    )
+                }
+                val batteryOptLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) {
+                    isIgnoringBatteryOpt = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                }
+                if (!isIgnoringBatteryOpt) {
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val intent = Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                batteryOptLauncher.launch(intent)
+                            }.onFailure {
+                                runCatching {
+                                    batteryOptLauncher.launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, CslOrange)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = null,
+                            tint = CslOrange,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Отключить экономию батареи (пробуждение в 09:00)",
+                            color = CslOrange,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "✓ Работа без ограничений батареи включена · утренний будильник смены 09:00 РБ активен",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CslSuccessGreen,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
 
                 Text(
                     text = "Интервал проверки в рабочее время (${draft.workStartTime}–${draft.workEndTime})",

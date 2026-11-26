@@ -289,11 +289,22 @@ object BelarusWorkCalendar {
             if (!working) continue
             val candidateStart = candidateDate.atTime(startTime).atZone(MINSK_ZONE).toInstant()
             val diffMs = candidateStart.toEpochMilli() - nowInstant.toEpochMilli()
-            if (diffMs > 5_000L) {
+            if (diffMs > 0L) {
                 return diffMs
             }
         }
         return 2L * 3600_000L
+    }
+
+    /**
+     * Exact epoch-millisecond timestamp for the start of the next RB working shift (+2s safety margin
+     * inside `[workStartTime .. workEndTime]` so `isWorkingTimeNow` is guaranteed `true` on wakeup).
+     */
+    fun nextWorkingWindowStartEpochMillis(
+        settings: AppSettings,
+        nowInstant: Instant = Instant.now()
+    ): Long {
+        return nowInstant.toEpochMilli() + millisUntilNextWorkingWindowStart(settings, nowInstant) + 2_000L
     }
 
     /**
@@ -319,13 +330,22 @@ object BelarusWorkCalendar {
 
         val untilShiftMs = millisUntilNextWorkingWindowStart(settings, nowInstant)
         if (offMinutes == AppSettings.OFF_HOURS_POLL_DISABLED) {
-            // Pause off-hours network polling completely until the next working shift begins
-            val sleepMs = untilShiftMs.coerceIn(60_000L, 4L * 3600_000L)
+            // Pause off-hours network polling completely until the next working shift begins.
+            // Never clamp sub-minute remaining time up to 60s, and add +1.5s margin so wakeup lands inside 09:00+.
+            val sleepMs = if (untilShiftMs < 60_000L) {
+                (untilShiftMs + 1_500L).coerceAtLeast(1_500L)
+            } else {
+                untilShiftMs.coerceAtMost(4L * 3600_000L)
+            }
             return sleepMs to true
         }
 
         val offHoursIntervalMs = offMinutes * 60_000L
-        val cappedWaitMs = minOf(offHoursIntervalMs, untilShiftMs).coerceAtLeast(30_000L)
+        val cappedWaitMs = if (untilShiftMs < 30_000L) {
+            (untilShiftMs + 1_500L).coerceAtLeast(1_500L)
+        } else {
+            minOf(offHoursIntervalMs, untilShiftMs)
+        }
         return cappedWaitMs to false
     }
 

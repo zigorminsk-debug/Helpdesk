@@ -339,10 +339,13 @@ fun DesktopWikiWorkspace(
                             if (patInput.isNotBlank()) {
                                 Button(
                                     onClick = { controller.saveConfluencePatToken(patInput) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslMidnight),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = DesktopColors.CslOrange,
+                                        contentColor = Color.White
+                                    ),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Сохранить токен и подключить Wiki", fontSize = 12.sp)
+                                    Text("Сохранить токен и подключить Wiki", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -1798,9 +1801,12 @@ fun DesktopSysadminToolboxDialog(
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🛠 Инструменты системного администратора · Help-CSL",
-        state = rememberDialogState(width = 760.dp, height = 580.dp)
+        state = rememberDialogState(width = 920.dp, height = 650.dp)
     ) {
-        HelpCslDesktopTheme {
+        HelpCslDesktopTheme(
+            darkTheme = state.darkTheme,
+            darkPreset = state.settings.darkThemePreset
+        ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                 TabRow(
                     selectedTabIndex = tabIndex,

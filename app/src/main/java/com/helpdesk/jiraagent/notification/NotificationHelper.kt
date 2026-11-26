@@ -35,6 +35,8 @@ object NotificationHelper {
     const val UPDATE_NOTIFICATION_ID = 1002
     const val SECURITY_WIPE_NOTIFICATION_ID = 1009
     const val EXTRA_OPEN_TICKET_KEY = "extra_open_ticket_key"
+    const val EXTRA_AUTO_CALL_PHONE_E164 = "extra_auto_call_phone_e164"
+    const val EXTRA_AUTO_CALL_CLIENT_NAME = "extra_auto_call_client_name"
     const val EXTRA_TRIGGER_APP_UPDATE = "extra_trigger_app_update"
     const val EXTRA_OPEN_ADMIN_CHAT = "extra_open_admin_chat"
     const val EXTRA_OPEN_WATCHLIST_MONITOR = "extra_open_watchlist_monitor"
@@ -267,16 +269,16 @@ object NotificationHelper {
         )
 
         if (primaryPhone != null) {
-            val dialIntent = Intent(
-                Intent.ACTION_DIAL,
-                Uri.parse("tel:${Uri.encode(primaryPhone.e164)}")
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val callViaAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(EXTRA_OPEN_TICKET_KEY, ticket.key)
+                putExtra(EXTRA_AUTO_CALL_PHONE_E164, primaryPhone.e164)
+                putExtra(EXTRA_AUTO_CALL_CLIENT_NAME, ticket.reporterName)
             }
             val dialPendingIntent = PendingIntent.getActivity(
                 context,
                 requestCode + 1,
-                dialIntent,
+                callViaAppIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             builder.addAction(

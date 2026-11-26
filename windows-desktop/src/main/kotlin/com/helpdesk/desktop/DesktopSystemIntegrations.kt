@@ -346,43 +346,90 @@ object DesktopNativePopupManager {
                     })
                 }
 
-                // Bottom Row: Action Buttons («▶ В работу» + «Открыть»)
+                // Bottom Row: Custom-painted high-contrast pill buttons (immune to WindowsLookAndFeel dark-text override)
+                fun createCrispPopupButton(
+                    label: String,
+                    fillBg: Color,
+                    hoverBg: Color,
+                    borderCol: Color,
+                    onClick: () -> Unit
+                ): JPanel {
+                    var hovered = false
+                    return object : JPanel() {
+                        init {
+                            isOpaque = false
+                            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                            val fmFont = Font("Segoe UI", Font.BOLD, 12)
+                            font = fmFont
+                            val approxW = (label.length * 8 + 28).coerceAtLeast(96)
+                            preferredSize = Dimension(approxW, 30)
+                            addMouseListener(object : MouseAdapter() {
+                                override fun mouseEntered(e: MouseEvent?) {
+                                    hovered = true
+                                    repaint()
+                                }
+                                override fun mouseExited(e: MouseEvent?) {
+                                    hovered = false
+                                    repaint()
+                                }
+                                override fun mouseClicked(e: MouseEvent?) {
+                                    onClick()
+                                }
+                            })
+                        }
+
+                        override fun paintComponent(g: java.awt.Graphics) {
+                            val g2 = g.create() as java.awt.Graphics2D
+                            try {
+                                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_LCD_HRGB)
+                                g2.color = if (hovered) hoverBg else fillBg
+                                g2.fillRoundRect(0, 0, width - 1, height - 1, 10, 10)
+                                g2.color = borderCol
+                                g2.stroke = BasicStroke(1.2f)
+                                g2.drawRoundRect(0, 0, width - 1, height - 1, 10, 10)
+                                g2.font = font
+                                val fm = g2.fontMetrics
+                                val tx = ((width - fm.stringWidth(label)) / 2).coerceAtLeast(6)
+                                val ty = (height - fm.height) / 2 + fm.ascent
+                                g2.color = Color.WHITE
+                                g2.drawString(label, tx, ty)
+                            } finally {
+                                g2.dispose()
+                            }
+                        }
+                    }
+                }
+
                 val actionsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0)).apply {
                     isOpaque = false
                 }
 
                 val ticketKey = alert.ticketKey
                 if (ticketKey != null && !alert.isStormSummary && onTakeInWork != null) {
-                    val takeBtn = JButton("▶ В работу").apply {
-                        isFocusable = false
-                        background = btnDark
-                        foreground = Color.WHITE
-                        font = Font("Segoe UI", Font.BOLD, 12)
-                        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                        border = BorderFactory.createCompoundBorder(
-                            BorderFactory.createLineBorder(borderOrange, 1),
-                            BorderFactory.createEmptyBorder(5, 12, 5, 12)
-                        )
-                        addActionListener {
+                    val takeBtn = createCrispPopupButton(
+                        label = "▶ В работу",
+                        fillBg = Color(22, 163, 74),
+                        hoverBg = Color(34, 197, 94),
+                        borderCol = Color(74, 222, 128),
+                        onClick = {
                             dismissCurrentInternal(notifyCallback = false)
                             onTakeInWork(ticketKey)
                         }
-                    }
+                    )
                     actionsPanel.add(takeBtn)
                 }
 
-                val openBtn = JButton("Открыть").apply {
-                    isFocusable = false
-                    background = borderOrange
-                    foreground = Color.WHITE
-                    font = Font("Segoe UI", Font.BOLD, 12)
-                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    border = BorderFactory.createEmptyBorder(6, 14, 6, 14)
-                    addActionListener {
+                val openBtn = createCrispPopupButton(
+                    label = "Открыть",
+                    fillBg = borderOrange,
+                    hoverBg = Color(255, 122, 51),
+                    borderCol = Color(255, 160, 110),
+                    onClick = {
                         dismissCurrentInternal(notifyCallback = false)
                         onOpen()
                     }
-                }
+                )
                 actionsPanel.add(openBtn)
 
                 root.add(headerPanel, BorderLayout.NORTH)

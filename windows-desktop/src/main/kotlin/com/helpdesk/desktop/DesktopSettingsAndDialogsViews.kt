@@ -4,10 +4,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -15,12 +17,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
@@ -28,6 +33,7 @@ import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
+import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.JiraServerType
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.TtsReadoutMode
@@ -59,7 +65,7 @@ fun DesktopFilterWorkspace(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-            modifier = Modifier.widthIn(max = 920.dp).fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -196,7 +202,7 @@ fun DesktopSettingsWorkspace(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-            modifier = Modifier.widthIn(max = 920.dp).fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -360,19 +366,99 @@ fun DesktopSettingsWorkspace(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-            modifier = Modifier.widthIn(max = 920.dp).fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("🔔 Расписание РБ (09:00–17:30), звук уведомлений и системный трей Windows", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("🔔 Расписание РБ (09:00–17:30), темы оформления и системный трей Windows", fontWeight = FontWeight.Bold, fontSize = 16.sp)
 
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(
                             checked = state.darkTheme,
-                            onCheckedChange = { controller.setDarkTheme(it) }
+                            onCheckedChange = {
+                                controller.setDarkTheme(it)
+                                draft = draft.copy(
+                                    themeMode = if (it) com.helpdesk.jiraagent.model.AppThemeMode.DARK else com.helpdesk.jiraagent.model.AppThemeMode.LIGHT
+                                )
+                            }
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("🌙 Тёмная тема оформления интерфейса", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+
+                // 6 Dark Theme Visual Presets Selector
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "🎨 Стиль тёмной темы (выберите один из 6 вариантов палитры):",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        DarkThemePreset.entries.forEach { preset ->
+                            val isSelected = state.settings.darkThemePreset == preset
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(preset.previewSurfaceHex),
+                                border = BorderStroke(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) Color(preset.previewAccentHex) else Color(0xFF475569)
+                                ),
+                                modifier = Modifier
+                                    .widthIn(min = 195.dp)
+                                    .clickable {
+                                        controller.setDarkThemePreset(preset)
+                                        draft = draft.copy(
+                                            themeMode = com.helpdesk.jiraagent.model.AppThemeMode.DARK,
+                                            darkThemePreset = preset
+                                        )
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(preset.previewBgHex)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(10.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(preset.previewAccentHex))
+                                        )
+                                    }
+                                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                        Text(
+                                            text = if (isSelected) "✓ ${preset.title}" else preset.title,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                            color = Color(0xFFF8FAFC),
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                        Text(
+                                            text = preset.subtitle,
+                                            fontSize = 10.5.sp,
+                                            color = Color(0xFFCBD5E1),
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -666,7 +752,7 @@ fun DesktopSettingsWorkspace(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-            modifier = Modifier.widthIn(max = 920.dp).fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
             Row(
                 modifier = Modifier.padding(18.dp).fillMaxWidth(),
@@ -737,10 +823,12 @@ fun DesktopShiftAnalyticsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 680.dp, max = 860.dp),
         title = { Text("📊 Статистика и аналитика смены Help-CSL", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.width(660.dp).heightIn(max = 540.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
@@ -867,10 +955,12 @@ fun DesktopQrTransferDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 640.dp, max = 780.dp),
         title = { Text("📲 QR-перенос настроек Help-CSL (Windows ↔ Android)", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.width(560.dp).heightIn(max = 540.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -959,10 +1049,12 @@ fun DesktopFullGuideDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 720.dp, max = 920.dp),
         title = { Text("📖 Полное руководство по программе Help-CSL v$version", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.width(680.dp).heightIn(max = 540.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedTextField(

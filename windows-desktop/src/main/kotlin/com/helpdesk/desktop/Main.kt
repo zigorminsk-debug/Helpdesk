@@ -32,12 +32,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberTrayState
 import androidx.compose.ui.window.rememberWindowState
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.TicketStage
 import java.awt.AWTEvent
 import java.awt.Frame
@@ -87,6 +89,7 @@ fun main(args: Array<String>) = application {
     }
 
     val mainWindowState = rememberWindowState(
+        placement = WindowPlacement.Maximized,
         size = initialWindowSize,
         position = WindowPosition(Alignment.Center)
     )
@@ -263,7 +266,10 @@ fun main(args: Array<String>) = application {
                 runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(mouseBackListener) }
             }
         }
-        HelpCslDesktopTheme(darkTheme = state.darkTheme) {
+        HelpCslDesktopTheme(
+            darkTheme = state.darkTheme,
+            darkPreset = state.settings.darkThemePreset
+        ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 DesktopTopNavigationHeader(
                     state = state,
@@ -286,7 +292,12 @@ fun main(args: Array<String>) = application {
                     onOpenAnalytics = { showShiftAnalytics = true },
                     onOpenQr = { showQrDialog = true },
                     onOpenGuide = { showFullGuide = true },
-                    onToggleDarkTheme = { controller.toggleDarkTheme() }
+                    onToggleDarkTheme = { controller.toggleDarkTheme() },
+                    onCycleDarkPreset = {
+                        val presets = DarkThemePreset.entries
+                        val nextIdx = (presets.indexOf(state.settings.darkThemePreset) + 1) % presets.size
+                        controller.setDarkThemePreset(presets[nextIdx])
+                    }
                 )
 
                 // Status / Error / New Update Strip
@@ -409,7 +420,8 @@ private fun DesktopTopNavigationHeader(
     onOpenAnalytics: () -> Unit,
     onOpenQr: () -> Unit,
     onOpenGuide: () -> Unit,
-    onToggleDarkTheme: () -> Unit
+    onToggleDarkTheme: () -> Unit,
+    onCycleDarkPreset: () -> Unit
 ) {
     val rbStatus = remember(state.settings) { BelarusWorkCalendar.evaluate(state.settings) }
     val activeRepairsCount = remember(state.repairItems) {
@@ -616,6 +628,9 @@ private fun DesktopTopNavigationHeader(
         }
 
         HeaderUtilityPill(if (state.darkTheme) "☀ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
+        if (state.darkTheme) {
+            HeaderUtilityPill("🎨 ${state.settings.darkThemePreset.shortTitle}", onCycleDarkPreset)
+        }
         HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
         HeaderUtilityPill("📊 Смена", onOpenAnalytics)
         HeaderUtilityPill("⊞ QR", onOpenQr)
@@ -763,7 +778,7 @@ private fun DesktopTopNavigationHeader(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFF0A132C))
+                            .background(DesktopColors.SubHeaderBg)
                             .padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -815,7 +830,11 @@ private fun DesktopStatusBannerStrip(
             }
         }
         upd != null -> {
-            Surface(color = DesktopColors.CslOrangeContainer, modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                color = DesktopColors.CslOrangeContainer,
+                contentColor = if (LocalDesktopDarkTheme.current) Color.White else DesktopColors.TextPrimary,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -824,17 +843,24 @@ private fun DesktopStatusBannerStrip(
                     Text(
                         "🚀 Доступна новая версия Help-CSL для Windows: v${upd.versionName}",
                         fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = if (LocalDesktopDarkTheme.current) Color.White else DesktopColors.TextPrimary
                     )
                     Button(
                         onClick = { onInstallUpdate(upd) },
                         enabled = state.updateDownloadProgress == null,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DesktopColors.CslOrange,
+                            contentColor = Color.White
+                        ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 3.dp)
                     ) {
                         Text(
                             state.updateDownloadProgress?.let { "Скачивание $it%..." } ?: "Скачать и установить setup.exe",
-                            fontSize = 11.5.sp
+                            fontSize = 11.5.sp,
+                            color = Color.White,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }

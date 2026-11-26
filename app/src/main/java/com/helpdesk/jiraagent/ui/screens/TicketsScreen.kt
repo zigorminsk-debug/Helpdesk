@@ -1357,12 +1357,12 @@ private fun CompactTabSegment(
     val subTextSize = with(density) { 8.8.dp.toSp() }
 
     val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
+        CslOrange
     } else {
         MaterialTheme.colorScheme.surface
     }
     val contentColor = if (selected) {
-        CslOrange
+        Color.White
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -1377,6 +1377,7 @@ private fun CompactTabSegment(
         modifier = modifier,
         shape = RoundedCornerShape(10.dp),
         color = containerColor,
+        contentColor = contentColor,
         border = BorderStroke(width = if (selected) 1.5.dp else 1.dp, color = borderColor)
     ) {
         Column(
@@ -1402,7 +1403,7 @@ private fun CompactTabSegment(
                     fontSize = countTextSize,
                     lineHeight = countTextSize,
                     fontWeight = FontWeight.Bold,
-                    color = if (selected) MaterialTheme.colorScheme.onSurface else contentColor,
+                    color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1
                 )
             }
@@ -1411,7 +1412,7 @@ private fun CompactTabSegment(
                 fontSize = titleTextSize,
                 lineHeight = titleTextSize,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.onSurface else contentColor,
+                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -1423,7 +1424,7 @@ private fun CompactTabSegment(
                     fontSize = subTextSize,
                     lineHeight = subTextSize,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (selected) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    color = if (selected) Color.White.copy(alpha = 0.92f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,

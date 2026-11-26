@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
@@ -100,6 +101,25 @@ fun DesktopRepairWorkspace(
         state.repairItems.filter { item ->
             activeSubTab.matchesItem(item) && RepairEquipmentCodec.matchesSearch(item, searchQuery)
         }
+    }
+
+    if (showEditor && editingItem != null) {
+        RepairItemEditorWorkspace(
+            initial = editingItem!!,
+            clientsDirectory = state.clientsDirectory,
+            isLoadingClients = state.isLoadingClientsDirectory,
+            onRefreshClients = { controller.refreshClientsDirectory(silent = false) },
+            onDismiss = {
+                showEditor = false
+                editingItem = null
+            },
+            onSave = { updated ->
+                showEditor = false
+                editingItem = null
+                controller.saveRepairItem(updated)
+            }
+        )
+        return
     }
 
     Column(
@@ -280,24 +300,6 @@ fun DesktopRepairWorkspace(
         }
     }
 
-    if (showEditor && editingItem != null) {
-        RepairItemEditorDialog(
-            initial = editingItem!!,
-            clientsDirectory = state.clientsDirectory,
-            isLoadingClients = state.isLoadingClientsDirectory,
-            onRefreshClients = { controller.refreshClientsDirectory(silent = false) },
-            onDismiss = {
-                showEditor = false
-                editingItem = null
-            },
-            onSave = { updated ->
-                showEditor = false
-                editingItem = null
-                controller.saveRepairItem(updated)
-            }
-        )
-    }
-
     pendingDeleteItem?.let { target ->
         SoftDeleteRepairConfirmDialog(
             item = target,
@@ -323,6 +325,7 @@ fun DesktopRepairWorkspace(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RepairItemDesktopCard(
     item: RepairEquipmentItem,
@@ -461,53 +464,59 @@ private fun RepairItemDesktopCard(
 
                 if (!item.isDeleted) {
                     DisableSelection {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             item.status.nextLogicalStatus()?.let { next ->
                                 Button(
                                     onClick = { onAdvanceStatus(next) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = DesktopColors.CslOrange,
+                                        contentColor = Color.White
+                                    )
                                 ) {
-                                    Text("→ ${next.shortTitle}", fontSize = 11.5.sp)
+                                    Text("→ ${next.shortTitle}", fontSize = 11.5.sp, color = Color.White, maxLines = 1, softWrap = false)
                                 }
                             }
                             OutlinedButton(
                                 onClick = onPrintSticker,
                                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
                             ) {
-                                Text("🏷 QR 58×40", fontSize = 11.5.sp)
+                                Text("🏷 QR 58×40", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                             }
                             OutlinedButton(
                                 onClick = onNotifyReady,
                                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp)
                             ) {
-                                Text("📣 Готово", fontSize = 11.5.sp)
+                                Text("📣 Готово", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                             }
                             OutlinedButton(
                                 onClick = { onPrintPdf(false) },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("📄 PDF квитанция", fontSize = 11.5.sp)
+                                Text("📄 PDF квитанция", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                             }
                             if (item.linkedTicketKey.isNotBlank()) {
                                 OutlinedButton(
                                     onClick = { onPrintPdf(true) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                 ) {
-                                    Text("📎 PDF в Jira", fontSize = 11.5.sp)
+                                    Text("📎 PDF в Jira", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                                 }
                             }
                             OutlinedButton(
                                 onClick = onEdit,
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("✏ Изменить", fontSize = 11.5.sp)
+                                Text("✏ Изменить", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                             }
                             TextButton(
                                 onClick = onRequestSoftDelete,
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                             ) {
-                                Text("🗑 В удалённые", fontSize = 11.5.sp, color = DesktopColors.DeletedRed)
+                                Text("🗑 В удалённые", fontSize = 11.5.sp, color = DesktopColors.DeletedRed, maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -518,8 +527,9 @@ private fun RepairItemDesktopCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RepairItemEditorDialog(
+private fun RepairItemEditorWorkspace(
     initial: RepairEquipmentItem,
     clientsDirectory: List<ClientDirectoryEntry>,
     isLoadingClients: Boolean,
@@ -544,210 +554,368 @@ private fun RepairItemEditorDialog(
     val matchingClients = remember(clientsDirectory, clientName) {
         ClientDirectoryCodec.filterSuggestions(clientsDirectory, clientName, limit = 30)
     }
+    val canSave = clientName.isNotBlank() && (model.isNotBlank() || defect.isNotBlank())
+    val editorScrollState = rememberScrollState()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "🔧 Карточка техники ${initial.intakeNumber.ifBlank { "новая" }}",
-                fontWeight = FontWeight.Bold
+    val submitSave: () -> Unit = {
+        onSave(
+            initial.copy(
+                clientName = clientName.trim(),
+                clientPhone = clientPhone.trim(),
+                deviceCategory = category.trim(),
+                deviceModel = model.trim(),
+                serialNumber = serial.trim(),
+                accessories = accessories.trim(),
+                externalCondition = externalCond.trim(),
+                reportedDefect = defect.trim(),
+                repairNotes = notes.trim(),
+                linkedTicketKey = linkedTicket.trim(),
+                shelfLocation = shelf.trim(),
+                status = status
             )
-        },
-        text = {
-            Column(
+        )
+    }
+
+    val chipColors = FilterChipDefaults.filterChipColors(
+        containerColor = DesktopColors.SubtleBg,
+        labelColor = DesktopColors.TextPrimary,
+        selectedContainerColor = DesktopColors.CslOrange,
+        selectedLabelColor = Color.White
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DesktopColors.WorkspaceBg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Full-width sticky top header bar
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = DesktopColors.CardBg,
+            border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
                 modifier = Modifier
-                    .width(620.dp)
-                    .heightIn(max = 540.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Client / Organization field with Helpdesk Directory Dropdown
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    OutlinedTextField(
-                        value = clientName,
-                        onValueChange = {
-                            clientName = it
-                            showClientSuggestions = true
-                        },
-                        label = { Text("Клиент / Организация * (из справочника Helpdesk или новый)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        trailingIcon = {
-                            TextButton(onClick = { showClientSuggestions = !showClientSuggestions }) {
-                                Text(if (showClientSuggestions) "▲" else "▼ (${clientsDirectory.size})")
-                            }
-                        }
-                    )
-                    OutlinedButton(onClick = onRefreshClients, enabled = !isLoadingClients) {
-                        Text(if (isLoadingClients) "..." else "🔄 Из Jira", fontSize = 11.5.sp)
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("← К списку ремонта", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                     }
+                    Text(
+                        text = "🔧 Карточка техники ${initial.intakeNumber.ifBlank { "новая" }}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = DesktopColors.TextPrimary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
 
-                if (showClientSuggestions && matchingClients.isNotEmpty()) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                        border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.45f)),
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 155.dp)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Отмена", maxLines = 1, softWrap = false)
+                    }
+                    Button(
+                        onClick = submitSave,
+                        enabled = canSave,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DesktopColors.CslOrange,
+                            contentColor = Color.White,
+                            disabledContainerColor = DesktopColors.BorderStrong.copy(alpha = 0.45f),
+                            disabledContentColor = DesktopColors.TextMuted
+                        )
                     ) {
-                        Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(6.dp)) {
-                            matchingClients.take(15).forEach { entry ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            clientName = entry.name
-                                            if (clientPhone.isBlank() && !entry.phone.isNullOrBlank()) {
-                                                clientPhone = entry.phone
-                                            }
-                                            showClientSuggestions = false
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 5.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(entry.name, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                        Text("💾 Сохранить карточку", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+        }
+
+        // Full-screen scrollable form card
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = DesktopColors.CardBg,
+                border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(end = 10.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(editorScrollState)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Row 1: Client / Organization + Phone + Linked Ticket
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = clientName,
+                            onValueChange = {
+                                clientName = it
+                                showClientSuggestions = true
+                            },
+                            label = { Text("Клиент / Организация *", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("Выберите из справочника Helpdesk или введите нового клиента", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.6f),
+                            trailingIcon = {
+                                TextButton(onClick = { showClientSuggestions = !showClientSuggestions }) {
                                     Text(
-                                        listOfNotNull(entry.phone, entry.source).joinToString(" · "),
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        if (showClientSuggestions) "▲ Скрыть" else "▼ Справочник (${clientsDirectory.size})",
+                                        fontSize = 11.5.sp,
+                                        color = DesktopColors.CslOrange,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
+                                }
+                            }
+                        )
+                        OutlinedButton(
+                            onClick = onRefreshClients,
+                            enabled = !isLoadingClients,
+                            modifier = Modifier.height(50.dp)
+                        ) {
+                            Text(
+                                if (isLoadingClients) "Загрузка…" else "🔄 Обновить из Jira",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        OutlinedTextField(
+                            value = clientPhone,
+                            onValueChange = { clientPhone = it },
+                            label = { Text("Телефон клиента", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("+375 (29) ...", maxLines = 1) },
+                            singleLine = true,
+                            modifier = Modifier.weight(0.95f)
+                        )
+                        OutlinedTextField(
+                            value = linkedTicket,
+                            onValueChange = { linkedTicket = it.uppercase() },
+                            label = { Text("Связанная заявка Jira", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("напр. CSL-37368", maxLines = 1) },
+                            singleLine = true,
+                            modifier = Modifier.weight(0.85f)
+                        )
+                    }
+
+                    if (showClientSuggestions && matchingClients.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DesktopColors.SubtleBg,
+                            border = BorderStroke(1.dp, DesktopColors.CslOrange.copy(alpha = 0.55f)),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 190.dp)
+                        ) {
+                            Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(8.dp)) {
+                                matchingClients.take(20).forEach { entry ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                clientName = entry.name
+                                                if (clientPhone.isBlank() && !entry.phone.isNullOrBlank()) {
+                                                    clientPhone = entry.phone
+                                                }
+                                                showClientSuggestions = false
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(entry.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = DesktopColors.TextPrimary)
+                                        Text(
+                                            listOfNotNull(entry.phone, entry.source).joinToString(" · "),
+                                            fontSize = 11.5.sp,
+                                            color = DesktopColors.TextSecondary
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = clientPhone,
-                        onValueChange = { clientPhone = it },
-                        label = { Text("Телефон клиента") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = linkedTicket,
-                        onValueChange = { linkedTicket = it.uppercase() },
-                        label = { Text("Связанная заявка (напр. CSL-37368)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                    // Row 2: Device Category chips — FlowRow + single-line labels (zero vertical letter wrapping!)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Тип оборудования:",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                            color = DesktopColors.TextSecondary
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RepairEquipmentCodec.DEFAULT_CATEGORIES.forEach { cat ->
+                                val selected = category == cat
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { category = cat },
+                                    colors = chipColors,
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = selected,
+                                        borderColor = DesktopColors.BorderStrong,
+                                        selectedBorderColor = DesktopColors.CslOrange
+                                    ),
+                                    label = {
+                                        Text(
+                                            text = cat,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
 
-                // Category chips
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    RepairEquipmentCodec.DEFAULT_CATEGORIES.take(5).forEach { cat ->
-                        FilterChip(
-                            selected = category == cat,
-                            onClick = { category = cat },
-                            label = { Text(cat, fontSize = 11.sp) }
+                    // Row 3: Device Model + Serial + Shelf + Accessories
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = model,
+                            onValueChange = { model = it },
+                            label = { Text("Модель устройства *", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("напр. HP ProBook 450 G8 / Kyocera M2040dn", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.3f)
+                        )
+                        OutlinedTextField(
+                            value = serial,
+                            onValueChange = { serial = it },
+                            label = { Text("Серийный / инв. номер", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("S/N или ввод USB-сканером", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = shelf,
+                            onValueChange = { shelf = it },
+                            label = { Text("Полка / место", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("напр. Стеллаж А-2", maxLines = 1) },
+                            singleLine = true,
+                            modifier = Modifier.weight(0.75f)
                         )
                     }
-                }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = model,
-                        onValueChange = { model = it },
-                        label = { Text("Модель устройства * (напр. HP ProBook 450 G8)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1.2f)
-                    )
-                    OutlinedTextField(
-                        value = serial,
-                        onValueChange = { serial = it },
-                        label = { Text("Серийный / инв. номер (USB-сканер)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = accessories,
-                        onValueChange = { accessories = it },
-                        label = { Text("Комплектность (БП, кабель, сумка...)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1.3f)
-                    )
-                    OutlinedTextField(
-                        value = shelf,
-                        onValueChange = { shelf = it },
-                        label = { Text("Полка / Место в мастерской") },
-                        singleLine = true,
-                        modifier = Modifier.weight(0.9f)
-                    )
-                }
-
-                OutlinedTextField(
-                    value = externalCond,
-                    onValueChange = { externalCond = it },
-                    label = { Text("Внешнее состояние (потёртости, сколы, пломбы)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = defect,
-                    onValueChange = { defect = it },
-                    label = { Text("Заявленная неисправность *") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("Результаты диагностики / выполненные работы / запчасти") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Status selector
-                Text("Текущий статус ремонта:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    RepairStatus.entries.forEach { st ->
-                        FilterChip(
-                            selected = status == st,
-                            onClick = { status = st },
-                            label = { Text(st.shortTitle, fontSize = 11.sp) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = accessories,
+                            onValueChange = { accessories = it },
+                            label = { Text("Комплектность", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("Блок питания, кабель, сумка, картридж…", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
                         )
+                        OutlinedTextField(
+                            value = externalCond,
+                            onValueChange = { externalCond = it },
+                            label = { Text("Внешнее состояние", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("Потёртости корпуса, царапины, заводские пломбы…", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    // Row 4: Side-by-side Reported Defect & Diagnostics / Work Performed
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = defect,
+                            onValueChange = { defect = it },
+                            label = { Text("Заявленная неисправность *", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("Опишите симптомы со слов клиента…") },
+                            minLines = 3,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            label = { Text("Результаты диагностики / выполненные работы и запчасти", maxLines = 1, softWrap = false) },
+                            placeholder = { Text("Что выявлено при диагностике, какие работы и ЗЧ использованы…") },
+                            minLines = 3,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    // Row 5: Status selector in FlowRow with high-contrast chips
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Текущий статус ремонта:",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                            color = DesktopColors.TextSecondary
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RepairStatus.entries.forEach { st ->
+                                val selected = status == st
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { status = st },
+                                    colors = chipColors,
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = selected,
+                                        borderColor = DesktopColors.BorderStrong,
+                                        selectedBorderColor = DesktopColors.CslOrange
+                                    ),
+                                    label = {
+                                        Text(
+                                            text = st.title,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onSave(
-                        initial.copy(
-                            clientName = clientName.trim(),
-                            clientPhone = clientPhone.trim(),
-                            deviceCategory = category.trim(),
-                            deviceModel = model.trim(),
-                            serialNumber = serial.trim(),
-                            accessories = accessories.trim(),
-                            externalCondition = externalCond.trim(),
-                            reportedDefect = defect.trim(),
-                            repairNotes = notes.trim(),
-                            linkedTicketKey = linkedTicket.trim(),
-                            shelfLocation = shelf.trim(),
-                            status = status
-                        )
-                    )
-                },
-                enabled = clientName.isNotBlank() && (model.isNotBlank() || defect.isNotBlank()),
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
-            ) {
-                Text("💾 Сохранить карточку")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
-    )
+            VerticalScrollbar(
+                adapter = rememberScrollbarAdapter(editorScrollState),
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
+            )
+        }
+    }
 }
 
 @Composable
@@ -1192,6 +1360,7 @@ fun DesktopChatWorkspace(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RepairReadyNotifyDialog(
     item: RepairEquipmentItem,
@@ -1204,9 +1373,11 @@ private fun RepairReadyNotifyDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 560.dp, max = 720.dp),
         title = { Text("📣 Уведомить клиента о готовности · ${item.intakeNumber}", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.width(520.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = message,
                     onValueChange = { message = it },
@@ -1214,15 +1385,16 @@ private fun RepairReadyNotifyDialog(
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Текст уведомления для клиента") }
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(onClick = {
                         WindowsExternalLaunchers.copyToClipboard(message)
                         onStatusMessage("Текст уведомления скопирован в буфер обмена")
                     }) {
-                        Text("📋 Скопировать текст", fontSize = 11.5.sp)
+                        Text("📋 Скопировать текст", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
                     }
                     if (phone.isNotBlank()) {
                         Button(
@@ -1230,26 +1402,35 @@ private fun RepairReadyNotifyDialog(
                                 WindowsExternalLaunchers.copyToClipboard(message)
                                 onStatusMessage(WindowsExternalLaunchers.openViber(phone))
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7360F2))
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF7360F2),
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("Viber (текст в буфере)", fontSize = 11.5.sp)
+                            Text("Viber (текст в буфере)", fontSize = 11.5.sp, color = Color.White, maxLines = 1, softWrap = false)
                         }
                         Button(
                             onClick = {
                                 WindowsExternalLaunchers.copyToClipboard(message)
                                 onStatusMessage(WindowsExternalLaunchers.openWhatsApp(phone))
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF16A34A),
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("WhatsApp", fontSize = 11.5.sp)
+                            Text("WhatsApp", fontSize = 11.5.sp, color = Color.White, maxLines = 1, softWrap = false)
                         }
                     }
                     if (item.linkedTicketKey.isNotBlank()) {
                         Button(
                             onClick = onSendToJiraTicket,
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DesktopColors.CslOrange,
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("💬 Отправить в ${item.linkedTicketKey}", fontSize = 11.5.sp)
+                            Text("💬 Отправить в ${item.linkedTicketKey}", fontSize = 11.5.sp, color = Color.White, maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -1261,9 +1442,12 @@ private fun RepairReadyNotifyDialog(
                     WindowsExternalLaunchers.copyToClipboard(message)
                     onDismiss()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = DesktopColors.CslOrange,
+                    contentColor = Color.White
+                )
             ) {
-                Text("Скопировать и закрыть")
+                Text("Скопировать и закрыть", color = Color.White, maxLines = 1, softWrap = false)
             }
         },
         dismissButton = {

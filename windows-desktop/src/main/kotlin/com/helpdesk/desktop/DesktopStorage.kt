@@ -15,10 +15,12 @@ import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.AppThemeMode
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.model.ClientTechPassportCodec
+import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PostponedTicket
@@ -135,6 +137,8 @@ class DesktopStorage {
                     zabbixPassword = (s.zabbixPassword as String?).orEmpty(),
                     zabbixMinAlertSeverity = migratedMinSev,
                     offHoursPollIntervalMinutes = s.normalizedOffHoursPollMinutes,
+                    themeMode = (s.themeMode as AppThemeMode?) ?: AppThemeMode.SYSTEM,
+                    darkThemePreset = (s.darkThemePreset as DarkThemePreset?) ?: DarkThemePreset.CSL_NAVY,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )
@@ -191,6 +195,7 @@ class DesktopStorage {
                 deferredAlertKeys = raw.deferredAlertKeys ?: emptySet(),
                 zabbixBaselineInitialized = raw.zabbixBaselineInitialized,
                 zabbixDisasterOnlyMigrated = true,
+                systemRoomsAutoCleanedV70 = raw.systemRoomsAutoCleanedV70,
                 seenZabbixAlertKeys = raw.seenZabbixAlertKeys ?: emptySet(),
                 deferredZabbixAlertKeys = if (needsZabbixDisasterMigration) {
                     emptySet()

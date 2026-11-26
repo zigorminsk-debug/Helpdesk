@@ -7,6 +7,8 @@ import com.helpdesk.jiraagent.domain.QuickReplyTemplates
 import com.helpdesk.jiraagent.domain.TcpPortStatus
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.service.ShiftWakeupScheduler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -251,6 +253,73 @@ class BelarusWorkCalendarTest {
         )
         assertTrue(isPaused)
         assertEquals(120L * 60_000L, pausedDelay)
+
+        // 6. Sub-minute pre-shift (08:59:50 -> 10s before 09:00) must NOT overshoot to 09:00:50!
+        val tenSecBeforeShift = LocalDateTime.of(2026, 11, 24, 8, 59, 50)
+            .atZone(BelarusWorkCalendar.MINSK_ZONE)
+            .toInstant()
+        val (subMinPausedDelay, _) = BelarusWorkCalendar.computeEffectivePollSchedule(
+            settings = pausedSettings,
+            nowInstant = tenSecBeforeShift
+        )
+        assertEquals(11_500L, subMinPausedDelay)
+    }
+
+    @Test
+    fun shiftWakeupSchedulerTargetsExact090002MinskTimeAcrossOvernightAndWeekends() {
+        val settings = AppSettings(
+            workScheduleEnabled = true,
+            workStartTime = "09:00",
+            workEndTime = "17:30",
+            pollIntervalSeconds = 30,
+            offHoursPollIntervalMinutes = AppSettings.OFF_HOURS_POLL_DISABLED
+        )
+
+        fun minskEpoch(y: Int, m: Int, d: Int, h: Int, min: Int, sec: Int = 0): Long =
+            LocalDateTime.of(y, m, d, h, min, sec)
+                .atZone(BelarusWorkCalendar.MINSK_ZONE)
+                .toInstant()
+                .toEpochMilli()
+
+        // Overnight Tuesday 24.11.2026 at 02:30 -> wakes at Tuesday 24.11.2026 09:00:02
+        val overnightNow = minskEpoch(2026, 11, 24, 2, 30, 0)
+        val expectedTueStart = minskEpoch(2026, 11, 24, 9, 0, 2)
+        val (triggerTue, isMorningTue) = ShiftWakeupScheduler.computeNextWakeupEpochMillis(settings, overnightNow)
+        assertEquals(expectedTueStart, triggerTue)
+        assertTrue(isMorningTue)
+
+        // Friday evening 20.11.2026 at 18:15 -> skips weekend and wakes Monday 23.11.2026 09:00:02
+        val fridayEve = minskEpoch(2026, 11, 20, 18, 15, 0)
+        val expectedMonStart = minskEpoch(2026, 11, 23, 9, 0, 2)
+        val (triggerMon, isMorningMon) = ShiftWakeupScheduler.computeNextWakeupEpochMillis(settings, fridayEve)
+        assertEquals(expectedMonStart, triggerMon)
+        assertTrue(isMorningMon)
+
+        // Pre-shift 08:40 with 30-min off-hours interval -> snaps directly to 09:00:02 instead of 09:10!
+        val off30Settings = settings.copy(offHoursPollIntervalMinutes = 30)
+        val preShift0840 = minskEpoch(2026, 11, 24, 8, 40, 0)
+        val (triggerSnap, isMorningSnap) = ShiftWakeupScheduler.computeNextWakeupEpochMillis(off30Settings, preShift0840)
+        assertEquals(expectedTueStart, triggerSnap)
+        assertTrue(isMorningSnap)
+
+        // Active working hours (10:15) -> schedules lightweight Doze heartbeat pulse (not morning shift start)
+        val inShift1015 = minskEpoch(2026, 11, 24, 10, 15, 0)
+        val (triggerHeartbeat, isMorningHeartbeat) = ShiftWakeupScheduler.computeNextWakeupEpochMillis(settings, inShift1015)
+        assertEquals(inShift1015 + 90_000L, triggerHeartbeat)
+        assertFalse(isMorningHeartbeat)
+    }
+
+    @Test
+    fun darkThemePresetsProvideSixDistinctPalettesAndSafeFallback() {
+        assertEquals(6, DarkThemePreset.entries.size)
+        assertEquals(6, DarkThemePreset.entries.map { it.previewBgHex }.toSet().size)
+        DarkThemePreset.entries.forEach { preset ->
+            assertTrue(preset.title.isNotBlank())
+            assertTrue(preset.shortTitle.isNotBlank())
+            assertEquals(preset, DarkThemePreset.fromRaw(preset.name.lowercase()))
+        }
+        assertEquals(DarkThemePreset.CSL_NAVY, DarkThemePreset.fromRaw(null))
+        assertEquals(DarkThemePreset.CSL_NAVY, DarkThemePreset.fromRaw("UNKNOWN_THEME"))
     }
 }
 

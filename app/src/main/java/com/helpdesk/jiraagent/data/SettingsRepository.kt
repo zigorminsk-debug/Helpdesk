@@ -496,6 +496,7 @@ class SettingsRepository private constructor(context: Context) {
             .putString(KEY_CUSTOM_COUNTRY_CODE, newSettings.customCountryCode.trim())
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
             .putString(KEY_THEME_MODE, newSettings.themeMode.name)
+            .putString(KEY_DARK_THEME_PRESET, newSettings.darkThemePreset.name)
             .apply()
 
         if (serverChanged) {
@@ -1450,7 +1451,8 @@ class SettingsRepository private constructor(context: Context) {
                 KEY_CUSTOM_PHONE_FIELDS,
                 "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
             ).orEmpty(),
-            themeMode = enumOrDefault(prefs.getString(KEY_THEME_MODE, null), AppThemeMode.SYSTEM)
+            themeMode = enumOrDefault(prefs.getString(KEY_THEME_MODE, null), AppThemeMode.SYSTEM),
+            darkThemePreset = enumOrDefault(prefs.getString(KEY_DARK_THEME_PRESET, null), DarkThemePreset.CSL_NAVY)
         )
     }
 
@@ -1649,6 +1651,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_CACHED_ZABBIX_SNAPSHOT_JSON = "cached_zabbix_snapshot_json"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
         private const val KEY_SYSTEM_ROOMS_AUTO_CLEANED_V70 = "system_rooms_auto_cleaned_v70"
+        private const val KEY_DARK_THEME_PRESET = "dark_theme_preset"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
         private const val KEY_WATCHLIST_LABELS_JSON = "watchlist_labels_json"
         private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.data.HabrArticleBlock
 import com.helpdesk.jiraagent.data.HabrArticleDetail
 import com.helpdesk.jiraagent.data.HabrFeedCategory
@@ -412,11 +413,13 @@ fun DesktopTicketsWorkspace(
 
                 Spacer(Modifier.height(8.dp))
 
-                // 3. Modern Segmented Queue Control (uniform height across all 4 tabs)
-                val closedTabAccent = if (LocalDesktopDarkTheme.current) DesktopColors.StatusGreen else Color(0xFF0F172A)
+                // 3. Modern Segmented Queue Control (uniform height across all 4 tabs, high contrast in dark & light themes)
+                val closedTabAccent = if (LocalDesktopDarkTheme.current) DesktopColors.StatusGreen else Color(0xFF1E293B)
+                val serviceTabAccent = if (LocalDesktopDarkTheme.current) Color(0xFF6366F1) else Color(0xFF475569)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = DesktopColors.BorderSubtle.copy(alpha = 0.75f),
+                    color = DesktopColors.SubtleBg,
+                    border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -430,12 +433,12 @@ fun DesktopTicketsWorkspace(
                             Triple(TicketQueueTab.NEW, newCount, DesktopColors.CslOrange),
                             Triple(TicketQueueTab.IN_PROGRESS, inWorkCount, DesktopColors.StatusBlue),
                             Triple(TicketQueueTab.CLOSED, closedCount, closedTabAccent),
-                            Triple(TicketQueueTab.SERVICE, serviceCount, Color(0xFF475569))
+                            Triple(TicketQueueTab.SERVICE, serviceCount, serviceTabAccent)
                         ).forEach { (tab, count, activeColor) ->
                             val selected = !showHabrPanel && queueTab == tab
                             Surface(
                                 color = if (selected) activeColor else Color.Transparent,
-                                contentColor = if (selected) Color.White else DesktopColors.TextSecondary,
+                                contentColor = if (selected) Color.White else DesktopColors.TextPrimary,
                                 shape = RoundedCornerShape(8.dp),
                                 shadowElevation = if (selected) 1.dp else 0.dp,
                                 modifier = Modifier
@@ -457,6 +460,7 @@ fun DesktopTicketsWorkspace(
                                         text = tab.title,
                                         fontSize = 11.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (selected) Color.White else DesktopColors.TextPrimary,
                                         maxLines = 1,
                                         softWrap = false
                                     )
@@ -848,10 +852,10 @@ private fun DesktopWelcomeOverviewPane(
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isCompactHeight = maxHeight < 760.dp
         val isNarrowCard = maxWidth < 620.dp
-        val outerPad = if (isCompactHeight) 14.dp else 26.dp
-        val cardPad = if (isCompactHeight) 18.dp else 24.dp
+        val outerPad = if (isCompactHeight) 12.dp else 18.dp
+        val cardPad = if (isCompactHeight) 16.dp else 22.dp
         val itemGap = if (isCompactHeight) 12.dp else 16.dp
-        val shownPreview = if (isCompactHeight) previewTickets.take(3) else previewTickets
+        val shownPreview = if (isCompactHeight) previewTickets.take(5) else previewTickets.take(10)
 
         Box(modifier = Modifier.fillMaxSize()) {
             Box(
@@ -859,19 +863,24 @@ private fun DesktopWelcomeOverviewPane(
                     .fillMaxSize()
                     .verticalScroll(welcomeScroll)
                     .padding(start = outerPad, end = outerPad + 8.dp, top = outerPad, bottom = outerPad),
-                contentAlignment = if (isCompactHeight) Alignment.TopCenter else Alignment.Center
+                contentAlignment = Alignment.TopStart
             ) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = DesktopColors.CardBg,
                     border = BorderStroke(1.dp, DesktopColors.BorderSubtle),
                     shadowElevation = 2.dp,
-                    modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = (maxHeight - outerPad * 2).coerceAtLeast(320.dp))
                 ) {
                     Column(
-                        modifier = Modifier.padding(cardPad),
-                        verticalArrangement = Arrangement.spacedBy(itemGap)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(cardPad),
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(itemGap)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1097,7 +1106,10 @@ private fun DesktopWelcomeOverviewPane(
                             }
                         }
 
+                        }
+
                         // Symmetrical 4-Column Quick Action Toolbar (zero scrollbar, organic full-width fit!)
+                        Spacer(Modifier.height(itemGap))
                         if (isNarrowCard) {
                             FlowRow(
                                 modifier = Modifier.fillMaxWidth(),
@@ -3393,9 +3405,11 @@ private fun AssignColleagueDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 480.dp, max = 620.dp),
         title = { Text("👤 Передать заявку $ticketKey коллеге", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.width(420.dp).heightIn(max = 380.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = filter,
                     onValueChange = { filter = it },
@@ -3432,6 +3446,7 @@ private fun AssignColleagueDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorklogEntryDialog(
     ticketKey: String,
@@ -3444,15 +3459,20 @@ private fun WorklogEntryDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 480.dp, max = 600.dp),
         title = { Text("⏱ Списать время в Worklog ($ticketKey)", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf(15, 30, 60, 120).forEach { m ->
                         FilterChip(
                             selected = minutesText == m.toString(),
                             onClick = { minutesText = m.toString() },
-                            label = { Text("$m мин") }
+                            label = { Text("$m мин", maxLines = 1, softWrap = false) }
                         )
                     }
                 }
@@ -3495,9 +3515,11 @@ private fun CompletionActPdfDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.widthIn(min = 540.dp, max = 680.dp),
         title = { Text("📄 Сформировать Акт выполненных работ A4 PDF", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.width(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = workSummary,
                     onValueChange = { workSummary = it },

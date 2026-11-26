@@ -86,6 +86,64 @@ enum class AppThemeMode(val title: String) {
     DARK("🌙 Тёмная")
 }
 
+enum class DarkThemePreset(
+    val title: String,
+    val shortTitle: String,
+    val subtitle: String,
+    val previewBgHex: Long,
+    val previewCardHex: Long,
+    val previewAccentHex: Long
+) {
+    CSL_NAVY(
+        title = "🌑 Ночной CSL",
+        shortTitle = "Ночной CSL",
+        subtitle = "Фирменный глубокий тёмно-синий с оранжевым акцентом",
+        previewBgHex = 0xFF090F1EL,
+        previewCardHex = 0xFF131D35L,
+        previewAccentHex = 0xFFFF7A33L
+    ),
+    GRAPHITE_OLED(
+        title = "🖤 Графит OLED",
+        shortTitle = "Графит OLED",
+        subtitle = "Чистый угольно-графитовый без синего оттенка",
+        previewBgHex = 0xFF0A0B0EL,
+        previewCardHex = 0xFF151820L,
+        previewAccentHex = 0xFFFF782EL
+    ),
+    NORD_SLATE(
+        title = "❄️ Сланец Nord",
+        shortTitle = "Сланец Nord",
+        subtitle = "Мягкий скандинавский серо-стальной для долгой смены",
+        previewBgHex = 0xFF181C24L,
+        previewCardHex = 0xFF222834L,
+        previewAccentHex = 0xFF38BDF8L
+    ),
+    EMERALD_NOC(
+        title = "🌲 Изумруд NOC",
+        shortTitle = "Изумруд NOC",
+        subtitle = "Спокойный тёмно-хвойный оттенок NOC-мониторинга",
+        previewBgHex = 0xFF081310L,
+        previewCardHex = 0xFF11221DL,
+        previewAccentHex = 0xFF10B981L
+    ),
+    CYBER_PLUM(
+        title = "🟣 Космос Индиго",
+        shortTitle = "Космос",
+        subtitle = "Глубокий космический индиго-дракула",
+        previewBgHex = 0xFF110E1CL,
+        previewCardHex = 0xFF1B162CL,
+        previewAccentHex = 0xFFA78BFAL
+    ),
+    WARM_ESPRESSO(
+        title = "☕ Тёплый Мокко",
+        shortTitle = "Тёплый Мокко",
+        subtitle = "Тёплый антрацит без холодного синего свечения",
+        previewBgHex = 0xFF14110FL,
+        previewCardHex = 0xFF201B18L,
+        previewAccentHex = 0xFFF59E0BL
+    )
+}
+
 data class AppSettings(
     val serverUrl: String = "",
     val confluenceUrl: String = DEFAULT_CONFLUENCE_URL,
@@ -126,7 +184,8 @@ data class AppSettings(
     val phoneRegion: PhoneRegion = PhoneRegion.AUTO_BY_RU,
     val customCountryCode: String = "+375",
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile",
-    val themeMode: AppThemeMode = AppThemeMode.SYSTEM
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    val darkThemePreset: DarkThemePreset = DarkThemePreset.CSL_NAVY
 ) {
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&

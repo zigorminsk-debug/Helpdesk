@@ -9,6 +9,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -76,7 +77,23 @@ class JiraMonitorService : Service() {
         super.onCreate()
         repository = SettingsRepository.getInstance(applicationContext)
         PostponeScheduler.scheduleNextAlarm(applicationContext)
+        ShiftWakeupScheduler.scheduleNextWakeup(applicationContext)
         registerOfflineSyncNetworkCallback()
+    }
+
+    private suspend fun <T> withShortPollWakeLock(block: suspend () -> T): T {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val wakeLock = runCatching {
+            pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HelpCSL:PollCycleLock")?.apply {
+                setReferenceCounted(false)
+                acquire(45_000L)
+            }
+        }.getOrNull()
+        return try {
+            block()
+        } finally {
+            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+        }
     }
 
     private fun hasActiveInternetConnection(): Boolean {
@@ -147,16 +164,34 @@ class JiraMonitorService : Service() {
             }
             ACTION_POLL_NOW -> {
                 ensureForegroundStarted("Обновление заявок и Zabbix…")
+                ShiftWakeupScheduler.scheduleNextWakeup(applicationContext)
                 serviceScope.launch {
-                    PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
-                    if (repository.appSettings.value.isConfigured) {
-                        pollOnce(manual = true)
-                    }
-                    if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
-                        pollZabbixSafely(manual = true)
+                    withShortPollWakeLock {
+                        PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+                        if (repository.appSettings.value.isConfigured) {
+                            pollOnce(manual = true)
+                        }
+                        if (repository.appSettings.value.isZabbixConfigured && repository.appSettings.value.zabbixEnabled) {
+                            pollZabbixSafely(manual = true)
+                        }
                     }
                 }
                 ensureBackgroundLoopsRunning()
+                return START_STICKY
+            }
+            ACTION_WAKEUP_POLL -> {
+                if (!shouldKeepServiceAlive(repository)) {
+                    ShiftWakeupScheduler.scheduleNextWakeup(applicationContext)
+                    stopPollingAndService()
+                    return START_NOT_STICKY
+                }
+                ensureForegroundStarted("Утренний/фоновый опрос смены РБ…")
+                ShiftWakeupScheduler.scheduleNextWakeup(applicationContext)
+                if (pollingJob?.isActive != true) {
+                    ensureBackgroundLoopsRunning()
+                } else {
+                    pollWakeupChannel.trySend(Unit)
+                }
                 return START_STICKY
             }
         }
@@ -245,26 +280,28 @@ class JiraMonitorService : Service() {
                     )
                 } else {
                     skippedPollWhileOffline = false
-                    // Always process due postponed tickets (with exponential backoff if errored)
-                    PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
+                    withShortPollWakeLock {
+                        // Always process due postponed tickets (with exponential backoff if errored)
+                        PostponeScheduler.processDuePostponedTickets(applicationContext, apiClient)
 
-                    val jiraPollActive = settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused
-                    val zabbixPollActive = settings.isZabbixConfigured && settings.zabbixEnabled && settings.pollingEnabled && !isOffHoursPaused
+                        val jiraPollActive = settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused
+                        val zabbixPollActive = settings.isZabbixConfigured && settings.zabbixEnabled && settings.pollingEnabled && !isOffHoursPaused
 
-                    if (jiraPollActive) {
-                        pollOnce()
+                        if (jiraPollActive) {
+                            pollOnce()
 
-                        // Throttle background Admin Chat check to >= 2 min in working hours (and along with off-hours sync)
-                        val nowMs = System.currentTimeMillis()
-                        val minChatGapMs = if (isWorkingHours) 120_000L else 300_000L
-                        if (nowMs - lastAdminChatPollEpochMillis >= minChatGapMs) {
-                            lastAdminChatPollEpochMillis = nowMs
-                            pollAdminChatSafely()
+                            // Throttle background Admin Chat check to >= 2 min in working hours (and along with off-hours sync)
+                            val nowMs = System.currentTimeMillis()
+                            val minChatGapMs = if (isWorkingHours) 120_000L else 300_000L
+                            if (nowMs - lastAdminChatPollEpochMillis >= minChatGapMs) {
+                                lastAdminChatPollEpochMillis = nowMs
+                                pollAdminChatSafely()
+                            }
                         }
-                    }
 
-                    if (zabbixPollActive) {
-                        pollZabbixSafely()
+                        if (zabbixPollActive) {
+                            pollZabbixSafely()
+                        }
                     }
 
                     if (isOffHoursPaused) {
@@ -304,7 +341,11 @@ class JiraMonitorService : Service() {
                     baseWaitMs
                 }
 
-                // Sleep cleanly; wakes immediately if user edits settings or network comes back after offline skip
+                // Arm hardware wall-clock RTC_WAKEUP alarm (09:00:02 RB shift start / working-hours Doze pulse)
+                // because Kotlin `delay`/`withTimeoutOrNull` uses `uptimeMillis` which freezes during Android Doze!
+                ShiftWakeupScheduler.scheduleNextWakeup(applicationContext)
+
+                // Sleep cleanly; wakes immediately on 09:00 RTC_WAKEUP alarm, user settings edit, or network recovery
                 withTimeoutOrNull(waitMs) {
                     pollWakeupChannel.receive()
                 }
@@ -614,8 +655,11 @@ class JiraMonitorService : Service() {
     companion object {
         const val ACTION_START_OR_RESTART = "com.helpdesk.jiraagent.action.START_OR_RESTART"
         const val ACTION_POLL_NOW = "com.helpdesk.jiraagent.action.POLL_NOW"
+        const val ACTION_WAKEUP_POLL = "com.helpdesk.jiraagent.action.WAKEUP_POLL"
         const val ACTION_PROCESS_POSTPONED = "com.helpdesk.jiraagent.action.PROCESS_POSTPONED"
         const val ACTION_STOP = "com.helpdesk.jiraagent.action.STOP"
+
+        fun isMonitoringWanted(repo: SettingsRepository): Boolean = shouldKeepServiceAlive(repo)
 
         private fun shouldKeepServiceAlive(repo: SettingsRepository): Boolean {
             val settings = repo.appSettings.value
@@ -631,6 +675,7 @@ class JiraMonitorService : Service() {
         fun syncServiceState(context: Context) {
             val repo = SettingsRepository.getInstance(context)
             PostponeScheduler.scheduleNextAlarm(context)
+            ShiftWakeupScheduler.scheduleNextWakeup(context)
 
             if (shouldKeepServiceAlive(repo)) {
                 val intent = Intent(context, JiraMonitorService::class.java).apply {
@@ -646,6 +691,17 @@ class JiraMonitorService : Service() {
                 runCatching {
                     context.startService(intent)
                 }
+            }
+        }
+
+        fun triggerWakeupPoll(context: Context) {
+            val repo = SettingsRepository.getInstance(context)
+            if (!shouldKeepServiceAlive(repo)) return
+            val intent = Intent(context, JiraMonitorService::class.java).apply {
+                action = ACTION_WAKEUP_POLL
+            }
+            runCatching {
+                ContextCompat.startForegroundService(context, intent)
             }
         }
 

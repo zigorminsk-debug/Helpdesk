@@ -919,7 +919,14 @@ fun TicketDetailScreen(
                                     text = ticket.description,
                                     region = appSettings.phoneRegion,
                                     customCountryCode = appSettings.customCountryCode,
-                                    onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) }
+                                    onPhoneClick = { e164 ->
+                                        DialerLauncher.openDialer(
+                                            context = context,
+                                            phoneInput = e164,
+                                            ticketKey = ticket.key,
+                                            clientName = ticket.reporterName
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -1124,7 +1131,14 @@ fun TicketDetailScreen(
                                             text = comment.body,
                                             region = appSettings.phoneRegion,
                                             customCountryCode = appSettings.customCountryCode,
-                                            onPhoneClick = { e164 -> DialerLauncher.openDialer(context, e164) },
+                                            onPhoneClick = { e164 ->
+                                                DialerLauncher.openDialer(
+                                                    context = context,
+                                                    phoneInput = e164,
+                                                    ticketKey = ticket.key,
+                                                    clientName = ticket.reporterName
+                                                )
+                                            },
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }

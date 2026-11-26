@@ -164,7 +164,10 @@ class MainActivity : FragmentActivity() {
                 AppThemeMode.LIGHT -> false
                 AppThemeMode.SYSTEM -> systemDark
             }
-            JiraHelpdeskTheme(darkTheme = useDark) {
+            JiraHelpdeskTheme(
+                darkTheme = useDark,
+                darkPreset = currentAppSettings.darkThemePreset
+            ) {
                 HelpdeskMainRoot(viewModel = viewModel)
             }
         }
@@ -189,9 +192,21 @@ class MainActivity : FragmentActivity() {
 
     private fun handleNotificationIntent(intent: Intent?) {
         val ticketKey = intent?.getStringExtra(NotificationHelper.EXTRA_OPEN_TICKET_KEY)
+        val autoCallPhone = intent?.getStringExtra(NotificationHelper.EXTRA_AUTO_CALL_PHONE_E164)
+        val autoCallClient = intent?.getStringExtra(NotificationHelper.EXTRA_AUTO_CALL_CLIENT_NAME)
         if (!ticketKey.isNullOrBlank()) {
             viewModel.openTicket(ticketKey)
             intent.removeExtra(NotificationHelper.EXTRA_OPEN_TICKET_KEY)
+        }
+        if (!autoCallPhone.isNullOrBlank()) {
+            intent?.removeExtra(NotificationHelper.EXTRA_AUTO_CALL_PHONE_E164)
+            intent?.removeExtra(NotificationHelper.EXTRA_AUTO_CALL_CLIENT_NAME)
+            DialerLauncher.openSystemDialer(
+                context = this,
+                phoneInput = autoCallPhone,
+                ticketKey = ticketKey,
+                clientName = autoCallClient
+            )
         }
         if (intent?.getBooleanExtra(NotificationHelper.EXTRA_TRIGGER_APP_UPDATE, false) == true) {
             intent.removeExtra(NotificationHelper.EXTRA_TRIGGER_APP_UPDATE)
@@ -1368,73 +1383,100 @@ private fun InAppFloatingBannerOverlay(
                                 onClick = { onAckZabbix(zbxProblem) },
                                 modifier = Modifier.weight(1f),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = CslSuccessGreen,
+                                    contentColor = Color.White
+                                )
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.TaskAlt,
                                     contentDescription = null,
+                                    tint = Color.White,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
-                                Text("Подтв.", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                                Text("Подтв.", style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1, softWrap = false)
                             }
                         }
                         Button(
                             onClick = { onMuteZabbix(zbxProblem) },
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569))
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF475569),
+                                contentColor = Color.White
+                            )
                         ) {
                             Icon(
                                 imageVector = Icons.Default.NotificationsOff,
                                 contentDescription = null,
+                                tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
-                            Text("Не решаема", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            Text("Не решаема", style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1, softWrap = false)
                         }
                         Button(
                             onClick = onOpenZabbix,
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = accentBorder)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = accentBorder,
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("Открыть", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                            Text("Открыть", style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1, softWrap = false)
                         }
                     } else {
                         Button(
                             onClick = { onTakeInWork(ticket.key) },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = CslSuccessGreen)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CslSuccessGreen,
+                                contentColor = Color.White
+                            )
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AssignmentInd,
                                 contentDescription = null,
+                                tint = Color.White,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("В работу", maxLines = 1, softWrap = false)
+                            Text("В работу", color = Color.White, maxLines = 1, softWrap = false)
                         }
 
                         Button(
                             onClick = { onOpenTicket(ticket.key) },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CslOrange,
+                                contentColor = Color.White
+                            )
                         ) {
-                            Text("Открыть", maxLines = 1, softWrap = false)
+                            Text("Открыть", color = Color.White, maxLines = 1, softWrap = false)
                         }
 
                         if (phone != null) {
                             Button(
                                 onClick = {
                                     AlertSoundPlayer.stopCurrent()
-                                    DialerLauncher.openDialer(context, phone.e164)
+                                    DialerLauncher.openDialer(
+                                        context = context,
+                                        phoneInput = phone.e164,
+                                        ticketKey = ticket.key,
+                                        clientName = ticket.reporterName
+                                    )
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D4ED8))
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF1D4ED8),
+                                    contentColor = Color.White
+                                )
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Call,
                                     contentDescription = "Позвонить",
+                                    tint = Color.White,
                                     modifier = Modifier.size(16.dp)
                                 )
                             }

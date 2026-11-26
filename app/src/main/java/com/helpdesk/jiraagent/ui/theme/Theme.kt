@@ -67,46 +67,181 @@ private val LightColors = lightColorScheme(
     onErrorContainer = Color(0xFF7D1610)
 )
 
-private val DarkColors = darkColorScheme(
-    primary = CslOrangeLight,
-    onPrimary = Color(0xFF3D1500),
-    primaryContainer = CslOrangeContainerDark,
-    onPrimaryContainer = Color(0xFFFFDBCB),
-    secondary = Color(0xFFBAC6EA),
-    onSecondary = CslMidnight,
-    secondaryContainer = Color(0xFF1D274B),
-    onSecondaryContainer = Color(0xFFDCE3FA),
-    tertiary = Color(0xFF57D996),
-    onTertiary = Color(0xFF00381E),
-    tertiaryContainer = CallGreenContainerDark,
-    onTertiaryContainer = Color(0xFFB5F5D3),
-    background = CslMidnight,
-    onBackground = Color(0xFFF2F4FA),
-    surface = CslMidnightCard,
-    onSurface = Color(0xFFF2F4FA),
-    surfaceVariant = Color(0xFF1C264A),
-    onSurfaceVariant = Color(0xFFB0B8D1),
-    outline = Color(0xFF3E4970),
-    outlineVariant = CslOutlineDark,
-    error = Color(0xFFFF8980),
-    onError = Color(0xFF600F0A),
-    errorContainer = Color(0xFF5C1914),
-    onErrorContainer = Color(0xFFFFDAD6)
-)
+import com.helpdesk.jiraagent.model.DarkThemePreset
+
+private fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
+    DarkThemePreset.CSL_NAVY -> darkColorScheme(
+        primary = CslOrangeLight,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF6B2D10),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFD8E2F0),
+        onSecondary = CslMidnight,
+        secondaryContainer = Color(0xFF5C280E),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFF57D996),
+        onTertiary = Color.White,
+        tertiaryContainer = CallGreenContainerDark,
+        onTertiaryContainer = Color(0xFFD1FAE5),
+        background = CslMidnight,
+        onBackground = Color(0xFFF8FAFC),
+        surface = CslMidnightCard,
+        onSurface = Color(0xFFF8FAFC),
+        surfaceVariant = Color(0xFF1E2952),
+        onSurfaceVariant = Color(0xFFD0D9EE),
+        outline = Color(0xFF4A5885),
+        outlineVariant = CslOutlineDark,
+        error = Color(0xFFFF8980),
+        onError = Color.White,
+        errorContainer = Color(0xFF5C1914),
+        onErrorContainer = Color(0xFFFFDAD6)
+    )
+    DarkThemePreset.GRAPHITE_OLED -> darkColorScheme(
+        primary = Color(0xFFFF782E),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF662B0E),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFE2E8F0),
+        onSecondary = Color(0xFF0A0B0E),
+        secondaryContainer = Color(0xFF59260D),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFF34D399),
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF0E3B24),
+        onTertiaryContainer = Color(0xFFD1FAE5),
+        background = Color(0xFF090A0D),
+        onBackground = Color(0xFFF8FAFC),
+        surface = Color(0xFF151820),
+        onSurface = Color(0xFFF8FAFC),
+        surfaceVariant = Color(0xFF222734),
+        onSurfaceVariant = Color(0xFFD8E0EC),
+        outline = Color(0xFF454E66),
+        outlineVariant = Color(0xFF2C3242),
+        error = Color(0xFFF87171),
+        onError = Color.White,
+        errorContainer = Color(0xFF541616),
+        onErrorContainer = Color(0xFFFEE2E2)
+    )
+    DarkThemePreset.NORD_SLATE -> darkColorScheme(
+        primary = Color(0xFFFF8243),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF264B6E),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFD8DEE9),
+        onSecondary = Color(0xFF181C24),
+        secondaryContainer = Color(0xFF2B5278),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFF38BDF8),
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF1E3A5F),
+        onTertiaryContainer = Color(0xFFE0F2FE),
+        background = Color(0xFF181C24),
+        onBackground = Color(0xFFECEFF4),
+        surface = Color(0xFF222834),
+        onSurface = Color(0xFFECEFF4),
+        surfaceVariant = Color(0xFF2F3849),
+        onSurfaceVariant = Color(0xFFD8DEE9),
+        outline = Color(0xFF4F5E7A),
+        outlineVariant = Color(0xFF384359),
+        error = Color(0xFFF87171),
+        onError = Color.White,
+        errorContainer = Color(0xFF541E24),
+        onErrorContainer = Color(0xFFFEE2E2)
+    )
+    DarkThemePreset.EMERALD_NOC -> darkColorScheme(
+        primary = Color(0xFF10B981),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF0F523A),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFD1FAE5),
+        onSecondary = Color(0xFF081310),
+        secondaryContainer = Color(0xFF115E42),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFFFF8A50),
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF144535),
+        onTertiaryContainer = Color(0xFFD1FAE5),
+        background = Color(0xFF081310),
+        onBackground = Color(0xFFF0FDF4),
+        surface = Color(0xFF11241F),
+        onSurface = Color(0xFFF0FDF4),
+        surfaceVariant = Color(0xFF1B3830),
+        onSurfaceVariant = Color(0xFFC6F0DC),
+        outline = Color(0xFF346B5C),
+        outlineVariant = Color(0xFF244A40),
+        error = Color(0xFFF87171),
+        onError = Color.White,
+        errorContainer = Color(0xFF521818),
+        onErrorContainer = Color(0xFFFEE2E2)
+    )
+    DarkThemePreset.CYBER_PLUM -> darkColorScheme(
+        primary = Color(0xFFA78BFA),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF432C7A),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFE0DAFA),
+        onSecondary = Color(0xFF110E1C),
+        secondaryContainer = Color(0xFF4C328A),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFFFF8A50),
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF2F2254),
+        onTertiaryContainer = Color(0xFFEDE9FE),
+        background = Color(0xFF110E1C),
+        onBackground = Color(0xFFF5F3FF),
+        surface = Color(0xFF1C172E),
+        onSurface = Color(0xFFF5F3FF),
+        surfaceVariant = Color(0xFF2B2347),
+        onSurfaceVariant = Color(0xFFDDD6FE),
+        outline = Color(0xFF564787),
+        outlineVariant = Color(0xFF392F5C),
+        error = Color(0xFFF87171),
+        onError = Color.White,
+        errorContainer = Color(0xFF541826),
+        onErrorContainer = Color(0xFFFEE2E2)
+    )
+    DarkThemePreset.WARM_ESPRESSO -> darkColorScheme(
+        primary = Color(0xFFF59E0B),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF63370E),
+        onPrimaryContainer = Color.White,
+        secondary = Color(0xFFE7DED6),
+        onSecondary = Color(0xFF14110F),
+        secondaryContainer = Color(0xFF6E3D10),
+        onSecondaryContainer = Color.White,
+        tertiary = Color(0xFF34D399),
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF3B2E25),
+        onTertiaryContainer = Color(0xFFFEF3C7),
+        background = Color(0xFF14110F),
+        onBackground = Color(0xFFFAF6F2),
+        surface = Color(0xFF221C18),
+        onSurface = Color(0xFFFAF6F2),
+        surfaceVariant = Color(0xFF332A24),
+        onSurfaceVariant = Color(0xFFE5DBD2),
+        outline = Color(0xFF635247),
+        outlineVariant = Color(0xFF423730),
+        error = Color(0xFFF87171),
+        onError = Color.White,
+        errorContainer = Color(0xFF541C18),
+        onErrorContainer = Color(0xFFFEE2E2)
+    )
+}
 
 @Composable
 fun JiraHelpdeskTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    darkPreset: DarkThemePreset = DarkThemePreset.CSL_NAVY,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColors else LightColors
+    val colorScheme = if (darkTheme) buildAndroidDarkColors(darkPreset) else LightColors
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
-                // Match csl.by deep midnight header (#04091E) with crisp white status bar icons
-                window.statusBarColor = CslMidnight.toArgb()
+                val barBg = if (darkTheme) colorScheme.background else CslMidnight
+                window.statusBarColor = barBg.toArgb()
                 WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
             }
         }
