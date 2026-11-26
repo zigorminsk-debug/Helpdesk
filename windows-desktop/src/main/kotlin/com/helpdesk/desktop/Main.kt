@@ -656,7 +656,6 @@ private fun DesktopTopNavigationHeader(
         if (state.darkTheme) {
             HeaderUtilityPill("🎨 ${state.settings.darkThemePreset.shortTitle}", onCycleDarkPreset)
         }
-        HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
         HeaderUtilityPill("⊞ QR", onOpenQr)
         HeaderUtilityPill("📖 Гайд", onOpenGuide)
     }
@@ -738,6 +737,7 @@ private fun DesktopTopNavigationHeader(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
                         UtilityPillsItems(compactSyncText = false)
                         RefreshActionButton()
                     }
@@ -783,6 +783,8 @@ private fun DesktopTopNavigationHeader(
                                 )
                             }
                         }
+
+                        HeaderUtilityPill("🛠 Инструменты", onOpenToolbox)
 
                         DesktopHorizontalScrollRow(
                             modifier = Modifier.weight(1f),

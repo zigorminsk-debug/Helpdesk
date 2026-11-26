@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
+import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
 import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.model.HelpdeskTicket
@@ -72,8 +73,8 @@ fun SysadminToolboxAndroidDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tabIndex by remember { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
-    val tabs = listOf("⚡ WOL", "🌐 Подсети", "🔐 Пароли", "🛡 SSL / Узлы")
+    var tabIndex by remember { mutableIntStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
+    val tabs = SysadminToolboxTabs.ordered
 
     LaunchedEffect(tabIndex) {
         if (tabIndex == 3 && watchlistStatuses.isEmpty() && !isCheckingWatchlist) {
@@ -118,6 +119,9 @@ fun SysadminToolboxAndroidDialog(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        TextButton(onClick = { tabIndex = SysadminToolboxTabs.COMMANDS }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                            Text("⌨ Команды", color = CslOrange, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                        }
                         IconButton(
                             onClick = onDismiss,
                             modifier = Modifier.size(36.dp)
@@ -133,31 +137,32 @@ fun SysadminToolboxAndroidDialog(
 
                 // ScrollableTabRow prevents word splitting ("Подсет / и") on any font scale
                 ScrollableTabRow(
-                    selectedTabIndex = tabIndex,
+                    selectedTabIndex = SysadminToolboxTabs.positionFor(tabIndex),
                     edgePadding = 8.dp,
                     containerColor = CslMidnight,
                     contentColor = Color.White,
                     indicator = { tabPositions ->
-                        if (tabIndex in tabPositions.indices) {
+                        val selectedPosition = SysadminToolboxTabs.positionFor(tabIndex)
+                        if (selectedPosition in tabPositions.indices) {
                             TabRowDefaults.SecondaryIndicator(
-                                modifier = Modifier.tabIndicatorOffset(tabPositions[tabIndex]),
+                                modifier = Modifier.tabIndicatorOffset(tabPositions[selectedPosition]),
                                 color = CslOrange
                             )
                         }
                     }
                 ) {
-                    tabs.forEachIndexed { idx, title ->
+                    tabs.forEach { tab ->
                         Tab(
-                            selected = tabIndex == idx,
-                            onClick = { tabIndex = idx },
+                            selected = tabIndex == tab.id,
+                            onClick = { tabIndex = tab.id },
                             text = {
                                 Text(
-                                    text = title,
+                                    text = tab.androidTitle,
                                     fontSize = 12.5.sp,
                                     maxLines = 1,
                                     softWrap = false,
-                                    color = if (tabIndex == idx) CslOrange else Color.White,
-                                    fontWeight = if (tabIndex == idx) FontWeight.Bold else FontWeight.Medium
+                                    color = if (tabIndex == tab.id) CslOrange else Color.White,
+                                    fontWeight = if (tabIndex == tab.id) FontWeight.Bold else FontWeight.Medium
                                 )
                             }
                         )
@@ -606,7 +611,7 @@ fun SysadminToolboxAndroidDialog(
                             )
                         }
                     }
-                    4 -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
+                    SysadminToolboxTabs.COMMANDS -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                 }
             }
         }

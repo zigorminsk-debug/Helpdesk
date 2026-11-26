@@ -46,6 +46,7 @@ import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
+import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketAttachment
@@ -1788,8 +1789,8 @@ fun DesktopSysadminToolboxDialog(
     initialTabIndex: Int = 0,
     onDismiss: () -> Unit
 ) {
-    var tabIndex by remember { mutableStateOf(initialTabIndex.coerceIn(0, 4)) }
-    val tabs = listOf("⚡ Wake-on-LAN", "🌐 IP / Подсети", "🔐 Пароли", "🛡 SSL / Узлы", "⌨ Команды")
+    var tabIndex by remember { mutableStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
+    val tabs = SysadminToolboxTabs.ordered
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(tabIndex) {
@@ -1809,20 +1810,22 @@ fun DesktopSysadminToolboxDialog(
         ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                 TabRow(
-                    selectedTabIndex = tabIndex,
+                    selectedTabIndex = SysadminToolboxTabs.positionFor(tabIndex),
                     containerColor = DesktopColors.CslMidnight,
                     contentColor = Color.White
                 ) {
-                    tabs.forEachIndexed { idx, title ->
+                    tabs.forEach { tab ->
                         Tab(
-                            selected = tabIndex == idx,
-                            onClick = { tabIndex = idx },
+                            selected = tabIndex == tab.id,
+                            onClick = { tabIndex = tab.id },
                             text = {
                                 Text(
-                                    title,
+                                    tab.desktopTitle,
                                     fontSize = 12.sp,
-                                    fontWeight = if (tabIndex == idx) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (tabIndex == idx) DesktopColors.CslOrange else Color.White
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    fontWeight = if (tabIndex == tab.id) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (tabIndex == tab.id) DesktopColors.CslOrange else Color.White
                                 )
                             }
                         )
@@ -2366,6 +2369,7 @@ fun DesktopSysadminToolboxDialog(
                                 )
                             }
                         }
+                        SysadminToolboxTabs.COMMANDS -> DesktopCommandsView()
                     }
                 }
             }
