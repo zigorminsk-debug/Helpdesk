@@ -201,6 +201,8 @@ class BelarusWorkCalendarTest {
         assertTrue(note.contains("mail.csl.by"))
         assertTrue(note.contains("93.84.112.10"))
         assertTrue(note.contains("443/HTTPS"))
+        assertTrue(note.contains("TCP-порты без соединения"))
+        assertFalse(note.contains("Закрытые TCP-порты"))
     }
 
     @Test

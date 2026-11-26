@@ -142,7 +142,7 @@ fun DesktopZabbixWorkspace(
                                     if (rep.icmpReachable) {
                                         "🟢 ICMP Ping: доступен (${rep.icmpLatencyMs ?: 0} мс)"
                                     } else {
-                                        "🔴 ICMP Ping: нет ответа"
+                                        "⚪ ICMP Ping: нет ответа (узел может быть доступен)"
                                     }
                                 )
                                 Text(

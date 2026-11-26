@@ -1,6 +1,5 @@
 package com.helpdesk.jiraagent.domain
 
-import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -11,7 +10,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
-import java.net.URLEncoder
 import java.security.cert.X509Certificate
 import java.time.Instant
 import java.time.ZoneId
@@ -145,19 +143,13 @@ object NetworkDiagnosticsTool {
         val localAs = allAddresses?.mapNotNull { it.hostAddress }?.distinct()?.take(4).orEmpty()
 
         if (resolvedAddress == null) {
-            val dnsOnly = if (includeDnsRecords && !isIpLiteral) {
-                runCatching { resolveDnsRecords(cleanHost, emptyList()) }.getOrDefault(DnsRecordSet())
-            } else {
-                DnsRecordSet()
-            }
             return@withContext HostDiagnosticReport(
                 targetHost = cleanHost,
                 resolvedIp = null,
                 icmpReachable = false,
                 icmpLatencyMs = null,
                 portStatuses = emptyList(),
-                dnsRecords = dnsOnly,
-                errorMessage = "DNS не разрешил A-запись для $cleanHost"
+                errorMessage = "Системный резолвер не разрешил адрес для $cleanHost"
             )
         }
 
@@ -168,7 +160,7 @@ object NetworkDiagnosticsTool {
                 when {
                     !includeDnsRecords -> DnsRecordSet(aRecords = if (isIpLiteral) listOf(cleanHost) else localAs)
                     isIpLiteral -> DnsRecordSet(aRecords = listOf(cleanHost))
-                    else -> resolveDnsRecords(cleanHost, localAs)
+                    else -> DnsRecordSet(aRecords = localAs)
                 }
             }
 
@@ -327,63 +319,6 @@ object NetworkDiagnosticsTool {
                 )
             } else null
         }.getOrNull()
-    }
-
-    private suspend fun resolveDnsRecords(domain: String, localARecords: List<String>): DnsRecordSet = coroutineScope {
-        val mxJob = async { queryDohRecords(domain, "MX") }
-        val txtJob = async { queryDohRecords(domain, "TXT") }
-        val nsJob = async { queryDohRecords(domain, "NS") }
-        val txtAll = txtJob.await()
-        val spfAndDmarc = txtAll
-            .map { it.trim('"') }
-            .filter {
-                it.contains("v=spf1", ignoreCase = true) ||
-                    it.contains("v=DMARC", ignoreCase = true) ||
-                    txtAll.size <= 3
-            }
-            .take(4)
-
-        DnsRecordSet(
-            aRecords = localARecords.distinct().take(4),
-            mxRecords = mxJob.await().take(5),
-            txtSpfRecords = spfAndDmarc,
-            nsRecords = nsJob.await().take(4)
-        )
-    }
-
-    private fun queryDohRecords(domain: String, type: String): List<String> {
-        val encoded = URLEncoder.encode(domain, "UTF-8")
-        val endpoints = listOf(
-            "https://cloudflare-dns.com/dns-query?name=$encoded&type=$type",
-            "https://dns.google/resolve?name=$encoded&type=$type"
-        )
-        for (endpoint in endpoints) {
-            val result = runCatching {
-                val conn = (URL(endpoint).openConnection() as HttpsURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 1600
-                    readTimeout = 1600
-                    setRequestProperty("Accept", "application/dns-json")
-                }
-                try {
-                    if (conn.responseCode != 200) return@runCatching emptyList()
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val root = JsonParser.parseString(body).asJsonObject
-                    val answers = root.getAsJsonArray("Answer") ?: return@runCatching emptyList()
-                    buildList {
-                        for (el in answers) {
-                            val obj = el.asJsonObject
-                            val data = obj.get("data")?.asString?.trim()?.trimEnd('.') ?: continue
-                            if (data.isNotBlank()) add(data)
-                        }
-                    }
-                } finally {
-                    conn.disconnect()
-                }
-            }.getOrNull()
-            if (!result.isNullOrEmpty()) return result.distinct()
-        }
-        return emptyList()
     }
 
     private fun extractCn(dn: String): String {

@@ -95,7 +95,7 @@ object QuickReplyTemplates {
             }
             if (closedPorts.isNotEmpty()) {
                 appendLine(
-                    "• Закрытые TCP-порты: " + closedPorts.joinToString(", ") { p -> "${p.port}/${p.serviceName}" }
+                    "• TCP-порты без соединения: " + closedPorts.joinToString(", ") { p -> "${p.port}/${p.serviceName}" }
                 )
             }
             report.httpProbe?.let { http ->

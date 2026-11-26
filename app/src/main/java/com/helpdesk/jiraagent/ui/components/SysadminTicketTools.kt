@@ -569,6 +569,10 @@ fun HostDiagnosticDialog(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    Text(
+                        text = "DNS: системный резолвер устройства (его настройки могут использовать внешний DNS). MX / TXT / NS не запрашиваются.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     if (rep.errorMessage != null) {
                         Text(
                             text = rep.errorMessage,
@@ -650,7 +654,7 @@ fun HostDiagnosticDialog(
                                     text = if (port.isOpen) {
                                         "ОТКРЫТ · ${port.latencyMs ?: 0} мс"
                                     } else {
-                                        "закрыт"
+                                        "нет соединения"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = if (port.isOpen) FontWeight.Bold else FontWeight.Normal,

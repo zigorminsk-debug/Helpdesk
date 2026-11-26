@@ -2810,9 +2810,10 @@ private fun DesktopTicketInspector(
                                         fontSize = 12.sp
                                     )
                                     Text(
-                                        "ICMP/TCP доступность: ${if (rep.isHostAlive) "ДОСТУПЕН (${rep.icmpLatencyMs ?: "—"} мс)" else "НЕДОСТУПЕН"}",
+                                        "ICMP/TCP: ${if (rep.isHostAlive) "получен ответ" else "нет ответа (это не доказывает недоступность узла)"}",
                                         fontSize = 11.5.sp
                                     )
+                                    Text("DNS: системный резолвер устройства; MX / TXT / NS не запрашиваются.", fontSize = 11.5.sp)
                                     val openPorts = rep.portStatuses.filter { it.isOpen }
                                         .joinToString(", ") { "${it.port}/${it.serviceName} (${it.latencyMs}мс)" }
                                     Text("Открытые TCP-порты: ${openPorts.ifBlank { "нет открытых из стандартного списка" }}", fontSize = 11.5.sp)
