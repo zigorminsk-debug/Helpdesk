@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -73,7 +74,7 @@ fun SysadminToolboxAndroidDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tabIndex by remember { mutableIntStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
+    var tabIndex by rememberSaveable { mutableIntStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
     val tabs = SysadminToolboxTabs.ordered
 
     LaunchedEffect(tabIndex) {
@@ -171,9 +172,9 @@ fun SysadminToolboxAndroidDialog(
 
                 when (tabIndex) {
                     0 -> {
-                        var mac by remember { mutableStateOf("") }
-                        var broadcast by remember { mutableStateOf("255.255.255.255") }
-                        var portText by remember { mutableStateOf("9") }
+                        var mac by rememberSaveable { mutableStateOf("") }
+                        var broadcast by rememberSaveable { mutableStateOf("255.255.255.255") }
+                        var portText by rememberSaveable { mutableStateOf("9") }
                         var status by remember { mutableStateOf<String?>(null) }
 
                         Column(
@@ -415,86 +416,84 @@ fun SysadminToolboxAndroidDialog(
                     }
 
                     3 -> {
-                        var newHost by remember { mutableStateOf("") }
-                        var newLabel by remember { mutableStateOf("") }
-                        var selectedFullScreenHost by remember { mutableStateOf<String?>(null) }
+                        var newHost by rememberSaveable { mutableStateOf("") }
+                        var newLabel by rememberSaveable { mutableStateOf("") }
+                        var selectedFullScreenHost by rememberSaveable { mutableStateOf<String?>(null) }
 
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                            item(key = "watchlist_controls") {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        OutlinedTextField(
-                                            value = newHost,
-                                            onValueChange = { newHost = it },
-                                            placeholder = { Text("IP или домен", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        OutlinedIconButton(
-                                            onClick = onRefreshHosts,
-                                            enabled = !isCheckingWatchlist
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(Icons.Default.Refresh, contentDescription = "Обновить все")
+                                            OutlinedTextField(
+                                                value = newHost,
+                                                onValueChange = { newHost = it },
+                                                placeholder = { Text("IP или домен", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                                singleLine = true,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            OutlinedIconButton(
+                                                onClick = onRefreshHosts,
+                                                enabled = !isCheckingWatchlist
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = "Обновить все")
+                                            }
                                         }
-                                    }
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        OutlinedTextField(
-                                            value = newLabel,
-                                            onValueChange = { newLabel = it },
-                                            placeholder = { Text("Подпись (чей IP)", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Button(
-                                            onClick = {
-                                                if (newHost.isNotBlank()) {
-                                                    onAddHost(newHost, newLabel)
-                                                    newHost = ""
-                                                    newLabel = ""
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
-                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text("+ Узел", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                            OutlinedTextField(
+                                                value = newLabel,
+                                                onValueChange = { newLabel = it },
+                                                placeholder = { Text("Подпись (чей IP)", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                                singleLine = true,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    if (newHost.isNotBlank()) {
+                                                        onAddHost(newHost, newLabel)
+                                                        newHost = ""
+                                                        newLabel = ""
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = CslOrange),
+                                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                                            ) {
+                                                Text("+ Узел", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                            }
                                         }
                                     }
                                 }
+
+                                if (isCheckingWatchlist) {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
+                                }
+
+                                Text(
+                                    text = "Нажмите на карточку узла — она откроется на весь экран со всеми портами",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                }
                             }
-
-                            if (isCheckingWatchlist) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
-                            }
-
-                            Text(
-                                text = "Нажмите на карточку узла — она откроется на весь экран со всеми портами",
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
-                            LazyColumn(
-                                modifier = Modifier.weight(1f).fillMaxWidth(),
-                                contentPadding = PaddingValues(bottom = 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
                                 items(watchlistHosts, key = { it }) { host ->
                                     val normKey = SysadminToolboxEngine.normalizeHostKey(host)
                                     val savedLabel = watchlistLabels[normKey].orEmpty()
@@ -583,7 +582,6 @@ fun SysadminToolboxAndroidDialog(
                                         }
                                     }
                                 }
-                            }
                         }
 
                         selectedFullScreenHost?.let { activeHost ->
@@ -612,6 +610,7 @@ fun SysadminToolboxAndroidDialog(
                         }
                     }
                     SysadminToolboxTabs.COMMANDS -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
+                    SysadminToolboxTabs.PORTS -> ServicePortsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                 }
             }
         }

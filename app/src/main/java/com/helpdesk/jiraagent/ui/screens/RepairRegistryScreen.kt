@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -77,6 +79,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
+import com.google.gson.Gson
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -137,6 +142,12 @@ private fun statusAccentColor(status: RepairStatus): Color = when (status) {
 
 private val RepairDeletedRed = Color(0xFFDC2626)
 
+// Preserve the selected repair record and its draft across activity recreation (rotation).
+private val repairItemSaver = Saver<RepairEquipmentItem?, String>(
+    save = { item -> item?.let { Gson().toJson(it) } ?: "" },
+    restore = { value -> if (value.isEmpty()) null else runCatching { Gson().fromJson(value, RepairEquipmentItem::class.java) }.getOrNull() }
+)
+
 @Composable
 fun RepairRegistryScreen(
     items: List<RepairEquipmentItem>,
@@ -161,10 +172,10 @@ fun RepairRegistryScreen(
 ) {
     val context = LocalContext.current
 
-    var selectedSubTab by remember { mutableStateOf(RepairSubTab.ACTIVE) }
-    var searchQuery by remember { mutableStateOf("") }
-    var editingItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
-    var isCreatingNew by remember { mutableStateOf(false) }
+    var selectedSubTab by rememberSaveable { mutableStateOf(RepairSubTab.ACTIVE) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var editingItem by rememberSaveable(stateSaver = repairItemSaver) { mutableStateOf<RepairEquipmentItem?>(null) }
+    var isCreatingNew by rememberSaveable { mutableStateOf(false) }
     var unfoundScannedSerial by remember { mutableStateOf<String?>(null) }
     var pdfTargetItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
     var readyNotifyItem by remember { mutableStateOf<RepairEquipmentItem?>(null) }
@@ -292,7 +303,17 @@ fun RepairRegistryScreen(
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val compactHeight = maxHeight < 400.dp
+        var showCompactControls by rememberSaveable { mutableStateOf(false) }
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (compactHeight) {
+                TextButton(onClick = { showCompactControls = !showCompactControls }, modifier = Modifier.fillMaxWidth()) {
+                    Text("${if (showCompactControls) "▲ Скрыть" else "▼ Открыть"} управление и поиск · ${selectedSubTab.label}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (!compactHeight || showCompactControls) {
+                Column(modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).verticalScroll(rememberScrollState()) else Modifier.fillMaxWidth()) {
         // Corporate csl.by Header Strip
         Surface(
             color = CslMidnight,
@@ -490,6 +511,8 @@ fun RepairRegistryScreen(
             }
         }
 
+                }
+            }
         if (filteredItems.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -580,6 +603,7 @@ fun RepairRegistryScreen(
                     )
                 }
             }
+        }
         }
     }
 
@@ -1004,21 +1028,21 @@ fun RepairEquipmentEditorDialog(
     onRestore: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var category by remember(initial) { mutableStateOf(initial.deviceCategory.ifBlank { "Ноутбук" }) }
-    var model by remember(initial) { mutableStateOf(initial.deviceModel) }
-    var serial by remember(initial) { mutableStateOf(initial.serialNumber) }
-    var clientName by remember(initial) { mutableStateOf(initial.clientName) }
-    var showClientPicker by remember(initial) { mutableStateOf(false) }
-    var showAllClientsInPicker by remember(initial) { mutableStateOf(false) }
-    var browseAllClientsMode by remember(initial) { mutableStateOf(false) }
-    var clientPhone by remember(initial) { mutableStateOf(initial.clientPhone) }
-    var linkedTicketKey by remember(initial) { mutableStateOf(initial.linkedTicketKey) }
-    var accessories by remember(initial) { mutableStateOf(initial.accessories) }
-    var externalCondition by remember(initial) { mutableStateOf(initial.externalCondition) }
-    var reportedDefect by remember(initial) { mutableStateOf(initial.reportedDefect) }
-    var repairNotes by remember(initial) { mutableStateOf(initial.repairNotes) }
-    var shelfLocation by remember(initial) { mutableStateOf(initial.shelfLocation) }
-    var assignedEngineer by remember(initial, defaultEngineer) {
+    var category by rememberSaveable(initial.id) { mutableStateOf(initial.deviceCategory.ifBlank { "Ноутбук" }) }
+    var model by rememberSaveable(initial.id) { mutableStateOf(initial.deviceModel) }
+    var serial by rememberSaveable(initial.id) { mutableStateOf(initial.serialNumber) }
+    var clientName by rememberSaveable(initial.id) { mutableStateOf(initial.clientName) }
+    var showClientPicker by rememberSaveable(initial.id) { mutableStateOf(false) }
+    var showAllClientsInPicker by rememberSaveable(initial.id) { mutableStateOf(false) }
+    var browseAllClientsMode by rememberSaveable(initial.id) { mutableStateOf(false) }
+    var clientPhone by rememberSaveable(initial.id) { mutableStateOf(initial.clientPhone) }
+    var linkedTicketKey by rememberSaveable(initial.id) { mutableStateOf(initial.linkedTicketKey) }
+    var accessories by rememberSaveable(initial.id) { mutableStateOf(initial.accessories) }
+    var externalCondition by rememberSaveable(initial.id) { mutableStateOf(initial.externalCondition) }
+    var reportedDefect by rememberSaveable(initial.id) { mutableStateOf(initial.reportedDefect) }
+    var repairNotes by rememberSaveable(initial.id) { mutableStateOf(initial.repairNotes) }
+    var shelfLocation by rememberSaveable(initial.id) { mutableStateOf(initial.shelfLocation) }
+    var assignedEngineer by rememberSaveable(initial.id, defaultEngineer) {
         mutableStateOf(
             EngineerNameResolver.resolve(
                 rawEngineer = initial.assignedEngineer,
@@ -1026,12 +1050,12 @@ fun RepairEquipmentEditorDialog(
             )
         )
     }
-    var status by remember(initial) { mutableStateOf(initial.status) }
-    var postNoteToTicket by remember(initial, isNewIntake) {
+    var status by rememberSaveable(initial.id) { mutableStateOf(initial.status) }
+    var postNoteToTicket by rememberSaveable(initial.id, isNewIntake) {
         mutableStateOf(isNewIntake && initial.linkedTicketKey.isNotBlank())
     }
-    var confirmDelete by remember { mutableStateOf(false) }
-    var deleteReasonDraft by remember { mutableStateOf("") }
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var deleteReasonDraft by rememberSaveable { mutableStateOf("") }
 
     val launchSerialScan = rememberSafeBarcodeScanner(
         prompt = "Наведите камеру на S/N или инвентарный штрихкод техники"

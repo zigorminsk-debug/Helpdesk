@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -88,6 +89,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -144,6 +146,8 @@ fun AdminChatScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val compactHeight = LocalConfiguration.current.screenHeightDp < 480
+    var showCompactQuickActions by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -339,6 +343,7 @@ fun AdminChatScreen(
         }
 
         if (!appSettings.isConfigured) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -366,6 +371,7 @@ fun AdminChatScreen(
                         Text("Открыть настройки Jira")
                     }
                 }
+            }
             }
             return@Column
         }
@@ -429,6 +435,11 @@ fun AdminChatScreen(
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                    if (compactHeight) {
+                        IconButton(onClick = { showCompactQuickActions = !showCompactQuickActions }, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Default.Tag, contentDescription = if (showCompactQuickActions) "Скрыть быстрые действия" else "Показать быстрые действия", modifier = Modifier.size(18.dp))
+                        }
+                    }
                     IconButton(
                         onClick = { showRoomSettingsDialog = true },
                         modifier = Modifier.size(34.dp)
@@ -441,8 +452,8 @@ fun AdminChatScreen(
                     }
                 }
 
-                // Pinned shift handover banner
-                Surface(
+                // The pin button in the header remains available in compact height.
+                if (!compactHeight) Surface(
                     onClick = { showPinnedNoteDialog = true },
                     shape = RoundedCornerShape(8.dp),
                     color = if (pinnedShiftNote.isNotBlank()) {
@@ -498,6 +509,8 @@ fun AdminChatScreen(
                 chatUiState.errorMessage?.let { err ->
                     Text(
                         text = err,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -633,8 +646,8 @@ fun AdminChatScreen(
                     }
                 }
 
-                // Quick status chips row
-                Row(
+                // Quick actions are reachable through the # button in a short window.
+                if (!compactHeight || showCompactQuickActions) Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
@@ -744,7 +757,7 @@ fun AdminChatScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         },
-                        maxLines = 4,
+                        maxLines = if (compactHeight) 2 else 4,
                         shape = RoundedCornerShape(12.dp),
                         trailingIcon = {
                             IconButton(

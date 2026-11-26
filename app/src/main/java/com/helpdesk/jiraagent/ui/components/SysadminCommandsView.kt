@@ -22,29 +22,36 @@ import com.helpdesk.jiraagent.domain.SysadminCommandCatalog
 
 @Composable
 fun SysadminCommandsAndroidView(onCopy: (String, String) -> Unit) {
-    var query by remember { mutableStateOf("") }
-    var platform by remember { mutableStateOf<CommandPlatform?>(null) }
-    var topic by remember { mutableStateOf<CommandTopic?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var platform by rememberSaveable { mutableStateOf<CommandPlatform?>(null) }
+    var topic by rememberSaveable { mutableStateOf<CommandTopic?>(null) }
     val entries = remember(query, platform, topic) { SysadminCommandCatalog.search(query, platform, topic) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Команды и скрипты", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        Text("Только копирование: приложение ничего не запускает. Перед выполнением проверьте адреса, права и предупреждения.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Поиск: DNS, диск, служба…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = platform == null, onClick = { platform = null }, label = { Text("Все", maxLines = 1) })
-            CommandPlatform.entries.forEach { item ->
-                FilterChip(selected = platform == item, onClick = { platform = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 16.dp)
+    ) {
+        item(key = "command_filters") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Команды и скрипты", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("Только копирование: приложение ничего не запускает. Перед выполнением проверьте адреса, права и предупреждения.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Поиск: DNS, диск, служба…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = platform == null, onClick = { platform = null }, label = { Text("Все", maxLines = 1) })
+                    CommandPlatform.entries.forEach { item ->
+                        FilterChip(selected = platform == item, onClick = { platform = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+                    }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = topic == null, onClick = { topic = null }, label = { Text("Все темы", maxLines = 1, softWrap = false) })
+                    CommandTopic.entries.filter { it != CommandTopic.GENERAL }.forEach { item ->
+                        FilterChip(selected = topic == item, onClick = { topic = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+                    }
+                }
+                Text("Найдено: ${entries.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (entries.isEmpty()) Text("Ничего не найдено. Измените запрос, платформу или тему.")
             }
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = topic == null, onClick = { topic = null }, label = { Text("Все темы", maxLines = 1, softWrap = false) })
-            CommandTopic.entries.filter { it != CommandTopic.GENERAL }.forEach { item ->
-                FilterChip(selected = topic == item, onClick = { topic = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
-            }
-        }
-        Text("Найдено: ${entries.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (entries.isEmpty()) Text("Ничего не найдено. Измените запрос, платформу или тему.")
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
             items(entries, key = { it.id }) { entry ->
                 var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), modifier = Modifier.fillMaxWidth()) {
@@ -71,6 +78,5 @@ fun SysadminCommandsAndroidView(onCopy: (String, String) -> Unit) {
                     }
                 }
             }
-        }
     }
 }

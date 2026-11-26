@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -103,6 +104,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -145,6 +147,51 @@ private enum class BottomDestination(val label: String) {
     WIKI("Wiki"),
     CHAT("Чат"),
     SETTINGS("Настройки")
+}
+
+/** Compact navigation keeps all destinations and counters available on short phone windows. */
+@Composable
+private fun CompactBottomNavigation(
+    currentTab: BottomDestination,
+    zabbixCount: Int,
+    repairCount: Int,
+    chatCount: Int,
+    onSelect: (BottomDestination) -> Unit
+) {
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+        Row(Modifier.fillMaxWidth().navigationBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
+            BottomDestination.entries.forEach { destination ->
+                val selected = destination == currentTab
+                val count = when (destination) {
+                    BottomDestination.ZABBIX -> zabbixCount
+                    BottomDestination.REPAIR -> repairCount
+                    BottomDestination.CHAT -> chatCount
+                    else -> 0
+                }
+                val icon = when (destination) {
+                    BottomDestination.TICKETS -> Icons.Default.SupportAgent
+                    BottomDestination.ZABBIX -> Icons.Default.Dns
+                    BottomDestination.REPAIR -> Icons.Default.Build
+                    BottomDestination.WIKI -> Icons.Default.LibraryBooks
+                    BottomDestination.CHAT -> Icons.Default.Forum
+                    BottomDestination.SETTINGS -> Icons.Default.Settings
+                }
+                val label = destination.label + if (count > 0) " ${if (count > 99) "99+" else count}" else ""
+                Row(
+                    modifier = Modifier.weight(1f).height(48.dp).clickable { onSelect(destination) }
+                        .background(if (selected) CslOrange.copy(alpha = 0.16f) else Color.Transparent),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(icon, contentDescription = label, tint = if (selected) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(label, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                        fontSize = with(LocalDensity.current) { 10.dp.toSp() },
+                        color = if (selected) CslOrange else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
 }
 
 class MainActivity : FragmentActivity() {
@@ -870,6 +917,18 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             )
         },
         bottomBar = {
+            if (LocalConfiguration.current.screenHeightDp < 480) {
+                CompactBottomNavigation(
+                    currentTab = currentTab,
+                    zabbixCount = activeZabbixAlertsCount,
+                    repairCount = activeWorkshopCount,
+                    chatCount = unreadChatCount,
+                    onSelect = { destination ->
+                        currentTab = destination
+                        if (destination == BottomDestination.TICKETS) resetTicketsToFreshNonce++
+                    }
+                )
+            } else {
             val navLabelSize = with(LocalDensity.current) { 9.5.dp.toSp() }
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -1014,6 +1073,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     colors = navItemColors
                 )
             }
+            }
         }
     ) { innerPadding ->
         Column(
@@ -1040,6 +1100,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = "Разрешите уведомления для показа всплывающих баннеров заявок",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)

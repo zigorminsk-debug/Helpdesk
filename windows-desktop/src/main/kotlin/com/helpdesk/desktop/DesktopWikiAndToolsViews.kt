@@ -2370,6 +2370,7 @@ fun DesktopSysadminToolboxDialog(
                             }
                         }
                         SysadminToolboxTabs.COMMANDS -> DesktopCommandsView()
+                        SysadminToolboxTabs.PORTS -> DesktopServicePortsView()
                     }
                 }
             }

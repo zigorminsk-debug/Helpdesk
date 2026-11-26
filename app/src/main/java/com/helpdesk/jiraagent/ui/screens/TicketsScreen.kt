@@ -5,6 +5,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -361,8 +364,30 @@ fun TicketsScreen(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val compactHeight = maxHeight < 400.dp
+        var showCompactControls by rememberSaveable { mutableStateOf(false) }
         Column(modifier = Modifier.fillMaxSize()) {
+            if (compactHeight) {
+                val currentSection = when (tabMode) {
+                    TicketTabMode.NEW -> "Новые"
+                    TicketTabMode.IN_PROGRESS -> "В работе"
+                    TicketTabMode.CLOSED -> "Закрытые"
+                    TicketTabMode.FILTERED_SERVICE -> "Сервисные"
+                }
+                TextButton(onClick = { showCompactControls = !showCompactControls }, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "${if (showCompactControls) "▲ Скрыть" else "▼ Открыть"} фильтры и поиск · $currentSection" +
+                            if (multiSelectMode) " · выбрано ${selectedKeys.size}" else "",
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (!compactHeight || showCompactControls) {
+                Column(
+                    modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).verticalScroll(rememberScrollState())
+                    else Modifier.fillMaxWidth()
+                ) {
             if (syncStatus.isSyncing) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(),
@@ -597,10 +622,12 @@ fun TicketsScreen(
                 }
             }
 
+                }
+            }
             PullToRefreshBox(
                 isRefreshing = syncStatus.isSyncing,
                 onRefresh = onRefresh,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.weight(1f).fillMaxWidth()
             ) {
                 val hasActiveFilters = searchQuery.isNotBlank() ||
                     assigneeScope != AssigneeScopeFilter.ALL ||
