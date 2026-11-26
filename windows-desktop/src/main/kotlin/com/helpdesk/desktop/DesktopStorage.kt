@@ -58,6 +58,7 @@ data class DesktopPersistedState(
     val deferredAlertKeys: Set<String> = emptySet(),
     val zabbixBaselineInitialized: Boolean = false,
     val zabbixDisasterOnlyMigrated: Boolean = true,
+    val systemRoomsAutoCleanedV70: Boolean = false,
     val seenZabbixAlertKeys: Set<String> = emptySet(),
     val deferredZabbixAlertKeys: Set<String> = emptySet(),
     val dismissedZabbixAlertKeys: Set<String> = emptySet(),

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -270,6 +271,8 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val securityWipeNotice by viewModel.securityWipeNotice.collectAsStateWithLifecycle()
     val knowledgeResults by viewModel.knowledgeArchiveResults.collectAsStateWithLifecycle()
     val isSearchingKnowledge by viewModel.isSearchingKnowledge.collectAsStateWithLifecycle()
+    val isCleaningSystemRooms by viewModel.isCleaningSystemRooms.collectAsStateWithLifecycle()
+    val systemRoomsCleanupMessage by viewModel.systemRoomsCleanupMessage.collectAsStateWithLifecycle()
 
     val activeWorkshopCount = remember(repairItems) {
         repairItems.count { !it.isDeleted && it.status.isActiveInWorkshop }
@@ -292,6 +295,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     }
 
     var currentTab by rememberSaveable { mutableStateOf(BottomDestination.TICKETS) }
+    var resetTicketsToFreshNonce by rememberSaveable { mutableLongStateOf(0L) }
     var settingsSubTab by rememberSaveable { mutableStateOf(0) }
     var hasNotifPermission by rememberSaveable {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
@@ -505,8 +509,15 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     LaunchedEffect(returnToMainScreenStamp) {
         if (returnToMainScreenStamp > 0L) {
             currentTab = BottomDestination.TICKETS
+            resetTicketsToFreshNonce++
             viewModel.consumeReturnToMainScreenStamp()
         }
+    }
+
+    // Pressing Back on any non-Tickets bottom tab returns directly to the primary «Свежие» screen
+    BackHandler(enabled = selectedTicketKey == null && currentTab != BottomDestination.TICKETS) {
+        currentTab = BottomDestination.TICKETS
+        resetTicketsToFreshNonce++
     }
 
     LaunchedEffect(openChatTabStamp) {
@@ -822,7 +833,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
             ) {
                 NavigationBarItem(
                     selected = currentTab == BottomDestination.TICKETS,
-                    onClick = { currentTab = BottomDestination.TICKETS },
+                    onClick = {
+                        currentTab = BottomDestination.TICKETS
+                        resetTicketsToFreshNonce++
+                    },
                     icon = { Icon(Icons.Default.SupportAgent, contentDescription = null) },
                     label = {
                         Text(
@@ -1023,6 +1037,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     syncStatus = syncStatus,
                     isCreatingTicket = isCreatingTicket,
                     isBatchBusy = isBatchBusy,
+                    resetToFreshHomeNonce = resetTicketsToFreshNonce,
                     externalSearchFilter = externalSearchFilter,
                     onConsumeExternalSearch = { externalSearchFilter = "" },
                     onScanSerialHistory = { sn -> viewModel.searchByHardwareSerial(sn) },
@@ -1192,6 +1207,9 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             currentSettings = appSettings,
                             connectionTest = connectionTest,
                             appUpdateState = appUpdateState,
+                            isCleaningSystemRooms = isCleaningSystemRooms,
+                            systemRoomsCleanupMessage = systemRoomsCleanupMessage,
+                            onCleanupSystemRooms = { viewModel.cleanupSystemRoomsInJira(manual = true) },
                             onTestConnection = { candidate -> viewModel.testConnection(candidate) },
                             onSaveSettings = { updated -> viewModel.saveAppSettings(updated) },
                             onTriggerTestBanner = {

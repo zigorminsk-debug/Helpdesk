@@ -751,6 +751,22 @@ class SettingsRepository private constructor(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    fun isSystemRoomsAutoCleanedV70(): Boolean {
+        return cachePrefs.getBoolean(KEY_SYSTEM_ROOMS_AUTO_CLEANED_V70, false)
+    }
+
+    fun markSystemRoomsAutoCleanedV70() {
+        cachePrefs.edit()
+            .putBoolean(KEY_SYSTEM_ROOMS_AUTO_CLEANED_V70, true)
+            .remove(KEY_RESOLVED_CHAT_ROOM_KEY)
+            .remove(KEY_RESOLVED_REPAIR_ROOM_KEY)
+            .apply()
+        if (_appSettings.value.adminChatIssueKey.isBlank()) {
+            _resolvedChatRoomKey.value = ""
+            _resolvedRepairRoomKey.value = ""
+        }
+    }
+
     @Synchronized
     fun setResolvedChatRoomKey(issueKey: String) {
         val clean = issueKey.trim().uppercase()
@@ -1632,6 +1648,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_ZABBIX_BASELINE_INITIALIZED = "zabbix_baseline_initialized"
         private const val KEY_CACHED_ZABBIX_SNAPSHOT_JSON = "cached_zabbix_snapshot_json"
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
+        private const val KEY_SYSTEM_ROOMS_AUTO_CLEANED_V70 = "system_rooms_auto_cleaned_v70"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
         private const val KEY_WATCHLIST_LABELS_JSON = "watchlist_labels_json"
         private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"

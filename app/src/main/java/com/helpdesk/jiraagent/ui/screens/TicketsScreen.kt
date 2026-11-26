@@ -1,5 +1,6 @@
 package com.helpdesk.jiraagent.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -76,6 +77,7 @@ import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -158,6 +160,7 @@ fun TicketsScreen(
     syncStatus: SyncStatus,
     isCreatingTicket: Boolean,
     isBatchBusy: Boolean = false,
+    resetToFreshHomeNonce: Long = 0L,
     externalSearchFilter: String = "",
     onConsumeExternalSearch: () -> Unit = {},
     onScanSerialHistory: (String) -> Unit = {},
@@ -176,13 +179,44 @@ fun TicketsScreen(
     val context = LocalContext.current
     var tabMode by rememberSaveable { mutableStateOf(TicketTabMode.NEW) }
     var assigneeScope by rememberSaveable { mutableStateOf(AssigneeScopeFilter.ALL) }
-    var ageFilter by rememberSaveable { mutableStateOf(TicketAgeFilter.ALL) }
+    var ageFilter by rememberSaveable { mutableStateOf(TicketAgeFilter.FRESH_TODAY) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showCreateDialog by rememberSaveable { mutableStateOf(false) }
     var multiSelectMode by rememberSaveable { mutableStateOf(false) }
     var selectedKeys by remember { mutableStateOf(setOf<String>()) }
     var showBatchCommentDialog by rememberSaveable { mutableStateOf(false) }
     var batchCommentDraft by rememberSaveable { mutableStateOf("") }
+    var handledResetNonce by rememberSaveable { mutableLongStateOf(resetToFreshHomeNonce) }
+
+    LaunchedEffect(resetToFreshHomeNonce) {
+        if (resetToFreshHomeNonce != handledResetNonce) {
+            handledResetNonce = resetToFreshHomeNonce
+            multiSelectMode = false
+            selectedKeys = emptySet()
+            tabMode = TicketTabMode.NEW
+            ageFilter = TicketAgeFilter.FRESH_TODAY
+            assigneeScope = AssigneeScopeFilter.ALL
+            searchQuery = ""
+        }
+    }
+
+    val isAtFreshHome = !multiSelectMode &&
+        searchQuery.isEmpty() &&
+        tabMode == TicketTabMode.NEW &&
+        ageFilter == TicketAgeFilter.FRESH_TODAY &&
+        assigneeScope == AssigneeScopeFilter.ALL
+
+    BackHandler(enabled = !isAtFreshHome) {
+        if (multiSelectMode) {
+            multiSelectMode = false
+            selectedKeys = emptySet()
+        } else {
+            tabMode = TicketTabMode.NEW
+            ageFilter = TicketAgeFilter.FRESH_TODAY
+            assigneeScope = AssigneeScopeFilter.ALL
+            searchQuery = ""
+        }
+    }
 
     LaunchedEffect(externalSearchFilter) {
         if (externalSearchFilter.isNotBlank()) {
@@ -672,6 +706,43 @@ fun TicketsScreen(
                         }
 
                         if (displayedTickets.isEmpty()) {
+                            if (isFreshPastStage && ageFilter == TicketAgeFilter.FRESH_TODAY && pastDisplayed.isNotEmpty()) {
+                                item(key = "past_available_hint") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { ageFilter = TicketAgeFilter.PAST_HANGING }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFE65100))
+                                        )
+                                        Text(
+                                            text = "В прошлых заявках: ${pastDisplayed.size}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        HorizontalDivider(
+                                            modifier = Modifier.weight(1f),
+                                            thickness = 1.dp,
+                                            color = MaterialTheme.colorScheme.outlineVariant
+                                        )
+                                        Text(
+                                            text = "Показать →",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFE65100)
+                                        )
+                                    }
+                                }
+                            }
                             item(key = "empty_tickets_gif") {
                                 EmptyTicketsPlaceholder(
                                     appSettings = appSettings,

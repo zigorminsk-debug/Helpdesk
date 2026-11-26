@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
@@ -38,12 +39,16 @@ import androidx.compose.ui.window.rememberWindowState
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.TicketStage
+import java.awt.AWTEvent
 import java.awt.Frame
+import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDropEvent
+import java.awt.event.AWTEventListener
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
@@ -185,17 +190,31 @@ fun main(args: Array<String>) = application {
         title = "Help-CSL v${controller.currentVersion} — Служба технической поддержки (Windows)",
         icon = appIconPainter,
         onPreviewKeyEvent = { ev ->
-            if (ev.type == KeyEventType.KeyDown && ev.key == Key.F5) {
-                when (state.activeTab) {
-                    DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
-                    DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
-                    DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
-                    DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
-                    else -> controller.refreshTickets(silent = false)
+            val hasTopModalOpen = showShiftAnalytics ||
+                showToolboxDialog ||
+                showQrDialog ||
+                showFullGuide ||
+                state.pendingTransitionPrompt != null
+            when {
+                ev.type == KeyEventType.KeyDown && ev.key == Key.F5 -> {
+                    when (state.activeTab) {
+                        DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
+                        DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
+                        DesktopMainTab.REPAIR -> controller.syncRepairRegistry(silent = false)
+                        DesktopMainTab.CHAT -> controller.refreshChat(silent = false)
+                        else -> controller.refreshTickets(silent = false)
+                    }
+                    true
                 }
-                true
-            } else {
-                false
+                ev.type == KeyEventType.KeyDown && ev.isAltPressed && ev.key == Key.DirectionLeft && !hasTopModalOpen -> {
+                    controller.navigateBackToFreshHome()
+                    true
+                }
+                ev.type == KeyEventType.KeyDown && ev.key == Key.Escape && !hasTopModalOpen && !controller.isAtFreshHome(state) -> {
+                    controller.navigateBackToFreshHome()
+                    true
+                }
+                else -> false
             }
         }
     ) {
@@ -226,8 +245,22 @@ fun main(args: Array<String>) = application {
                     }
                 }
             })
+            // Hardware Mouse Back button (XButton1 / button 4) returns straight to «Свежие»
+            val mouseBackListener = AWTEventListener { event ->
+                val me = event as? MouseEvent ?: return@AWTEventListener
+                if (me.id == MouseEvent.MOUSE_PRESSED && me.button == 4) {
+                    val srcWin = SwingUtilities.getWindowAncestor(me.component) ?: (me.component as? java.awt.Window)
+                    if (srcWin === window && !controller.isAtFreshHome()) {
+                        controller.navigateBackToFreshHome()
+                    }
+                }
+            }
+            runCatching {
+                Toolkit.getDefaultToolkit().addAWTEventListener(mouseBackListener, AWTEvent.MOUSE_EVENT_MASK)
+            }
             onDispose {
                 runCatching { dropTarget.isActive = false }
+                runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(mouseBackListener) }
             }
         }
         HelpCslDesktopTheme(darkTheme = state.darkTheme) {
@@ -237,6 +270,8 @@ fun main(args: Array<String>) = application {
                     version = controller.currentVersion,
                     appIconBitmap = appIconBitmap,
                     newQueueCount = newQueueCount,
+                    canNavigateBackToFresh = !controller.isAtFreshHome(state),
+                    onNavigateBackToFresh = { controller.navigateBackToFreshHome() },
                     onSelectTab = { controller.selectTab(it) },
                     onRefresh = {
                         when (state.activeTab) {
@@ -366,6 +401,8 @@ private fun DesktopTopNavigationHeader(
     version: String,
     appIconBitmap: androidx.compose.ui.graphics.ImageBitmap,
     newQueueCount: Int,
+    canNavigateBackToFresh: Boolean,
+    onNavigateBackToFresh: () -> Unit,
     onSelectTab: (DesktopMainTab) -> Unit,
     onRefresh: () -> Unit,
     onOpenToolbox: () -> Unit,
@@ -415,6 +452,33 @@ private fun DesktopTopNavigationHeader(
             arrowDarkSurface = true,
             buttonHeight = 32.dp
         ) {
+            if (canNavigateBackToFresh) {
+                Surface(
+                    shape = RoundedCornerShape(9.dp),
+                    color = DesktopColors.CslNavySurface,
+                    border = BorderStroke(1.dp, DesktopColors.CslOrange),
+                    contentColor = Color.White,
+                    modifier = Modifier
+                        .height(34.dp)
+                        .clickable(onClick = onNavigateBackToFresh)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = "← Назад",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = DesktopColors.CslOrange,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
+
             DesktopMainTab.entries.forEach { tab ->
                 val selected = state.activeTab == tab
                 val badgeCount = when (tab) {

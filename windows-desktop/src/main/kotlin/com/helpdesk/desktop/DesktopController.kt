@@ -25,6 +25,7 @@ import com.helpdesk.jiraagent.domain.NetworkDiagnosticsTool
 import com.helpdesk.jiraagent.domain.PeriodAnalyticsSummary
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
+import com.helpdesk.jiraagent.domain.TicketAgeFilter
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
@@ -71,6 +72,13 @@ enum class DesktopMainTab(val title: String) {
     SETTINGS("Настройки")
 }
 
+enum class TicketQueueTab(val title: String) {
+    NEW("Новые"),
+    IN_PROGRESS("В работе"),
+    CLOSED("Закрытые"),
+    SERVICE("Сервисные")
+}
+
 data class DesktopToastAlert(
     val id: String,
     val title: String,
@@ -92,6 +100,10 @@ data class PendingTransitionPrompt(
 
 data class DesktopUiState(
     val activeTab: DesktopMainTab = DesktopMainTab.TICKETS,
+    val ticketQueueTab: TicketQueueTab = TicketQueueTab.NEW,
+    val ticketAgeFilter: TicketAgeFilter = TicketAgeFilter.FRESH_TODAY,
+    val showHabrFeedPanel: Boolean = false,
+    val resetTicketsViewStamp: Long = 0L,
     val settings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
     val darkTheme: Boolean = false,
@@ -102,6 +114,7 @@ data class DesktopUiState(
     val selectedTicketKey: String? = null,
     val isRefreshing: Boolean = false,
     val isPerformingAction: Boolean = false,
+    val isCleaningSystemRooms: Boolean = false,
     val statusBanner: String? = null,
     val errorBanner: String? = null,
     val connectedUserName: String? = null,
@@ -239,6 +252,7 @@ class DesktopController(
     private var pollingJob: Job? = null
     private var watchlistBackgroundJob: Job? = null
     private var wikiDailySyncJob: Job? = null
+    private var systemRoomsAutoCleanedV70: Boolean = persisted.systemRoomsAutoCleanedV70
     private var onBringWindowToFront: (() -> Unit)? = null
     private var onSystemTrayNotify: ((title: String, message: String) -> Unit)? = null
 
@@ -252,14 +266,20 @@ class DesktopController(
                 if (!persisted.appSettings.pollingEnabled) {
                     refreshTickets(silent = true, isInitialBoot = true)
                 }
-                delay(2_500L)
-                syncRepairRegistry(silent = true)
                 if (persisted.clientDirectory.isEmpty()) {
-                    delay(1_500L)
+                    delay(2_000L)
                     refreshClientsDirectory(silent = true)
                 }
-                delay(1_500L)
-                refreshChat(silent = true)
+                if (persisted.appSettings.adminChatIssueKey.isNotBlank()) {
+                    delay(1_500L)
+                    syncRepairRegistry(silent = true)
+                    delay(1_500L)
+                    refreshChat(silent = true)
+                }
+                if (!systemRoomsAutoCleanedV70) {
+                    delay(2_500L)
+                    cleanupSystemRoomsInJira(silentIfZero = true)
+                }
             }
         }
         if (persisted.appSettings.isZabbixConfigured &&
@@ -486,7 +506,59 @@ class DesktopController(
         persistCurrentState()
     }
 
+    fun isAtFreshHome(st: DesktopUiState = _state.value): Boolean {
+        return st.activeTab == DesktopMainTab.TICKETS &&
+            st.ticketQueueTab == TicketQueueTab.NEW &&
+            st.ticketAgeFilter == TicketAgeFilter.FRESH_TODAY &&
+            st.selectedTicketKey == null &&
+            st.selectedHabrItem == null &&
+            !st.showHabrFeedPanel
+    }
+
+    fun navigateBackToFreshHome() {
+        _state.update { st ->
+            st.copy(
+                activeTab = DesktopMainTab.TICKETS,
+                ticketQueueTab = TicketQueueTab.NEW,
+                ticketAgeFilter = TicketAgeFilter.FRESH_TODAY,
+                selectedTicketKey = null,
+                selectedHabrItem = null,
+                habrArticleDetail = null,
+                isLoadingHabrArticle = false,
+                habrArticleError = null,
+                showHabrFeedPanel = false,
+                resetTicketsViewStamp = System.currentTimeMillis()
+            )
+        }
+    }
+
+    fun setTicketQueueTab(tab: TicketQueueTab) {
+        _state.update {
+            it.copy(
+                ticketQueueTab = tab,
+                showHabrFeedPanel = false
+            )
+        }
+    }
+
+    fun setTicketAgeFilter(filter: TicketAgeFilter) {
+        _state.update {
+            it.copy(
+                ticketAgeFilter = filter,
+                showHabrFeedPanel = false
+            )
+        }
+    }
+
+    fun setShowHabrFeedPanel(show: Boolean) {
+        _state.update { it.copy(showHabrFeedPanel = show) }
+    }
+
     fun selectTab(tab: DesktopMainTab) {
+        if (tab == DesktopMainTab.TICKETS && _state.value.activeTab == DesktopMainTab.TICKETS) {
+            navigateBackToFreshHome()
+            return
+        }
         _state.update {
             it.copy(
                 activeTab = tab,
@@ -759,6 +831,7 @@ class DesktopController(
                     seenTicketKeys = synchronized(notifiedTicketKeys) { notifiedTicketKeys.toSet() },
                     deferredAlertKeys = synchronized(notifiedTicketKeys) { deferredTicketKeys.toSet() },
                     zabbixBaselineInitialized = zabbixBaselineInitialized,
+                    systemRoomsAutoCleanedV70 = systemRoomsAutoCleanedV70,
                     seenZabbixAlertKeys = synchronized(notifiedZabbixKeys) { notifiedZabbixKeys.toSet() },
                     deferredZabbixAlertKeys = synchronized(notifiedZabbixKeys) { deferredZabbixKeys.toSet() },
                     dismissedZabbixAlertKeys = cur.dismissedZabbixKeys,
@@ -1558,13 +1631,15 @@ class DesktopController(
                                 TicketStopwatchTracker.stopAndClear(st.ticketStopwatches, ticketKey)
                             else -> st.ticketStopwatches
                         }
+                        val returnToFresh = action == TicketWorkflowAction.COMPLETE || action == TicketWorkflowAction.REJECT
                         st.copy(
                             isPerformingAction = false,
                             pendingTransitionPrompt = null,
                             ticketStopwatches = nextStopwatches,
-                            selectedTicketKey = if (action == TicketWorkflowAction.COMPLETE || action == TicketWorkflowAction.REJECT) {
-                                null
-                            } else st.selectedTicketKey,
+                            selectedTicketKey = if (returnToFresh) null else st.selectedTicketKey,
+                            ticketQueueTab = if (returnToFresh) TicketQueueTab.NEW else st.ticketQueueTab,
+                            ticketAgeFilter = if (returnToFresh) TicketAgeFilter.FRESH_TODAY else st.ticketAgeFilter,
+                            showHabrFeedPanel = if (returnToFresh) false else st.showHabrFeedPanel,
                             statusBanner = outcome.statusMessage
                         )
                     }
@@ -1621,6 +1696,9 @@ class DesktopController(
                             isPerformingAction = false,
                             pendingTransitionPrompt = null,
                             selectedTicketKey = null,
+                            ticketQueueTab = TicketQueueTab.NEW,
+                            ticketAgeFilter = TicketAgeFilter.FRESH_TODAY,
+                            showHabrFeedPanel = false,
                             postponedTickets = listOfNotNull(outcome.postponedTicket) + st.postponedTickets,
                             statusBanner = outcome.statusMessage
                         )
@@ -2050,9 +2128,54 @@ class DesktopController(
         }
     }
 
+    fun cleanupSystemRoomsInJira(silentIfZero: Boolean = false) {
+        val cur = _state.value
+        if (!cur.settings.isConfigured || cur.isCleaningSystemRooms) return
+        _state.update {
+            it.copy(
+                isCleaningSystemRooms = true,
+                statusBanner = if (!silentIfZero) "Поиск и очистка служебных заявок [HELPCSL_*_ROOM] в Jira…" else it.statusBanner
+            )
+        }
+        scope.launch {
+            apiClient.cleanupSystemRoomIssues(cur.settings, cur.filterSettings)
+                .onSuccess { report ->
+                    systemRoomsAutoCleanedV70 = true
+                    val showMsg = !silentIfZero || report.cleanedCount > 0 || report.failedCount > 0
+                    _state.update { st ->
+                        st.copy(
+                            isCleaningSystemRooms = false,
+                            chatRoomKey = if (st.settings.adminChatIssueKey.isBlank()) "" else st.chatRoomKey,
+                            repairRoomKey = if (st.settings.adminChatIssueKey.isBlank()) "" else st.repairRoomKey,
+                            statusBanner = if (showMsg) report.formatSummaryMessage() else st.statusBanner
+                        )
+                    }
+                    persistCurrentState()
+                    if (report.cleanedCount > 0) {
+                        refreshTickets(silent = true)
+                    }
+                }
+                .onFailure { err ->
+                    _state.update { st ->
+                        st.copy(
+                            isCleaningSystemRooms = false,
+                            errorBanner = if (!silentIfZero) "Ошибка очистки служебных заявок: ${err.message}" else st.errorBanner
+                        )
+                    }
+                }
+        }
+    }
+
     fun syncRepairRegistry(silent: Boolean = false) {
         val cur = _state.value
         if (!cur.settings.isConfigured) return
+        if (cur.settings.adminChatIssueKey.isBlank()) {
+            if (cur.repairRoomKey.isNotEmpty() || cur.isSyncingRepair) {
+                _state.update { it.copy(repairRoomKey = "", isSyncingRepair = false) }
+                persistCurrentState()
+            }
+            return
+        }
         _state.update { it.copy(isSyncingRepair = true) }
         scope.launch {
             apiClient.resolveOrCreateRepairRegistryRoom(
@@ -2229,6 +2352,13 @@ class DesktopController(
     fun refreshChat(silent: Boolean = false) {
         val cur = _state.value
         if (!cur.settings.isConfigured) return
+        if (cur.settings.adminChatIssueKey.isBlank()) {
+            if (cur.chatRoomKey.isNotEmpty() || cur.isSyncingChat) {
+                _state.update { it.copy(chatRoomKey = "", isSyncingChat = false) }
+                persistCurrentState()
+            }
+            return
+        }
         _state.update { it.copy(isSyncingChat = true) }
         scope.launch {
             apiClient.resolveOrCreateAdminChatRoom(

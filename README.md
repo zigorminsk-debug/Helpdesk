@@ -9,7 +9,8 @@
 
 [![Windows Setup](https://img.shields.io/badge/Windows_10%2F11_x64-Скачать_setup.exe-F7631B?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/zigorminsk-debug/Helpdesk/releases/latest/download/setup.exe)
 [![Android Releases](https://img.shields.io/badge/Android_8.0%2B-Скачать_APK_(Releases)-2EB85C?style=for-the-badge&logo=android&logoColor=white)](https://github.com/zigorminsk-debug/Helpdesk/releases/latest)
-[![Full Guide](https://img.shields.io/badge/Документация-Полный_гайд_(GUIDE.md)-04091E?style=for-the-badge&logo=readthedocs&logoColor=white)](GUIDE.md)
+[![Full Guide](https://img.shields.io/badge/Инженеру-Полный_гайд_(GUIDE.md)-04091E?style=for-the-badge&logo=readthedocs&logoColor=white)](GUIDE.md)
+[![Agents Docs](https://img.shields.io/badge/ИИ--агентам_и_Dev-AGENTS.md_%2B_docs%2F-2563EB?style=for-the-badge&logo=github&logoColor=white)](AGENTS.md)
 
 </div>
 

@@ -463,7 +463,7 @@ class JiraMonitorService : Service() {
     private suspend fun pollAdminChatSafely() {
         runCatching {
             val settings = repository.appSettings.value
-            if (!settings.isConfigured) return
+            if (!settings.isConfigured || settings.adminChatIssueKey.isBlank()) return
             val filter = repository.filterSettings.value
             val cachedRoomKey = repository.resolvedChatRoomKey.value
             val roomKey = apiClient.resolveOrCreateAdminChatRoom(

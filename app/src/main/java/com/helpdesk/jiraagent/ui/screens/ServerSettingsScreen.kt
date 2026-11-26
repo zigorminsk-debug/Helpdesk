@@ -133,6 +133,9 @@ fun ServerSettingsScreen(
     currentSettings: AppSettings,
     connectionTest: ConnectionTestState,
     appUpdateState: AppUpdateUiState = AppUpdateUiState(),
+    isCleaningSystemRooms: Boolean = false,
+    systemRoomsCleanupMessage: String? = null,
+    onCleanupSystemRooms: () -> Unit = {},
     onTestConnection: (AppSettings) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onTriggerTestBanner: () -> Unit = {},
@@ -534,6 +537,28 @@ fun ServerSettingsScreen(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Проверить подключение")
+                }
+
+                OutlinedButton(
+                    onClick = onCleanupSystemRooms,
+                    enabled = draft.isConfigured && !isCleaningSystemRooms,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isCleaningSystemRooms) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Очистка [HELPCSL_*_ROOM]…")
+                    } else {
+                        Text("🧹 Убрать дубли [HELPCSL_*_ROOM] из Jira")
+                    }
+                }
+
+                if (!systemRoomsCleanupMessage.isNullOrBlank()) {
+                    Text(
+                        text = systemRoomsCleanupMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                 }
 
                 if (connectionTest.message != null) {

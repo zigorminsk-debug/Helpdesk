@@ -218,6 +218,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearchingKnowledge = MutableStateFlow(false)
     val isSearchingKnowledge: StateFlow<Boolean> = _isSearchingKnowledge.asStateFlow()
 
+    private val _isCleaningSystemRooms = MutableStateFlow(false)
+    val isCleaningSystemRooms: StateFlow<Boolean> = _isCleaningSystemRooms.asStateFlow()
+
+    private val _systemRoomsCleanupMessage = MutableStateFlow<String?>(null)
+    val systemRoomsCleanupMessage: StateFlow<String?> = _systemRoomsCleanupMessage.asStateFlow()
+
     val watchlistStatuses: StateFlow<List<WatchlistHostStatus>> = repository.watchlistStatuses
     val securityWipeNotice: StateFlow<String?> = repository.securityWipeNotice
 
@@ -367,6 +373,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             delay(1_500L)
             if (currentSettings.isConfigured) {
                 syncRepairRegistry(includeDirectoryRefresh = repository.clientDirectory.value.isEmpty())
+                if (!repository.isSystemRoomsAutoCleanedV70()) {
+                    cleanupSystemRoomsInJira(manual = false)
+                }
             }
             delay(2_000L)
             if (currentSettings.isConfluenceReady) {
@@ -614,8 +623,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeTicketDetail() {
-        _selectedTicketKey.value = null
-        _ticketActionState.value = TicketActionUiState()
+        navigateToMainScreen()
     }
 
     fun dismissTicketActionFeedback() {
@@ -1678,11 +1686,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cleanupSystemRoomsInJira(manual: Boolean = true) {
+        val settings = appSettings.value
+        if (!settings.isConfigured || _isCleaningSystemRooms.value) return
+        viewModelScope.launch {
+            _isCleaningSystemRooms.value = true
+            if (manual) {
+                _systemRoomsCleanupMessage.value = "Поиск и очистка служебных заявок [HELPCSL_*_ROOM] в Jira…"
+            }
+            apiClient.cleanupSystemRoomIssues(settings, filterSettings.value)
+                .onSuccess { report ->
+                    repository.markSystemRoomsAutoCleanedV70()
+                    if (manual || report.cleanedCount > 0 || report.failedCount > 0) {
+                        _systemRoomsCleanupMessage.value = report.formatSummaryMessage()
+                    }
+                    if (report.cleanedCount > 0) {
+                        refreshNow()
+                    }
+                }
+                .onFailure { err ->
+                    if (manual) {
+                        _systemRoomsCleanupMessage.value = "Ошибка очистки: ${err.message}"
+                    }
+                }
+            _isCleaningSystemRooms.value = false
+        }
+    }
+
     private suspend fun refreshAdminChatInternal(showSpinner: Boolean) {
+        val settings = appSettings.value
+        if (settings.adminChatIssueKey.isBlank()) {
+            _adminChatUiState.update { it.copy(isLoading = false, errorMessage = null) }
+            return
+        }
         if (showSpinner) {
             _adminChatUiState.update { it.copy(isLoading = true, errorMessage = null) }
         }
-        val settings = appSettings.value
         val filter = filterSettings.value
 
         val roomKeyResult = apiClient.resolveOrCreateAdminChatRoom(
@@ -2410,6 +2449,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (includeDirectoryRefresh && !_isLoadingClientDirectory.value) {
             refreshClientsDirectory(manual = false)
         }
+        if (settings.adminChatIssueKey.isBlank()) return
         viewModelScope.launch {
             _isSyncingRepair.value = true
             _repairSyncError.value = null

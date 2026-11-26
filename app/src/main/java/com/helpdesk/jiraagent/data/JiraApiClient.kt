@@ -91,6 +91,31 @@ data class PostponeTicketOutcome(
     val availableTransitions: List<JiraTransitionOption> = emptyList()
 )
 
+data class SystemRoomsCleanupReport(
+    val foundTotal: Int,
+    val deletedCount: Int,
+    val closedCount: Int,
+    val alreadyClosedCount: Int,
+    val failedCount: Int
+) {
+    val cleanedCount: Int get() = deletedCount + closedCount
+
+    fun formatSummaryMessage(): String = when {
+        foundTotal == 0 -> "Служебных заявок [HELPCSL_*_ROOM] в очереди Jira не обнаружено"
+        cleanedCount == 0 && alreadyClosedCount > 0 && failedCount == 0 ->
+            "Найдено служебных заявок: $foundTotal — все уже закрыты"
+        else -> buildString {
+            append("Очистка [HELPCSL_*_ROOM]: ")
+            val parts = mutableListOf<String>()
+            if (deletedCount > 0) parts.add("удалено $deletedCount")
+            if (closedCount > 0) parts.add("закрыто $closedCount")
+            if (alreadyClosedCount > 0) parts.add("уже были закрыты $alreadyClosedCount")
+            if (failedCount > 0) parts.add("не удалось закрыть $failedCount (нет прав в Jira)")
+            append(parts.joinToString(", "))
+        }
+    }
+}
+
 private data class AuthenticatedJiraUser(
     val name: String?,
     val accountId: String?,
@@ -2279,8 +2304,9 @@ class JiraApiClient {
     }
 
     /**
-     * Resolves (or automatically creates) the shared internal Admin Chat room Jira issue
-     * so all tech-support admins connected to the same Jira server communicate in one shared room.
+     * Resolves an explicitly configured shared Admin Chat room Jira issue.
+     * IMPORTANT: Automatic issue creation in Jira is strictly disabled so Help-CSL
+     * never creates `[HELPCSL_ADMIN_CHAT_ROOM]` tickets behind the user's back.
      */
     suspend fun resolveOrCreateAdminChatRoom(
         settings: AppSettings,
@@ -2292,55 +2318,21 @@ class JiraApiClient {
                 val baseUrl = normalizeBaseUrl(settings.serverUrl)
                 val preferCloud = isCloudTarget(settings, baseUrl)
 
-                // 1. Explicit room key configured manually in settings
                 val manualKey = settings.adminChatIssueKey.trim().uppercase(Locale.ROOT)
-                if (manualKey.isNotEmpty()) {
-                    if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
-                        resolvedChatRoomCache[baseUrl] = manualKey
-                        return@runCatching manualKey
-                    } else {
-                        throw JiraApiException("Задача комнаты чата $manualKey не найдена или недоступна")
-                    }
+                if (manualKey.isEmpty()) {
+                    resolvedChatRoomCache.remove(baseUrl)
+                    throw JiraApiException(
+                        "Синхронизация комнаты через Jira отключена (чтобы не создавать служебные тикеты в очереди). " +
+                            "При необходимости укажите номер одной существующей задачи вручную в Настройках."
+                    )
                 }
 
-                // 2. Previously discovered room key cached locally or in-process
-                val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
-                    .ifEmpty { resolvedChatRoomCache[baseUrl].orEmpty() }
-                if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
-                    resolvedChatRoomCache[baseUrl] = localCached
-                    return@runCatching localCached
+                if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
+                    resolvedChatRoomCache[baseUrl] = manualKey
+                    return@runCatching manualKey
+                } else {
+                    throw JiraApiException("Задача комнаты чата $manualKey не найдена или недоступна")
                 }
-
-                // 3. Search Jira for an existing shared Help-CSL Admin Chat room issue (oldest wins)
-                val searchQueries = listOf(
-                    """summary ~ "${AdminChatCodec.ADMIN_CHAT_MARKER}" ORDER BY created ASC""",
-                    """labels = "${AdminChatCodec.ADMIN_CHAT_LABEL}" ORDER BY created ASC"""
-                )
-                for (jql in searchQueries) {
-                    val foundKey = runCatching {
-                        val json = executeSearchWithFallback(
-                            baseUrl = baseUrl,
-                            jql = jql,
-                            maxResults = 5,
-                            preferCloud = preferCloud,
-                            settings = settings,
-                            fieldsSpec = "key,summary,labels",
-                            expandNames = false
-                        )
-                        val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
-                        arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
-                    }.getOrNull()
-                    if (!foundKey.isNullOrBlank()) {
-                        val upper = foundKey.uppercase(Locale.ROOT)
-                        resolvedChatRoomCache[baseUrl] = upper
-                        return@runCatching upper
-                    }
-                }
-
-                // 4. None exists yet -> automatically create the shared room issue and close it so it stays out of queues
-                val created = createSharedAdminChatRoomIssue(baseUrl, preferCloud, settings, filterSettings)
-                resolvedChatRoomCache[baseUrl] = created
-                created
             }
         }
     }
@@ -3152,8 +3144,9 @@ class JiraApiClient {
     )
 
     /**
-     * Resolves or creates the shared Jira storage issue `[HELPCSL_REPAIR_REGISTRY_ROOM]`
-     * so all engineers share the same workshop equipment repair registry.
+     * Resolves an explicitly configured shared Jira storage issue if `adminChatIssueKey` is set.
+     * IMPORTANT: Automatic creation of `[HELPCSL_REPAIR_REGISTRY_ROOM]` issues in Jira is strictly
+     * disabled so Help-CSL never pollutes live JSM queues with auto-created service tickets.
      */
     suspend fun resolveOrCreateRepairRegistryRoom(
         settings: AppSettings,
@@ -3165,51 +3158,237 @@ class JiraApiClient {
                 val baseUrl = normalizeBaseUrl(settings.serverUrl)
                 val preferCloud = isCloudTarget(settings, baseUrl)
 
-                val localCached = cachedRoomKey.trim().uppercase(Locale.ROOT)
-                    .ifEmpty { resolvedRepairRoomCache[baseUrl].orEmpty() }
-                if (localCached.isNotEmpty() && verifyIssueAccessible(baseUrl, preferCloud, localCached, settings)) {
-                    resolvedRepairRoomCache[baseUrl] = localCached
-                    return@runCatching localCached
+                val manualKey = settings.adminChatIssueKey.trim().uppercase(Locale.ROOT)
+                if (manualKey.isEmpty()) {
+                    resolvedRepairRoomCache.remove(baseUrl)
+                    throw JiraApiException("Автосоздание служебной комнаты журнала ремонта в Jira отключено")
                 }
 
-                val searchQueries = listOf(
-                    """summary ~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}" ORDER BY created ASC""",
-                    """labels = "${RepairEquipmentCodec.REPAIR_REGISTRY_LABEL}" ORDER BY created ASC"""
-                )
-                for (jql in searchQueries) {
-                    val foundKey = runCatching {
-                        val json = executeSearchWithFallback(
-                            baseUrl = baseUrl,
-                            jql = jql,
-                            maxResults = 5,
-                            preferCloud = preferCloud,
-                            settings = settings,
-                            fieldsSpec = "key,summary,labels",
-                            expandNames = false
-                        )
-                        val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
-                        arr?.firstOrNull()?.takeIf { it.isJsonObject }?.asJsonObject?.takeString("key")
-                    }.getOrNull()
-                    if (!foundKey.isNullOrBlank()) {
-                        val upper = foundKey.uppercase(Locale.ROOT)
-                        resolvedRepairRoomCache[baseUrl] = upper
-                        return@runCatching upper
-                    }
+                if (verifyIssueAccessible(baseUrl, preferCloud, manualKey, settings)) {
+                    resolvedRepairRoomCache[baseUrl] = manualKey
+                    return@runCatching manualKey
                 }
-
-                val created = createSharedSystemStorageIssue(
-                    baseUrl = baseUrl,
-                    preferCloud = preferCloud,
-                    settings = settings,
-                    filterSettings = filterSettings,
-                    summaryText = RepairEquipmentCodec.REPAIR_REGISTRY_SUMMARY,
-                    descriptionText = RepairEquipmentCodec.REPAIR_REGISTRY_DESCRIPTION,
-                    labelText = RepairEquipmentCodec.REPAIR_REGISTRY_LABEL
-                )
-                resolvedRepairRoomCache[baseUrl] = created
-                created
+                throw JiraApiException("Указанная служебная задача $manualKey недоступна")
             }
         }
+    }
+
+    /**
+     * Finds and removes (deletes if Jira permissions allow, otherwise transitions to Done/Closed/Cancelled
+     * across multi-step JSM workflows) all previously auto-created `[HELPCSL_REPAIR_REGISTRY_ROOM]`
+     * and `[HELPCSL_ADMIN_CHAT_ROOM]` issues so they no longer clutter Jira queues.
+     */
+    suspend fun cleanupSystemRoomIssues(
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<SystemRoomsCleanupReport> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
+            resolvedChatRoomCache.remove(baseUrl)
+            resolvedRepairRoomCache.remove(baseUrl)
+
+            data class FoundRoomIssue(
+                val key: String,
+                val summary: String,
+                val statusCategoryKey: String
+            )
+
+            val foundByKey = LinkedHashMap<String, FoundRoomIssue>()
+            val projectKeys = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+            val queries = buildList {
+                if (projectKeys.isNotEmpty()) {
+                    val quoted = projectKeys.joinToString(", ") { "\"$it\"" }
+                    add("project in ($quoted) ORDER BY created DESC")
+                }
+                add("""summary ~ "Журнал техники" OR summary ~ "Внутренний чат админов" ORDER BY created DESC""")
+                add("""summary ~ "${RepairEquipmentCodec.REPAIR_REGISTRY_MARKER}" OR summary ~ "${AdminChatCodec.ADMIN_CHAT_MARKER}" ORDER BY created DESC""")
+                add("ORDER BY created DESC")
+            }
+
+            for (jql in queries) {
+                runCatching {
+                    val json = executeSearchWithFallback(
+                        baseUrl = baseUrl,
+                        jql = jql,
+                        maxResults = 200,
+                        preferCloud = preferCloud,
+                        settings = settings,
+                        fieldsSpec = "key,summary,status",
+                        expandNames = false
+                    )
+                    val arr = JsonParser.parseString(json).asJsonObject.getAsJsonArray("issues")
+                    arr?.forEach { el ->
+                        if (!el.isJsonObject) return@forEach
+                        val obj = el.asJsonObject
+                        val key = obj.takeString("key")?.uppercase(Locale.ROOT) ?: return@forEach
+                        val fields = obj.getAsJsonObject("fields") ?: return@forEach
+                        val summary = fields.takeString("summary").orEmpty()
+                        val isAutoRoom = summary.contains(RepairEquipmentCodec.REPAIR_REGISTRY_MARKER, ignoreCase = true) ||
+                            summary.contains(AdminChatCodec.ADMIN_CHAT_MARKER, ignoreCase = true)
+                        if (!isAutoRoom) return@forEach
+
+                        val catKey = fields.getAsJsonObject("status")
+                            ?.getAsJsonObject("statusCategory")
+                            ?.takeString("key")
+                            .orEmpty()
+                        foundByKey.putIfAbsent(key, FoundRoomIssue(key, summary, catKey))
+                    }
+                }
+            }
+
+            if (foundByKey.isEmpty()) {
+                return@runCatching SystemRoomsCleanupReport(
+                    foundTotal = 0,
+                    deletedCount = 0,
+                    closedCount = 0,
+                    alreadyClosedCount = 0,
+                    failedCount = 0
+                )
+            }
+
+            val apiVer = if (preferCloud) "3" else "2"
+            var deletedCount = 0
+            var closedCount = 0
+            var alreadyClosedCount = 0
+            var failedCount = 0
+
+            for (item in foundByKey.values) {
+                val encodedKey = URLEncoder.encode(item.key, "UTF-8")
+
+                // 1. Try permanent DELETE first (if Jira user has Delete Issue permission)
+                val deleted = runCatching {
+                    val delUrl = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?deleteSubtasks=true"
+                    val req = Request.Builder().url(delUrl).delete().applyAuth(settings).build()
+                    clientFor(settings).newCall(req).execute().use { resp ->
+                        resp.isSuccessful || resp.code == 204
+                    }
+                }.getOrDefault(false)
+
+                if (deleted) {
+                    deletedCount++
+                    continue
+                }
+
+                // 2. If already in Done status category and cannot delete, skip
+                if (item.statusCategoryKey.equals("done", ignoreCase = true)) {
+                    alreadyClosedCount++
+                    continue
+                }
+
+                // 3. Multi-hop workflow transition into Done/Closed/Cancelled (up to 4 hops for JSM workflows)
+                val closedOk = closeSystemJunkIssueMultiHop(
+                    baseUrl = baseUrl,
+                    preferCloud = preferCloud,
+                    issueKey = item.key,
+                    settings = settings
+                )
+                if (closedOk) {
+                    closedCount++
+                } else {
+                    failedCount++
+                }
+            }
+
+            SystemRoomsCleanupReport(
+                foundTotal = foundByKey.size,
+                deletedCount = deletedCount,
+                closedCount = closedCount,
+                alreadyClosedCount = alreadyClosedCount,
+                failedCount = failedCount
+            )
+        }
+    }
+
+    private fun closeSystemJunkIssueMultiHop(
+        baseUrl: String,
+        preferCloud: Boolean,
+        issueKey: String,
+        settings: AppSettings
+    ): Boolean {
+        val encodedKey = URLEncoder.encode(issueKey, "UTF-8")
+        val apiVer = if (preferCloud) "3" else "2"
+
+        fun fetchCurrentCategoryKey(): String = runCatching {
+            val url = "$baseUrl/rest/api/$apiVer/issue/$encodedKey?fields=status"
+            val req = Request.Builder().url(url).get().applyAuth(settings).build()
+            clientFor(settings).newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use ""
+                JsonParser.parseString(resp.body?.string().orEmpty())
+                    .asJsonObject
+                    .getAsJsonObject("fields")
+                    ?.getAsJsonObject("status")
+                    ?.getAsJsonObject("statusCategory")
+                    ?.takeString("key")
+                    .orEmpty()
+            }
+        }.getOrDefault("")
+
+        val visitedTransitionIds = mutableSetOf<String>()
+        repeat(4) {
+            if (fetchCurrentCategoryKey().equals("done", ignoreCase = true)) {
+                return true
+            }
+            val transitions = runCatching {
+                fetchAvailableTransitions(baseUrl, preferCloud, issueKey, settings)
+            }.getOrDefault(emptyList())
+            if (transitions.isEmpty()) return false
+
+            // Priority A: Any direct transition into Done (Reject / Cancel / Close / Resolve / Done)
+            val doneTransition = transitions.firstOrNull { it.toCategoryKey.equals("done", ignoreCase = true) }
+                ?: selectBestTransition(transitions, TicketWorkflowAction.REJECT)
+                ?: selectBestTransition(transitions, TicketWorkflowAction.COMPLETE)
+
+            if (doneTransition != null) {
+                val actionHint = if (containsAnyKeyword("${doneTransition.name} ${doneTransition.toStatusName}", REJECT_KEYWORDS)) {
+                    TicketWorkflowAction.REJECT
+                } else {
+                    TicketWorkflowAction.COMPLETE
+                }
+                val transitioned = runCatching {
+                    executeTransition(baseUrl, preferCloud, issueKey, doneTransition, actionHint, settings)
+                    true
+                }.getOrElse {
+                    // Fallback: try plain transition payload or first allowed resolution
+                    runCatching {
+                        val fallbackResId = doneTransition.allowedResolutions.firstOrNull()?.first
+                        val fallbackPayload = JsonObject().apply {
+                            add("transition", JsonObject().apply { addProperty("id", doneTransition.id) })
+                            if (fallbackResId != null && doneTransition.resolutionRequired) {
+                                add(
+                                    "fields",
+                                    JsonObject().apply {
+                                        add("resolution", JsonObject().apply { addProperty("id", fallbackResId) })
+                                    }
+                                )
+                            }
+                        }
+                        val req = Request.Builder()
+                            .url("$baseUrl/rest/api/$apiVer/issue/$encodedKey/transitions")
+                            .post(fallbackPayload.toString().toRequestBody(jsonMediaType))
+                            .applyAuth(settings)
+                            .build()
+                        clientFor(settings).newCall(req).execute().use { it.isSuccessful }
+                    }.getOrDefault(false)
+                }
+                if (transitioned && fetchCurrentCategoryKey().equals("done", ignoreCase = true)) {
+                    return true
+                }
+                if (!transitioned) return false
+            } else {
+                // Priority B: Advance JSM issue out of "Ожидание поддержки" into "В работе" so Done transitions unlock
+                val stepTransition = (selectBestTransition(transitions, TicketWorkflowAction.TAKE_IN_WORK)
+                    ?: transitions.firstOrNull { it.id !in visitedTransitionIds })
+                    ?: return false
+                visitedTransitionIds.add(stepTransition.id)
+                val stepped = runCatching {
+                    executeTransition(baseUrl, preferCloud, issueKey, stepTransition, TicketWorkflowAction.TAKE_IN_WORK, settings)
+                    true
+                }.getOrDefault(false)
+                if (!stepped) return false
+            }
+        }
+        return fetchCurrentCategoryKey().equals("done", ignoreCase = true)
     }
 
     suspend fun fetchRepairRegistryRemoteEntries(

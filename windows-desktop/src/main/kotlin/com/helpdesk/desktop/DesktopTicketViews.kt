@@ -75,13 +75,6 @@ import javax.imageio.ImageIO
 import javax.imageio.metadata.IIOMetadataNode
 import javax.swing.JFileChooser
 
-private enum class TicketQueueTab(val title: String) {
-    NEW("Новые"),
-    IN_PROGRESS("В работе"),
-    CLOSED("Закрытые"),
-    SERVICE("Сервисные")
-}
-
 private enum class AssigneeScope(val title: String) {
     ALL("Все"),
     MINE("Мои")
@@ -111,17 +104,26 @@ fun DesktopTicketsWorkspace(
     state: DesktopUiState,
     controller: DesktopController
 ) {
-    var queueTab by remember { mutableStateOf(TicketQueueTab.NEW) }
+    val queueTab = state.ticketQueueTab
+    val ageFilter = state.ticketAgeFilter
+    val showHabrPanel = state.showHabrFeedPanel
     var inWorkScope by remember { mutableStateOf(AssigneeScope.ALL) }
     var closedScope by remember { mutableStateOf(AssigneeScope.ALL) }
-    var ageFilter by remember { mutableStateOf(TicketAgeFilter.ALL) }
     var filterOnlyStaleNew by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showSerialArchiveDialog by remember { mutableStateOf(false) }
     var showKnowledgeArchiveDialog by remember { mutableStateOf(false) }
     var showPostponedDialog by remember { mutableStateOf(false) }
-    var showHabrPanel by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.resetTicketsViewStamp) {
+        if (state.resetTicketsViewStamp > 0L) {
+            inWorkScope = AssigneeScope.ALL
+            closedScope = AssigneeScope.ALL
+            filterOnlyStaleNew = false
+            searchQuery = ""
+        }
+    }
 
     // Update stale-counter clock once per minute instead of every 20 seconds
     val nowTick by produceState(initialValue = Instant.now()) {
@@ -373,7 +375,7 @@ fun DesktopTicketsWorkspace(
                         modifier = Modifier.weight(0.95f),
                         onClick = {
                             val next = !showHabrPanel
-                            showHabrPanel = next
+                            controller.setShowHabrFeedPanel(next)
                             if (next && state.habrItems.isEmpty() && !state.isLoadingHabr) {
                                 controller.loadHabrFeed(state.habrCategory, force = false)
                             }
@@ -440,8 +442,10 @@ fun DesktopTicketsWorkspace(
                                     .weight(1f)
                                     .fillMaxHeight()
                                     .clickable {
-                                        showHabrPanel = false
-                                        queueTab = tab
+                                        controller.setTicketQueueTab(tab)
+                                        if (tab == TicketQueueTab.NEW || tab == TicketQueueTab.IN_PROGRESS) {
+                                            controller.setTicketAgeFilter(TicketAgeFilter.FRESH_TODAY)
+                                        }
                                     }
                             ) {
                                 Column(
@@ -515,21 +519,21 @@ fun DesktopTicketsWorkspace(
                             selected = ageFilter == TicketAgeFilter.ALL,
                             accentColor = DesktopColors.CslOrange,
                             modifier = Modifier.weight(0.74f),
-                            onClick = { ageFilter = TicketAgeFilter.ALL }
+                            onClick = { controller.setTicketAgeFilter(TicketAgeFilter.ALL) }
                         )
                         SubScopePill(
                             label = "● Свежие (${freshQueueList.size})",
                             selected = ageFilter == TicketAgeFilter.FRESH_TODAY,
                             accentColor = DesktopColors.StatusGreen,
                             modifier = Modifier.weight(1.11f),
-                            onClick = { ageFilter = TicketAgeFilter.FRESH_TODAY }
+                            onClick = { controller.setTicketAgeFilter(TicketAgeFilter.FRESH_TODAY) }
                         )
                         SubScopePill(
                             label = "◷ Прошлые (${pastQueueList.size})",
                             selected = ageFilter == TicketAgeFilter.PAST_HANGING,
                             accentColor = DesktopColors.StatusAmber,
                             modifier = Modifier.weight(1.15f),
-                            onClick = { ageFilter = TicketAgeFilter.PAST_HANGING }
+                            onClick = { controller.setTicketAgeFilter(TicketAgeFilter.PAST_HANGING) }
                         )
                     }
                 }
@@ -584,9 +588,14 @@ fun DesktopTicketsWorkspace(
                 Spacer(Modifier.height(8.dp))
 
                 if (showHabrPanel || filteredList.isEmpty()) {
+                    val pastHintCount = if (!showHabrPanel && isFreshPastTab && ageFilter == TicketAgeFilter.FRESH_TODAY) {
+                        pastQueueList.size
+                    } else 0
                     DesktopEmptyQueueWithHabr(
                         showEmptyQueueHeader = !showHabrPanel && filteredList.isEmpty(),
                         showMorningGif = !showHabrPanel && filteredList.isEmpty() && isMorningGifTime,
+                        pastHangingCount = pastHintCount,
+                        onShowPastHanging = { controller.setTicketAgeFilter(TicketAgeFilter.PAST_HANGING) },
                         gifIndex = state.emptyGifIndex,
                         onCycleGif = { controller.cycleEmptyGif() },
                         onDismissGifToday = { controller.dismissMorningGifToday() },
@@ -726,7 +735,7 @@ fun DesktopTicketsWorkspace(
                             onSelectAdjacent = { controller.selectHabrNews(it) },
                             onRetry = { controller.selectHabrNews(activeHabr, forceRefresh = true) },
                             onCopyLink = { WindowsExternalLaunchers.copyToClipboard(activeHabr.url) },
-                            onClose = { controller.closeHabrArticle() }
+                            onClose = { controller.navigateBackToFreshHome() }
                         )
                     }
                     selectedTicket != null -> {
@@ -747,18 +756,16 @@ fun DesktopTicketsWorkspace(
                             closedCount = closedCount,
                             settings = state.settings,
                             nowMillis = nowMs,
-                            previewTickets = (clientTickets.filter { it.stage == TicketStage.IN_PROGRESS } +
-                                clientTickets.filter { it.stage == TicketStage.NEW }).take(4),
+                            previewTickets = (newFreshAll + inWorkFreshAll + inWorkPastAll + newPastAll).take(4),
                             onJumpToQueue = { targetTab, targetAgeFilter ->
-                                showHabrPanel = false
-                                queueTab = targetTab
-                                ageFilter = targetAgeFilter
+                                controller.setTicketQueueTab(targetTab)
+                                controller.setTicketAgeFilter(targetAgeFilter)
                                 filterOnlyStaleNew = false
                             },
                             onOpenTicket = { key -> controller.selectTicket(key) },
                             onCreateTicket = { showCreateDialog = true },
                             onOpenHabr = {
-                                showHabrPanel = true
+                                controller.setShowHabrFeedPanel(true)
                                 if (state.habrItems.isEmpty() && !state.isLoadingHabr) {
                                     controller.loadHabrFeed(state.habrCategory, force = false)
                                 }
@@ -946,7 +953,7 @@ private fun DesktopWelcomeOverviewPane(
                                 subNote = "сег: $newFreshCount · пр: $newPastCount",
                                 accent = DesktopColors.CslOrange,
                                 modifier = Modifier.weight(1f),
-                                onClick = { onJumpToQueue(TicketQueueTab.NEW, TicketAgeFilter.ALL) }
+                                onClick = { onJumpToQueue(TicketQueueTab.NEW, TicketAgeFilter.FRESH_TODAY) }
                             )
                             KpiTile(
                                 title = "В работе",
@@ -954,7 +961,7 @@ private fun DesktopWelcomeOverviewPane(
                                 subNote = "сег: $inWorkFreshCount · пр: $inWorkPastCount",
                                 accent = DesktopColors.StatusBlue,
                                 modifier = Modifier.weight(1f),
-                                onClick = { onJumpToQueue(TicketQueueTab.IN_PROGRESS, TicketAgeFilter.ALL) }
+                                onClick = { onJumpToQueue(TicketQueueTab.IN_PROGRESS, TicketAgeFilter.FRESH_TODAY) }
                             )
                             KpiTile(
                                 title = "Прошлые (висят)",
@@ -1466,6 +1473,8 @@ private fun CompactDesktopTicketCard(
 private fun DesktopEmptyQueueWithHabr(
     showEmptyQueueHeader: Boolean,
     showMorningGif: Boolean,
+    pastHangingCount: Int = 0,
+    onShowPastHanging: (() -> Unit)? = null,
     gifIndex: Int,
     onCycleGif: () -> Unit,
     onDismissGifToday: () -> Unit,
@@ -1484,6 +1493,47 @@ private fun DesktopEmptyQueueWithHabr(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (pastHangingCount > 0 && onShowPastHanging != null) {
+            item(key = "past_hanging_quick_strip") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onShowPastHanging)
+                        .padding(horizontal = 4.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(DesktopColors.StatusAmber)
+                    )
+                    Text(
+                        text = "В прошлых заявках: $pastHangingCount",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = DesktopColors.TextSecondary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.weight(1f),
+                        thickness = 1.dp,
+                        color = DesktopColors.BorderSubtle
+                    )
+                    Text(
+                        text = "Показать →",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = DesktopColors.StatusAmber,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        }
         if (showMorningGif) {
             item(key = "morning_gif_banner") {
                 Surface(
@@ -2263,6 +2313,12 @@ private fun DesktopTicketInspector(
                             Spacer(Modifier.width(8.dp))
                             DisableSelection {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = { controller.navigateBackToFreshHome() },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("← Назад", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = DesktopColors.CslOrange, maxLines = 1, softWrap = false)
+                                    }
                                     OutlinedButton(
                                         onClick = {
                                             WindowsExternalLaunchers.copyToClipboard(ticket.key)
