@@ -10,19 +10,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helpdesk.jiraagent.domain.CommandPlatform
+import com.helpdesk.jiraagent.domain.CommandTopic
 import com.helpdesk.jiraagent.domain.SysadminCommandCatalog
 
 @Composable
 fun SysadminCommandsAndroidView(onCopy: (String, String) -> Unit) {
     var query by remember { mutableStateOf("") }
     var platform by remember { mutableStateOf<CommandPlatform?>(null) }
-    val entries = remember(query, platform) { SysadminCommandCatalog.search(query, platform) }
+    var topic by remember { mutableStateOf<CommandTopic?>(null) }
+    val entries = remember(query, platform, topic) { SysadminCommandCatalog.search(query, platform, topic) }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Команды и скрипты", fontWeight = FontWeight.Bold, fontSize = 18.sp)
         Text("Только копирование: приложение ничего не запускает. Перед выполнением проверьте адреса, права и предупреждения.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -33,19 +36,38 @@ fun SysadminCommandsAndroidView(onCopy: (String, String) -> Unit) {
                 FilterChip(selected = platform == item, onClick = { platform = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
             }
         }
-        if (entries.isEmpty()) Text("Ничего не найдено. Измените запрос или платформу.")
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = topic == null, onClick = { topic = null }, label = { Text("Все темы", maxLines = 1, softWrap = false) })
+            CommandTopic.entries.filter { it != CommandTopic.GENERAL }.forEach { item ->
+                FilterChip(selected = topic == item, onClick = { topic = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+            }
+        }
+        Text("Найдено: ${entries.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (entries.isEmpty()) Text("Ничего не найдено. Измените запрос, платформу или тему.")
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
             items(entries, key = { it.id }) { entry ->
+                var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                         Text("${entry.platform.label} · ${entry.title}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         Text(entry.description, fontSize = 13.sp)
-                        Text("Как применять: ${entry.instructions}", fontSize = 12.5.sp)
-                        Text("Важно: ${entry.impact}", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error)
-                        SelectionContainer {
-                            Text(entry.command, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp)).padding(10.dp), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        Text(if (entry.changesSystem) "⚠ Изменяет систему · ${entry.topic.label}" else "Диагностика / справка · ${entry.topic.label}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (entry.changesSystem) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                            Text(if (expanded) "▲ Скрыть инструкцию и команду" else "▼ Показать инструкцию и команду")
                         }
-                        Button(onClick = { onCopy(entry.title, entry.command) }) { Text("📋 Скопировать команду") }
+                        if (expanded) {
+                            Text("Как применять: ${entry.instructions}", fontSize = 12.5.sp)
+                            Text("Важно: ${entry.impact}", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error)
+                            SelectionContainer {
+                                Text(entry.command, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp)).padding(10.dp), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            }
+                        }
+                        if (expanded) {
+                            Button(onClick = { onCopy(entry.title, entry.command) }) { Text("📋 Скопировать команду") }
+                            OutlinedButton(onClick = { onCopy(entry.title, SysadminCommandCatalog.formatInstructions(entry)) }) {
+                                Text("📋 Скопировать инструкцию для коллеги")
+                            }
+                        }
                     }
                 }
             }

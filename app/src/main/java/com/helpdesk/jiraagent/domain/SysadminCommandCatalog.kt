@@ -5,6 +5,11 @@ enum class CommandPlatform(val label: String) {
     WINDOWS("Windows CMD"), LINUX("Linux / Bash"), POWERSHELL("PowerShell")
 }
 
+enum class CommandTopic(val label: String) {
+    DOMAIN("Домен / AD"), SERVER("Серверы"), NETWORK("Сеть / DNS"),
+    STORAGE("Диски / память"), REPAIR("Восстановление"), GENERAL("Прочее")
+}
+
 data class SysadminCommand(
     val id: String,
     val platform: CommandPlatform,
@@ -12,7 +17,9 @@ data class SysadminCommand(
     val description: String,
     val instructions: String,
     val impact: String,
-    val command: String
+    val command: String,
+    val topic: CommandTopic = CommandTopic.GENERAL,
+    val changesSystem: Boolean = false
 )
 
 object SysadminCommandCatalog {
@@ -92,13 +99,35 @@ object SysadminCommandCatalog {
                     @{Name='Свободно ГБ'; Expression={[math]::Round(${'$'}_.FreeSpace / 1GB, 1)}} |
                 Format-Table -AutoSize
         """.trimIndent())
-    )
+    ).map { entry ->
+        val topic = when (entry.id) {
+            "win-ip", "win-dns", "win-route", "win-ping", "win-trace", "win-ports",
+            "linux-ip", "linux-route", "linux-dns", "linux-ping", "linux-ports", "ps-network", "ps-port" -> CommandTopic.NETWORK
+            "win-disk", "linux-disk", "linux-inodes", "linux-memory", "ps-space" -> CommandTopic.STORAGE
+            "win-sfc", "ps-dnsflush", "ps-service" -> CommandTopic.REPAIR
+            "linux-services", "linux-journal", "ps-events" -> CommandTopic.SERVER
+            else -> CommandTopic.GENERAL
+        }
+        entry.copy(topic = topic, changesSystem = entry.id in setOf("win-sfc", "ps-dnsflush", "ps-service"))
+    } + SysadminServerCommands.entries
 
-    fun search(query: String, platform: CommandPlatform? = null): List<SysadminCommand> {
+    /** For sharing with a colleague, not for pasting directly into a shell. */
+    fun formatInstructions(entry: SysadminCommand): String = buildString {
+        appendLine("${entry.platform.label} · ${entry.title}")
+        appendLine(entry.description)
+        appendLine()
+        appendLine("Как применять: ${entry.instructions}")
+        appendLine("Важно: ${entry.impact}")
+        appendLine()
+        appendLine("Команда:")
+        append(entry.command)
+    }
+
+    fun search(query: String, platform: CommandPlatform? = null, topic: CommandTopic? = null): List<SysadminCommand> {
         val words = query.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
         return entries.filter { entry ->
-            (platform == null || entry.platform == platform) && words.all { word ->
-                listOf(entry.platform.label, entry.title, entry.description, entry.instructions, entry.impact, entry.command)
+            (platform == null || entry.platform == platform) && (topic == null || entry.topic == topic) && words.all { word ->
+                listOf(entry.platform.label, entry.topic.label, entry.title, entry.description, entry.instructions, entry.impact, entry.command)
                     .any { it.contains(word, ignoreCase = true) }
             }
         }
