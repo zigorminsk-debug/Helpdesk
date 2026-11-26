@@ -2946,7 +2946,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .filter { it.resolvedEpochMillis > 0L }
                     .associateBy({ it.key.uppercase() }, { it.resolvedIso to it.resolvedEpochMillis })
                 _kpiSampleTickets.value = list.map { t ->
-                    if (t.stage == TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
+                    if (t.stage == com.helpdesk.jiraagent.model.TicketStage.CLOSED && t.resolvedEpochMillis <= 0L) {
                         val prev = prevClosedTimestamps[t.key.uppercase()]
                         if (prev != null) t.copy(resolvedIso = prev.first, resolvedEpochMillis = prev.second) else t
                     } else {

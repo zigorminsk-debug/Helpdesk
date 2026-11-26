@@ -855,7 +855,7 @@ class JiraApiClient {
                 executeTransition(baseUrl, preferCloud, issueKey, chosenTransition, action, settings)
 
                 val closedNowMs = System.currentTimeMillis()
-                val closedNowIso = Instant.ofEpochMilli(closedNowMs).toString()
+                val closedNowIso = java.time.Instant.ofEpochMilli(closedNowMs).toString()
                 val rawRefreshed = fetchTicketByKey(issueKey, settings, filterSettings).getOrNull()
                 val refreshed = if (
                     rawRefreshed != null &&
@@ -2837,8 +2837,8 @@ class JiraApiClient {
         maxTotal: Int = 500
     ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
         runCatching {
-            val baseUrl = normalizeServerUrl(settings.serverUrl)
-            val preferCloud = isCloudEndpoint(baseUrl, settings.serverType)
+            val baseUrl = normalizeBaseUrl(settings.serverUrl)
+            val preferCloud = isCloudTarget(settings, baseUrl)
             val safeDays = (daysBack + 1).coerceIn(1, 45)
 
             val projectKeys = filterSettings.projectKeys

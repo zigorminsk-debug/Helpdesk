@@ -451,7 +451,11 @@ object ShiftAnalyticsCalculator {
             val closedStr = if (t.stage == TicketStage.CLOSED && closedMs > 0L) TicketTimingFormatter.formatFullMinsk(closedMs) else ""
             val durMins = t.resolutionDurationMinutes?.toString().orEmpty()
             val humanAssignee = t.assigneeName?.takeIf { it.isNotBlank() }?.let {
-                EngineerNameResolver.resolve(rawEngineer = it, knownTickets = summary.matchingTickets)
+                EngineerNameResolver.resolve(
+                    rawEngineer = it,
+                    connectedUserDisplayName = null,
+                    knownTickets = summary.matchingTickets
+                )
             } ?: "Не назначен"
             sb.appendLine(
                 listOf(
