@@ -305,6 +305,7 @@ fun RepairRegistryScreen(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val compactHeight = maxHeight < 400.dp
+        val compactPanelMaxHeight = maxHeight * 0.55f
         var showCompactControls by rememberSaveable { mutableStateOf(false) }
         Column(modifier = Modifier.fillMaxSize()) {
             if (compactHeight) {
@@ -313,7 +314,7 @@ fun RepairRegistryScreen(
                 }
             }
             if (!compactHeight || showCompactControls) {
-                Column(modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).verticalScroll(rememberScrollState()) else Modifier.fillMaxWidth()) {
+                Column(modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = compactPanelMaxHeight).verticalScroll(rememberScrollState()) else Modifier.fillMaxWidth()) {
         // Corporate csl.by Header Strip
         Surface(
             color = CslMidnight,

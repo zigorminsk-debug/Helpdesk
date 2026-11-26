@@ -366,6 +366,7 @@ fun TicketsScreen(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val compactHeight = maxHeight < 400.dp
+        val compactPanelMaxHeight = maxHeight * 0.55f
         var showCompactControls by rememberSaveable { mutableStateOf(false) }
         Column(modifier = Modifier.fillMaxSize()) {
             if (compactHeight) {
@@ -385,7 +386,7 @@ fun TicketsScreen(
             }
             if (!compactHeight || showCompactControls) {
                 Column(
-                    modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).verticalScroll(rememberScrollState())
+                    modifier = if (compactHeight) Modifier.fillMaxWidth().heightIn(max = compactPanelMaxHeight).verticalScroll(rememberScrollState())
                     else Modifier.fillMaxWidth()
                 ) {
             if (syncStatus.isSyncing) {
