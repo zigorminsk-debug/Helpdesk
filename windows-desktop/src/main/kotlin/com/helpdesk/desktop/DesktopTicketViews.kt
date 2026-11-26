@@ -850,7 +850,8 @@ private fun DesktopWelcomeOverviewPane(
     val welcomeScroll = rememberScrollState()
     val totalPastCount = newPastCount + inWorkPastCount
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isCompactHeight = maxHeight < 760.dp
+        val viewportHeight = maxHeight
+        val isCompactHeight = viewportHeight < 760.dp
         val isNarrowCard = maxWidth < 620.dp
         val outerPad = if (isCompactHeight) 12.dp else 18.dp
         val cardPad = if (isCompactHeight) 16.dp else 22.dp
@@ -872,7 +873,7 @@ private fun DesktopWelcomeOverviewPane(
                     shadowElevation = 2.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = (maxHeight - outerPad * 2).coerceAtLeast(320.dp))
+                        .heightIn(min = (viewportHeight - outerPad * 2).coerceAtLeast(320.dp))
                 ) {
                     Column(
                         modifier = Modifier

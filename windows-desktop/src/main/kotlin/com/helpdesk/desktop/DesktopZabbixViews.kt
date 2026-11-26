@@ -876,6 +876,7 @@ fun DesktopZabbixWorkspace(
     }
 }
 
+@Composable
 private fun desktopZabbixSevColor(level: Int): Color {
     return when {
         level >= 5 -> Color(0xFFD93025)

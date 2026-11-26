@@ -7,13 +7,13 @@ import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import com.helpdesk.jiraagent.data.JiraApiException
 import com.helpdesk.jiraagent.data.SettingsRepository
+import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.model.OfflineQueuedAction
 import com.helpdesk.jiraagent.model.PhoneRegion
 import com.helpdesk.jiraagent.model.QueuedActionType
 import com.helpdesk.jiraagent.model.TicketStage
-import com.helpdesk.jiraagent.model.TicketWorkflowAction
 import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

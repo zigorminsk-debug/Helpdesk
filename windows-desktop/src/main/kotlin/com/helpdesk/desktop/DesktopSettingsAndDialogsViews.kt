@@ -405,7 +405,7 @@ fun DesktopSettingsWorkspace(
                             val isSelected = state.settings.darkThemePreset == preset
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = Color(preset.previewSurfaceHex),
+                                color = Color(preset.previewCardHex),
                                 border = BorderStroke(
                                     width = if (isSelected) 2.dp else 1.dp,
                                     color = if (isSelected) Color(preset.previewAccentHex) else Color(0xFF475569)

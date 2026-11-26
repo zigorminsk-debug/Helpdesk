@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.helpdesk.jiraagent.model.DarkThemePreset
 
 // Corporate palette inspired directly by https://csl.by ("Компьютерная безопасность")
 val CslOrange = Color(0xFFF7631B)          // $primary-color: #f7631b
@@ -66,8 +67,6 @@ private val LightColors = lightColorScheme(
     errorContainer = Color(0xFFFFE9E7),
     onErrorContainer = Color(0xFF7D1610)
 )
-
-import com.helpdesk.jiraagent.model.DarkThemePreset
 
 private fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
     DarkThemePreset.CSL_NAVY -> darkColorScheme(
