@@ -141,7 +141,15 @@ enum class DarkThemePreset(
         previewBgHex = 0xFF14110FL,
         previewCardHex = 0xFF201B18L,
         previewAccentHex = 0xFFF59E0BL
-    )
+    );
+
+    companion object {
+        fun fromRaw(raw: String?): DarkThemePreset {
+            val cleaned = raw?.trim().orEmpty()
+            if (cleaned.isEmpty()) return CSL_NAVY
+            return entries.firstOrNull { it.name.equals(cleaned, ignoreCase = true) } ?: CSL_NAVY
+        }
+    }
 }
 
 data class AppSettings(
