@@ -606,6 +606,7 @@ fun SysadminToolboxAndroidDialog(
                             )
                         }
                     }
+                    4 -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                 }
             }
         }

@@ -1788,8 +1788,8 @@ fun DesktopSysadminToolboxDialog(
     initialTabIndex: Int = 0,
     onDismiss: () -> Unit
 ) {
-    var tabIndex by remember { mutableStateOf(initialTabIndex.coerceIn(0, 3)) }
-    val tabs = listOf("⚡ Wake-on-LAN", "🌐 IP / Подсети", "🔐 Генератор паролей", "🛡 Монитор SSL и узлов")
+    var tabIndex by remember { mutableStateOf(initialTabIndex.coerceIn(0, 4)) }
+    val tabs = listOf("⚡ Wake-on-LAN", "🌐 IP / Подсети", "🔐 Пароли", "🛡 SSL / Узлы", "⌨ Команды")
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(tabIndex) {

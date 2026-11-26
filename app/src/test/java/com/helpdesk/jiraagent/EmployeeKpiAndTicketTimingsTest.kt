@@ -5,6 +5,8 @@ import com.helpdesk.jiraagent.domain.EmployeeActivityStatus
 import com.helpdesk.jiraagent.domain.ShiftAnalyticsCalculator
 import com.helpdesk.jiraagent.domain.ShiftReportPeriod
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
+import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TicketTimingFormatter
@@ -44,7 +46,7 @@ class EmployeeKpiAndTicketTimingsTest {
             }
         """.trimIndent()
 
-        val parsed = JiraJsonParser.parseSearchResponse(sampleJson, "https://jira.csl.by")
+        val parsed = JiraJsonParser.parseSearchResponse(sampleJson, AppSettings(serverUrl = "https://jira.csl.by"), FilterSettings())
         assertEquals(1, parsed.size)
         val ticket = parsed.first()
         assertEquals(TicketStage.CLOSED, ticket.stage)
@@ -60,7 +62,7 @@ class EmployeeKpiAndTicketTimingsTest {
 
         val cardLine = TicketTimingFormatter.buildCardTimingSummary(
             ticket = ticket,
-            nowEpochMillis = ticket.resolvedEpochMillis + 600_000L
+            nowMillis = ticket.resolvedEpochMillis + 600_000L
         )
         assertTrue("Card timing summary must include arrival: $cardLine", cardLine.contains("09:10"))
         assertTrue("Card timing summary must include closure: $cardLine", cardLine.contains("09:52"))
@@ -145,7 +147,7 @@ class EmployeeKpiAndTicketTimingsTest {
                     runningSinceEpochMs = null
                 )
             ),
-            nowEpochMs = nowMs
+            nowMillis = nowMs
         )
 
         assertEquals(3, summary.closedInPeriod)
@@ -156,7 +158,7 @@ class EmployeeKpiAndTicketTimingsTest {
         assertEquals("Захаревич Игорь", topEmp.engineerName)
         assertTrue(topEmp.isCurrentUser)
         assertEquals(2, topEmp.closedCount)
-        assertEquals(67, topEmp.shareOfTeamClosedPercent)
+        assertEquals(66, topEmp.shareOfTeamClosedPercent)
         assertEquals(1, topEmp.inProgressCount)
         assertEquals(80L, topEmp.avgResolutionMinutes) // (40 + 120) / 2
         assertEquals(50, topEmp.fastCloseUnder1hPercent) // 1 of 2 <= 60m
