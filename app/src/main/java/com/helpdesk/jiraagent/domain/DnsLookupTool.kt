@@ -84,7 +84,7 @@ object DnsLookupTool {
             }
             var response = Message(responseBytes)
             validateResponse(query, response)
-            if (response.header.getFlag(Flags.TC)) {
+            if (response.header.getFlag(Flags.TC.toInt())) {
                 response = Socket().use { socket ->
                     socket.connect(InetSocketAddress(address, port), timeoutMs)
                     socket.soTimeout = timeoutMs
@@ -97,7 +97,7 @@ object DnsLookupTool {
                     Message(bytes)
                 }
                 validateResponse(query, response)
-                require(!response.header.getFlag(Flags.TC)) { "DNS-ответ обрезан и по TCP" }
+                require(!response.header.getFlag(Flags.TC.toInt())) { "DNS-ответ обрезан и по TCP" }
             }
             val answer = response.getSection(Section.ANSWER)
             val records = answer.take(100).map {
@@ -110,7 +110,7 @@ object DnsLookupTool {
     }
 
     private fun validateResponse(query: Message, response: Message) {
-        require(response.header.id == query.header.id && response.header.getFlag(Flags.QR) &&
+        require(response.header.id == query.header.id && response.header.getFlag(Flags.QR.toInt()) &&
             response.question == query.question) { "Некорректный DNS-ответ" }
     }
 }

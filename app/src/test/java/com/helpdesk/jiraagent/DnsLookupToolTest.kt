@@ -42,7 +42,7 @@ class DnsLookupToolTest {
                 socket.receive(packet)
                 val query = Message(packet.data.copyOf(packet.length))
                 val response = Message(query.header.id).apply {
-                    header.setFlag(Flags.QR)
+                    header.setFlag(Flags.QR.toInt())
                     addRecord(query.question, Section.QUESTION)
                     addRecord(ARecord(query.question.name, DClass.IN, 60, InetAddress.getByAddress(byteArrayOf(10, 1, 2, 3))), Section.ANSWER)
                 }.toWire()
@@ -71,7 +71,7 @@ class DnsLookupToolTest {
                     udp.receive(packet)
                     val query = Message(packet.data.copyOf(packet.length))
                     val truncated = Message(query.header.id).apply {
-                        header.setFlag(Flags.QR); header.setFlag(Flags.TC)
+                        header.setFlag(Flags.QR.toInt()); header.setFlag(Flags.TC.toInt())
                         addRecord(query.question, Section.QUESTION)
                     }.toWire()
                     udp.send(DatagramPacket(truncated, truncated.size, packet.socketAddress))
@@ -81,7 +81,7 @@ class DnsLookupToolTest {
                         input.readFully(bytes)
                         val tcpQuery = Message(bytes)
                         val answer = Message(tcpQuery.header.id).apply {
-                            header.setFlag(Flags.QR)
+                            header.setFlag(Flags.QR.toInt())
                             addRecord(tcpQuery.question, Section.QUESTION)
                             addRecord(ARecord(tcpQuery.question.name, DClass.IN, 30, InetAddress.getByAddress(byteArrayOf(10, 5, 6, 7))), Section.ANSWER)
                         }.toWire()
@@ -106,7 +106,7 @@ class DnsLookupToolTest {
                 socket.receive(packet)
                 val query = Message(packet.data.copyOf(packet.length))
                 val response = Message(query.header.id).apply {
-                    header.setFlag(Flags.QR)
+                    header.setFlag(Flags.QR.toInt())
                     header.rcode = Rcode.NXDOMAIN
                     addRecord(query.question, Section.QUESTION)
                 }.toWire()
@@ -129,7 +129,7 @@ class DnsLookupToolTest {
                 socket.receive(packet)
                 val query = Message(packet.data.copyOf(packet.length))
                 val response = Message((query.header.id + 1) and 0xffff).apply {
-                    header.setFlag(Flags.QR)
+                    header.setFlag(Flags.QR.toInt())
                     addRecord(query.question, Section.QUESTION)
                 }.toWire()
                 socket.send(DatagramPacket(response, response.size, packet.socketAddress))
