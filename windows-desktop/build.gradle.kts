@@ -31,6 +31,7 @@ kotlin {
                 "com/helpdesk/desktop/**",
                 "com/helpdesk/jiraagent/model/**",
                 "com/helpdesk/jiraagent/domain/**",
+                "com/helpdesk/jiraagent/shared/**",
                 "com/helpdesk/jiraagent/data/JiraApiClient.kt",
                 "com/helpdesk/jiraagent/data/JiraJsonParser.kt",
                 "com/helpdesk/jiraagent/data/HabrNewsRepository.kt",

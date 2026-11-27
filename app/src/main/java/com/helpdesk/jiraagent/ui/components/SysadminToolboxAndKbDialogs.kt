@@ -29,6 +29,7 @@ import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
@@ -76,6 +78,7 @@ fun SysadminToolboxAndroidDialog(
     val scope = rememberCoroutineScope()
     var tabIndex by rememberSaveable { mutableIntStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
     val tabs = SysadminToolboxTabs.ordered
+    val scenarioDraftHolder = rememberSaveableStateHolder()
 
     LaunchedEffect(tabIndex) {
         if (tabIndex == 3 && watchlistStatuses.isEmpty() && !isCheckingWatchlist) {
@@ -612,6 +615,9 @@ fun SysadminToolboxAndroidDialog(
                     SysadminToolboxTabs.COMMANDS -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.PORTS -> ServicePortsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.DNS -> DnsLookupAndroidView(onCopy = { text -> copyToClipboard("DNS", text) })
+                    SysadminToolboxTabs.SCENARIOS -> scenarioDraftHolder.SaveableStateProvider("scenarios") {
+                        DiagnosticScenariosView(onCopy = { label, text -> copyToClipboard(label, text) })
+                    }
                 }
             }
         }

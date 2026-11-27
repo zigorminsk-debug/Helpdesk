@@ -10,7 +10,7 @@ class SysadminToolboxTabsTest {
     fun commandsAreFirstAndEveryLogicalTabHasAUniquePosition() {
         val tabs = SysadminToolboxTabs.ordered
         assertEquals(SysadminToolboxTabs.COMMANDS, tabs.first().id)
-        assertEquals(setOf(0, 1, 2, 3, 4, 5, 6), tabs.map { it.id }.toSet())
+        assertEquals(setOf(0, 1, 2, 3, 4, 5, 6, 7), tabs.map { it.id }.toSet())
         assertEquals(tabs.size, tabs.map { it.id }.distinct().size)
         tabs.forEachIndexed { position, tab ->
             assertEquals(position, SysadminToolboxTabs.positionFor(tab.id))

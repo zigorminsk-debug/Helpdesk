@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +46,7 @@ import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
+import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.model.ClientTechPassport
@@ -54,6 +56,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.image.BufferedImage
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 
@@ -1791,6 +1795,8 @@ fun DesktopSysadminToolboxDialog(
 ) {
     var tabIndex by remember { mutableStateOf(SysadminToolboxTabs.validIdOrDefault(initialTabIndex)) }
     val tabs = SysadminToolboxTabs.ordered
+    val scenarioDraftHolder = rememberSaveableStateHolder()
+    var scenarioCopyStatus by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(tabIndex) {
@@ -2373,6 +2379,16 @@ fun DesktopSysadminToolboxDialog(
                         SysadminToolboxTabs.COMMANDS -> DesktopCommandsView()
                         SysadminToolboxTabs.PORTS -> DesktopServicePortsView()
                         SysadminToolboxTabs.DNS -> DesktopDnsLookupView()
+                        SysadminToolboxTabs.SCENARIOS -> scenarioDraftHolder.SaveableStateProvider("scenarios") {
+                            Column {
+                                if (scenarioCopyStatus.isNotBlank()) Text(scenarioCopyStatus, style = MaterialTheme.typography.bodySmall)
+                                Box(Modifier.weight(1f)) {
+                                    DiagnosticScenariosView(onCopy = { _, text ->
+                                        scenarioCopyStatus = if (runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) }.isSuccess) "Скопировано в буфер обмена" else "Буфер обмена недоступен"
+                                    })
+                                }
+                            }
+                        }
                     }
                 }
             }
