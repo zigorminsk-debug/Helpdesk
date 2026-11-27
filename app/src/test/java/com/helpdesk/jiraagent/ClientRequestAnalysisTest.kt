@@ -7,12 +7,15 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.JiraOrganizationRef
 import com.helpdesk.jiraagent.model.JiraServerType
-import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.net.InetSocketAddress
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.URLDecoder
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 class ClientRequestAnalysisTest {
     private val settings = AppSettings(serverUrl = "https://jira.example")
@@ -46,39 +49,51 @@ class ClientRequestAnalysisTest {
         assertEquals("A-2", groups[ClientRequestAnalysis.OTHER]!!.single().key)
     }
 
-    @Test fun organizationSearchUsesIdProjectsAndVerifiesReturnedIdentity() = runBlocking {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        var query = ""
-        server.createContext("/rest/api/2/search") { exchange ->
-            query = URLDecoder.decode(exchange.requestURI.rawQuery, "UTF-8")
-            val bytes = response(issue("A-1", "VPN", orgId = "7"), issue("A-2", "Почта", orgId = "8")).toByteArray()
-            exchange.sendResponseHeaders(200, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
+    private class FixtureServer(private val code: Int, private val body: String) : AutoCloseable {
+        private val server = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+        private val running = AtomicBoolean(true)
+        val query = AtomicReference("")
+        val port: Int get() = server.localPort
+        private val worker = thread(isDaemon = true) {
+            while (running.get()) {
+                val socket = runCatching { server.accept() }.getOrNull() ?: break
+                socket.use { client ->
+                    client.soTimeout = 3000
+                    val reader = client.getInputStream().bufferedReader()
+                    val line = reader.readLine().orEmpty()
+                    query.set(URLDecoder.decode(line, "UTF-8"))
+                    while (!reader.readLine().isNullOrEmpty()) { /* consume headers */ }
+                    val bytes = body.toByteArray(Charsets.UTF_8)
+                    val headers = "HTTP/1.1 $code Test\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+                    client.getOutputStream().apply { write(headers.toByteArray(Charsets.UTF_8)); write(bytes); flush() }
+                }
+            }
         }
-        server.start()
-        try {
-            val config = settings.copy(serverUrl = "http://127.0.0.1:${server.address.port}", serverType = JiraServerType.SERVER_DC)
+        override fun close() {
+            running.set(false)
+            server.close()
+            worker.join(1000)
+        }
+    }
+
+    @Test fun organizationSearchUsesIdProjectsAndVerifiesReturnedIdentity() = runBlocking {
+        FixtureServer(200, response(issue("A-1", "VPN", orgId = "7"), issue("A-2", "Почта", orgId = "8"))).use { server ->
+            val config = settings.copy(serverUrl = "http://127.0.0.1:${server.port}", serverType = JiraServerType.SERVER_DC)
             val result = JiraApiClient().fetchOrganizationHistory(JiraOrganizationRef("customfield_10001", "7", "Клиент"), config, filters.copy(projectKeys = "A")).getOrThrow()
             assertEquals(listOf("A-1"), result.map { it.key })
-            assertTrue(query.contains("cf[10001] = 7"))
-            assertTrue(query.contains("project in (\"A\")"))
-            assertTrue(query.contains("expand=names"))
+            assertTrue(server.query.get().contains("cf[10001] = 7"))
+            assertTrue(server.query.get().contains("project in (\"A\")"))
+            assertTrue(server.query.get().contains("expand=names"))
             assertTrue(JiraApiClient().fetchOrganizationHistory(JiraOrganizationRef("customfield_10001", "7 OR 1=1", "x"), config, filters).isFailure)
-        } finally { server.stop(0) }
+        }
     }
 
     @Test fun searchFailuresAreNotEmptyHistories() = runBlocking {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/rest/api/2/search") { exchange ->
-            exchange.sendResponseHeaders(403, -1)
-            exchange.close()
-        }
-        server.start()
-        try {
-            val config = settings.copy(serverUrl = "http://127.0.0.1:${server.address.port}", serverType = JiraServerType.SERVER_DC)
+        FixtureServer(403, "").use { server ->
+            val config = settings.copy(serverUrl = "http://127.0.0.1:${server.port}", serverType = JiraServerType.SERVER_DC)
             val api = JiraApiClient()
             assertTrue(api.fetchClientHistory("Иван", "A-1", config, filters).isFailure)
             assertTrue(api.fetchOrganizationHistory(JiraOrganizationRef("customfield_10001", "7", "Клиент"), config, filters).isFailure)
-        } finally { server.stop(0) }
+        }
     }
 }
