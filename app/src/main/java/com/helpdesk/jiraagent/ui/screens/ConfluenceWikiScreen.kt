@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.http.SslError
 import android.util.Base64
+import android.view.View
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.SslErrorHandler
@@ -43,7 +44,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -62,6 +65,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.helpdesk.jiraagent.data.ConfluenceAttachment
 import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
+import com.helpdesk.jiraagent.data.ConfluenceHtmlParser
 import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
@@ -157,7 +161,11 @@ fun ConfluenceWikiScreen(
         webViewRef?.goBack()
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // Pair the reader's explicit background with its theme content color. In particular,
+    // never leave dark-theme text on an unpainted (potentially white WebView) surface.
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface) {
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         // Compact single-row Confluence bar — never wraps awkwardly on phone screens
         Surface(color = CslMidnight, contentColor = Color.White) {
             Row(
@@ -312,19 +320,23 @@ fun ConfluenceWikiScreen(
         if (keepWarmWebView) {
             Box(
                 modifier = if (mode == WikiDisplayMode.WEBVIEW) {
-                    Modifier.weight(1f).fillMaxWidth()
+                    Modifier.weight(1f).fillMaxWidth().clipToBounds()
                 } else {
-                    Modifier.size(0.dp)
+                    // Keep the authenticated WebView attached for the REST bridge without
+                    // allowing its native white view to paint over the Compose reader.
+                    Modifier.size(1.dp).clipToBounds().alpha(0f)
                 }
             ) {
                 ConfluenceEmbeddedWebView(
+                    isVisible = mode == WikiDisplayMode.WEBVIEW,
                     settings = settings,
                     initialTargetUrl = wikiState.selectedPage?.webUrl.orEmpty(),
                     searchQuery = wikiState.searchQuery,
                     webBridge = webBridge,
                     onCanGoBackChanged = { canWebGoBack = it },
                     onAuthenticated = { viewModel.onWikiWebAuthenticated() },
-                    onWebViewReady = { webViewRef = it }
+                    onWebViewReady = { webViewRef = it },
+                    onWebViewReleased = { if (webViewRef === it) webViewRef = null }
                 )
             }
         }
@@ -358,6 +370,7 @@ fun ConfluenceWikiScreen(
                 }
             }
         }
+    }
     }
 }
 
@@ -738,7 +751,7 @@ private fun ConfluenceAndroidPageReader(
         else -> "К списку"
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         if (isLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = CslOrange)
         }
@@ -1021,7 +1034,7 @@ private fun ConfluenceAndroidPageReader(
                 }
             }
 
-            SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            SelectionContainer(modifier = Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     contentPadding = PaddingValues(bottom = 16.dp),
@@ -1039,8 +1052,18 @@ private fun ConfluenceAndroidPageReader(
                         )
                     }
 
-                    items(blocksToRender) { block ->
-                        AndroidConfluenceBlockView(block = block, context = context, viewModel = viewModel)
+                    if (ConfluenceHtmlParser.isPlaceholderContent(blocksToRender)) {
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Читалка не нашла отображаемого содержимого. Страница может быть пустой или содержать неподдерживаемые элементы. Проверьте её в Web и обновите офлайн-базу.",
+                                    color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+                                OutlinedButton(onClick = onOpenInWebMode) { Text("Открыть страницу в Web") }
+                            }
+                        }
+                    } else {
+                        items(blocksToRender) { block ->
+                            AndroidConfluenceBlockView(block = block, context = context, viewModel = viewModel)
+                        }
                     }
 
                     if (detail.attachments.isNotEmpty()) {
@@ -1226,13 +1249,15 @@ private fun AndroidWikiAttachmentCard(
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun ConfluenceEmbeddedWebView(
+    isVisible: Boolean,
     settings: AppSettings,
     initialTargetUrl: String,
     searchQuery: String,
     webBridge: HelpCslWebBridge,
     onCanGoBackChanged: (Boolean) -> Unit,
     onAuthenticated: () -> Unit,
-    onWebViewReady: (WebView) -> Unit
+    onWebViewReady: (WebView) -> Unit,
+    onWebViewReleased: (WebView) -> Unit
 ) {
     val rawBase = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }.trimEnd('/')
     val baseUrl = if (rawBase.startsWith("http://", true) || rawBase.startsWith("https://", true)) {
@@ -1362,6 +1387,7 @@ private fun ConfluenceEmbeddedWebView(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             factory = { ctx ->
                 WebView(ctx).apply {
+                    visibility = if (isVisible) View.VISIBLE else View.INVISIBLE
                     val cookieMgr = CookieManager.getInstance()
                     cookieMgr.setAcceptCookie(true)
                     cookieMgr.setAcceptThirdPartyCookies(this, true)
@@ -1484,6 +1510,7 @@ private fun ConfluenceEmbeddedWebView(
                 }
             },
             update = { view ->
+                view.visibility = if (isVisible) View.VISIBLE else View.INVISIBLE
                 if (targetUrl.isNotBlank() && targetUrl != lastLoadedTargetUrl) {
                     lastLoadedTargetUrl = targetUrl
                     view.loadUrl(targetUrl)
@@ -1491,6 +1518,7 @@ private fun ConfluenceEmbeddedWebView(
                 onCanGoBackChanged(view.canGoBack())
             },
             onRelease = { view ->
+                onWebViewReleased(view)
                 webBridge.isWebReadyAndAuthenticated = false
                 runCatching { view.stopLoading() }
                 runCatching { view.onPause() }

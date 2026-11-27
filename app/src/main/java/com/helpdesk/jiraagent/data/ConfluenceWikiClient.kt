@@ -1681,6 +1681,11 @@ object ConfluenceHtmlParser {
     const val EMPTY_PAGE_PLACEHOLDER = "Страница пуста."
     const val NO_TEXT_PLACEHOLDER = "На этой странице пока нет текстового содержимого."
 
+    /** An empty-looking reader can also mean an unsupported macro; don't claim the source is empty. */
+    fun isPlaceholderContent(blocks: List<ConfluenceBlock>): Boolean = blocks.isEmpty() || blocks.all {
+        it is ConfluenceBlock.Paragraph && (it.text == EMPTY_PAGE_PLACEHOLDER || it.text == NO_TEXT_PLACEHOLDER)
+    }
+
     private val SCRIPT_STYLE_REGEX = Regex(
         "<(script|style|svg)\\b[^>]*>[\\s\\S]*?</\\1>",
         RegexOption.IGNORE_CASE

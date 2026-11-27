@@ -44,7 +44,7 @@ val CallGreen = CslSuccessGreen
 val CallGreenContainerLight = Color(0xFFE5F7EE)
 val CallGreenContainerDark = Color(0xFF0E3B24)
 
-private val LightColors = lightColorScheme(
+internal val LightColors = lightColorScheme(
     primary = CslOrange,
     onPrimary = Color.White,
     primaryContainer = CslOrangeContainer,

@@ -53,6 +53,15 @@ class ConfluenceWikiAndNineFeaturesTest {
     }
 
     @Test
+    fun `empty reader placeholders do not claim the source page is empty`() {
+        assertTrue(ConfluenceHtmlParser.isPlaceholderContent(emptyList()))
+        assertTrue(ConfluenceHtmlParser.isPlaceholderContent(listOf(ConfluenceBlock.Paragraph(ConfluenceHtmlParser.EMPTY_PAGE_PLACEHOLDER))))
+        assertTrue(ConfluenceHtmlParser.isPlaceholderContent(listOf(ConfluenceBlock.Paragraph(ConfluenceHtmlParser.NO_TEXT_PLACEHOLDER))))
+        assertFalse(ConfluenceHtmlParser.isPlaceholderContent(listOf(ConfluenceBlock.Paragraph("Полезная информация"))))
+        assertFalse(ConfluenceHtmlParser.isPlaceholderContent(listOf(ConfluenceBlock.Image("https://example.org/image.png", ""))))
+    }
+
+    @Test
     fun `ConfluenceHtmlParser parses headings tables callouts code blocks lists and relative image URLs`() {
         val html = """
             <h1>Карточка клиента ООО «Сейлзмодерн»</h1>
