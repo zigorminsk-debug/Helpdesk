@@ -1,68 +1,87 @@
 package com.helpdesk.desktop
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindow
-import androidx.compose.ui.window.rememberDialogState
 import com.helpdesk.jiraagent.shared.SharedConfirmationPresenter
-import java.awt.Insets
-import java.awt.Rectangle
-import java.awt.Toolkit
-import java.awt.Window
 
-internal fun usableMonitorBounds(bounds: Rectangle, insets: Insets): Rectangle {
-    val left = insets.left.coerceIn(0, bounds.width - 1)
-    val top = insets.top.coerceIn(0, bounds.height - 1)
-    val right = insets.right.coerceIn(0, bounds.width - left - 1)
-    val bottom = insets.bottom.coerceIn(0, bounds.height - top - 1)
-    return Rectangle(bounds.x + left, bounds.y + top, bounds.width - left - right, bounds.height - top - bottom)
+/** The overlay lives in the main Compose window, never in a native DialogWindow. */
+internal class DesktopWorkspaceOverlayHost {
+    internal val entries = mutableStateListOf<DesktopWorkspaceOverlayEntry>()
+    val hasOverlay: Boolean get() = entries.isNotEmpty()
+    fun dismissTop() { entries.lastOrNull()?.dismiss?.value?.invoke() }
+    fun dismissAll() { entries.toList().asReversed().forEach { it.dismiss.value.invoke() } }
 }
 
-/** Covers the usable area of the owner's monitor (not exclusive fullscreen), leaving the taskbar usable. */
+internal class DesktopWorkspaceOverlayEntry(
+    val key: Any,
+    val title: State<String>,
+    val dismiss: State<() -> Unit>,
+    val content: State<@Composable () -> Unit>
+)
+
+internal val LocalDesktopWorkspaceOverlayHost = staticCompositionLocalOf<DesktopWorkspaceOverlayHost?> { null }
+
 @Composable
-fun MaximizeDesktopDialog(window: Window) {
-    LaunchedEffect(window) {
-        withFrameNanos { }
-        val config = window.owner?.graphicsConfiguration ?: window.graphicsConfiguration
-        if (config != null) {
-            val bounds = config.bounds
-            val insets = runCatching { Toolkit.getDefaultToolkit().getScreenInsets(config) }.getOrNull()
-            window.bounds = usableMonitorBounds(bounds, insets ?: Insets(0, 0, 0, 0))
+internal fun DesktopWorkspaceOverlayLayers(host: DesktopWorkspaceOverlayHost) {
+    host.entries.toList().forEach { entry ->
+        key(entry.key) {
+            val focusRequester = remember { FocusRequester() }
+            val interaction = remember { MutableInteractionSource() }
+            // A real full-size pointer target prevents clicks reaching the workspace beneath it.
+            Surface(
+                modifier = Modifier.fillMaxSize().clickable(interactionSource = interaction, indication = null) { }
+                    .focusRequester(focusRequester).focusable(),
+                color = MaterialTheme.colorScheme.background,
+                contentColor = MaterialTheme.colorScheme.onBackground
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { entry.dismiss.value() }) { Text("← Назад") }
+                        Text(entry.title.value, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    HorizontalDivider()
+                    Box(Modifier.weight(1f).fillMaxWidth()) { entry.content.value.invoke() }
+                }
+            }
+            LaunchedEffect(entry.key) { focusRequester.requestFocus() }
         }
     }
 }
 
 @Composable
 fun DesktopWorkspaceWindow(onDismissRequest: () -> Unit, title: String, content: @Composable () -> Unit) {
-    val dark = LocalDesktopDarkTheme.current
-    val preset = LocalDesktopDarkPreset.current
-    val lightPreset = LocalDesktopLightPreset.current
-    DialogWindow(
-        onCloseRequest = onDismissRequest,
-        title = title,
-        state = rememberDialogState(width = 900.dp, height = 650.dp),
-        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismissRequest(); true } else false }
-    ) {
-        MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme(darkTheme = dark, darkPreset = preset, lightPreset = lightPreset) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface) {
-                content()
-            }
+    val host = LocalDesktopWorkspaceOverlayHost.current
+    val currentTitle = rememberUpdatedState(title)
+    val currentDismiss = rememberUpdatedState(onDismissRequest)
+    val currentContent = rememberUpdatedState(content)
+    val key = remember { Any() }
+    if (host != null) {
+        DisposableEffect(host, key) {
+            val entry = DesktopWorkspaceOverlayEntry(key, currentTitle, currentDismiss, currentContent)
+            host.entries.add(entry)
+            onDispose { host.entries.remove(entry) }
         }
+    } else {
+        // Useful for previews or tests without the application host.
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
     }
 }
 
-/** Application dialogs fill the usable screen; OS file choosers and notifications stay system-sized. */
+/** In-app workspace page, retaining the original callbacks and scroll state. */
 @Composable
 fun DesktopWorkspaceAlert(
     onDismissRequest: () -> Unit,
@@ -74,7 +93,7 @@ fun DesktopWorkspaceAlert(
     properties: DialogProperties = DialogProperties(),
     scrollBody: Boolean = true
 ) {
-    DesktopWorkspaceWindow(onDismissRequest = onDismissRequest, title = "Help-CSL") {
+    DesktopWorkspaceWindow(onDismissRequest = onDismissRequest, title = "Рабочее место") {
         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (title != null) title()
             HorizontalDivider()

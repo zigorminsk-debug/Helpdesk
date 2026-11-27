@@ -2,12 +2,12 @@ package com.helpdesk.desktop
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.LightThemePreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
-import java.awt.Insets
-import java.awt.Rectangle
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -22,7 +22,7 @@ class DesktopAppearanceTest {
     @Test fun calmPaletteHasLegibleTextAndButtons() {
         val light = DesktopSoftLightColors
         val dark = buildDesktopDarkColorScheme(DarkThemePreset.SOFT_SLATE)
-        for (scheme in listOf(light, dark)) {
+        for (scheme in listOf(light, DesktopWarmLightColors, dark)) {
             assertTrue(contrast(scheme.onSurface, scheme.surface) >= 4.5f)
             assertTrue(contrast(scheme.onSurfaceVariant, scheme.surfaceVariant) >= 4.5f)
             assertTrue(contrast(scheme.onPrimary, scheme.primary) >= 4.5f)
@@ -31,10 +31,23 @@ class DesktopAppearanceTest {
         assertTrue(contrast(Color.White, Color(0xFF86513A)) >= 4.5f)
     }
 
-    @Test fun dialogsUseOwnerMonitorAndRespectTaskbarInsets() {
-        assertEquals(Rectangle(-1920, 0, 1920, 1040), usableMonitorBounds(Rectangle(-1920, 0, 1920, 1080), Insets(0, 0, 40, 0)))
-        assertEquals(Rectangle(10, 30, 1880, 1030), usableMonitorBounds(Rectangle(0, 0, 1920, 1080), Insets(30, 10, 20, 30)))
-        assertEquals(Rectangle(0, 0, 1, 1), usableMonitorBounds(Rectangle(0, 0, 1, 1), Insets(20, 20, 20, 20)))
+    @Test fun workspaceStackClosesOnlyTopThenAllInReverseOrder() {
+        val host = DesktopWorkspaceOverlayHost()
+        val closed = mutableListOf<String>()
+        val content: @Composable () -> Unit = { }
+        fun add(name: String) {
+            lateinit var entry: DesktopWorkspaceOverlayEntry
+            entry = DesktopWorkspaceOverlayEntry(Any(), mutableStateOf(name), mutableStateOf({ closed.add(name); host.entries.remove(entry); Unit }), mutableStateOf(content))
+            host.entries.add(entry)
+        }
+        add("Инструменты")
+        add("Подтверждение")
+        host.dismissTop()
+        assertEquals(listOf("Подтверждение"), closed)
+        assertEquals(1, host.entries.size)
+        host.dismissAll()
+        assertEquals(listOf("Подтверждение", "Инструменты"), closed)
+        assertTrue(!host.hasOverlay)
     }
     @Test fun calmPalettesSurviveQrSettingsTransfer() {
         val original = AppSettings(lightThemePreset = LightThemePreset.SOFT, darkThemePreset = DarkThemePreset.SOFT_SLATE)
@@ -42,6 +55,9 @@ class DesktopAppearanceTest {
         val restored = DesktopQrTransferCodec.decode(payload, "1234").getOrThrow().appSettings
         assertEquals(LightThemePreset.SOFT, restored.lightThemePreset)
         assertEquals(DarkThemePreset.SOFT_SLATE, restored.darkThemePreset)
+        val warm = original.copy(lightThemePreset = LightThemePreset.WARM)
+        val warmPayload = DesktopQrTransferCodec.encode(warm, FilterSettings(), includeCredentials = false)
+        assertEquals(LightThemePreset.WARM, DesktopQrTransferCodec.decode(warmPayload).getOrThrow().appSettings.lightThemePreset)
     }
 
 }

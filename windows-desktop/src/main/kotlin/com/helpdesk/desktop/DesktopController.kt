@@ -107,6 +107,7 @@ data class DesktopUiState(
     val settings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
     val darkTheme: Boolean = false,
+    val fontScalePercent: Int = 120,
     val minimizeToTray: Boolean = true,
     val respectWorkScheduleOnDesktop: Boolean = false,
     val tickets: List<HelpdeskTicket> = emptyList(),
@@ -230,6 +231,7 @@ class DesktopController(
             settings = persisted.appSettings,
             filterSettings = persisted.filterSettings,
             darkTheme = persisted.darkTheme,
+            fontScalePercent = persisted.fontScalePercent.takeIf { it in 100..135 } ?: 120,
             minimizeToTray = persisted.minimizeToTray,
             respectWorkScheduleOnDesktop = persisted.respectWorkScheduleOnDesktop,
             dismissedGifDateIso = persisted.dismissedGifDateIso,
@@ -490,6 +492,11 @@ class DesktopController(
         persistCurrentState()
     }
 
+    fun setFontScalePercent(value: Int) {
+        _state.update { it.copy(fontScalePercent = value.coerceIn(100, 135)) }
+        persistCurrentState()
+    }
+
     fun setDarkTheme(enabled: Boolean) {
         _state.update { it.copy(darkTheme = enabled, settings = it.settings.copy(themeMode = if (enabled) com.helpdesk.jiraagent.model.AppThemeMode.DARK else com.helpdesk.jiraagent.model.AppThemeMode.LIGHT)) }
         persistCurrentState()
@@ -511,8 +518,7 @@ class DesktopController(
     }
 
     fun toggleDarkTheme() {
-        _state.update { it.copy(darkTheme = !it.darkTheme) }
-        persistCurrentState()
+        setDarkTheme(!_state.value.darkTheme)
     }
 
     fun showStatusMessage(message: String) {
@@ -861,6 +867,7 @@ class DesktopController(
                     appSettings = cur.settings,
                     filterSettings = cur.filterSettings,
                     darkTheme = cur.darkTheme,
+                    fontScalePercent = cur.fontScalePercent,
                     minimizeToTray = cur.minimizeToTray,
                     respectWorkScheduleOnDesktop = cur.respectWorkScheduleOnDesktop,
                     dismissedGifDateIso = cur.dismissedGifDateIso,

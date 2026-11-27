@@ -88,7 +88,8 @@ enum class AppThemeMode(val title: String) {
 
 enum class LightThemePreset(val title: String) {
     CLASSIC("Классическая"),
-    SOFT("Спокойная светлая")
+    SOFT("Серо-голубая"),
+    WARM("Тёплая бумага")
 }
 
 enum class DarkThemePreset(
@@ -207,7 +208,7 @@ data class AppSettings(
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile",
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val darkThemePreset: DarkThemePreset = DarkThemePreset.CSL_NAVY,
-    val lightThemePreset: LightThemePreset = LightThemePreset.CLASSIC
+    val lightThemePreset: LightThemePreset = LightThemePreset.SOFT
 ) {
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&

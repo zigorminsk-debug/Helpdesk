@@ -72,18 +72,27 @@ private val LightColors = lightColorScheme(
 )
 
 internal val SoftLightColors = lightColorScheme(
-    primary = Color(0xFF8C4D35), onPrimary = Color.White,
-    primaryContainer = Color(0xFFF2E1D7), onPrimaryContainer = Color(0xFF4C281B),
-    secondary = Color(0xFF52635D), onSecondary = Color.White,
+    primary = Color(0xFF3D626E), onPrimary = Color.White,
+    primaryContainer = Color(0xFFDCE8E8), onPrimaryContainer = Color(0xFF20373D),
+    secondary = Color(0xFF52645F), onSecondary = Color.White,
     secondaryContainer = Color(0xFFDFE8E1), onSecondaryContainer = Color(0xFF263B31),
-    tertiary = Color(0xFF52635D), onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFDFE8E1), onTertiaryContainer = Color(0xFF263B31),
-    background = Color(0xFFF6F3EE), onBackground = Color(0xFF292B29),
-    surface = Color(0xFFFFFBF7), onSurface = Color(0xFF292B29),
-    surfaceVariant = Color(0xFFECE8E1), onSurfaceVariant = Color(0xFF4E5551),
-    outline = Color(0xFF858C86), outlineVariant = Color(0xFFD1D5CE),
-    error = Color(0xFF9A3634), onError = Color.White,
-    errorContainer = Color(0xFFF8DCD8), onErrorContainer = Color(0xFF501C1B)
+    tertiary = Color(0xFF52645F), onTertiary = Color.White,
+    background = Color(0xFFEFF2F1), onBackground = Color(0xFF283537),
+    surface = Color(0xFFF7F8F6), onSurface = Color(0xFF283537),
+    surfaceVariant = Color(0xFFE3EAE8), onSurfaceVariant = Color(0xFF445853),
+    outline = Color(0xFF7C918A), outlineVariant = Color(0xFFCAD7D2),
+    error = Color(0xFFA13E3A), onError = Color.White
+)
+internal val WarmLightColors = lightColorScheme(
+    primary = Color(0xFF6D5D4F), onPrimary = Color.White,
+    primaryContainer = Color(0xFFE9E0D3), onPrimaryContainer = Color(0xFF3C3126),
+    secondary = Color(0xFF5C6557), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE1E7DA), onSecondaryContainer = Color(0xFF303B2C),
+    background = Color(0xFFF1EDE6), onBackground = Color(0xFF332F2A),
+    surface = Color(0xFFF7F3EC), onSurface = Color(0xFF332F2A),
+    surfaceVariant = Color(0xFFEAE4DB), onSurfaceVariant = Color(0xFF585148),
+    outline = Color(0xFF8F8679), outlineVariant = Color(0xFFD5CDC1),
+    error = Color(0xFFA13E3A), onError = Color.White
 )
 
 internal fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
@@ -266,7 +275,7 @@ fun JiraHelpdeskTheme(
     lightPreset: LightThemePreset = LightThemePreset.CLASSIC,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) buildAndroidDarkColors(darkPreset) else if (lightPreset == LightThemePreset.SOFT) SoftLightColors else LightColors
+    val colorScheme = if (darkTheme) buildAndroidDarkColors(darkPreset) else when (lightPreset) { LightThemePreset.SOFT -> SoftLightColors; LightThemePreset.WARM -> WarmLightColors; LightThemePreset.CLASSIC -> LightColors }
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {

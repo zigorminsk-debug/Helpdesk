@@ -26,6 +26,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +42,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.model.LightThemePreset
 import com.helpdesk.jiraagent.model.TicketStage
 import java.awt.AWTEvent
 import java.awt.Frame
@@ -60,6 +63,7 @@ fun main(args: Array<String>) = application {
     val startMinimized = args.any { it.equals("--minimized", ignoreCase = true) }
     val controller = remember { DesktopController() }
     val state by controller.state.collectAsState()
+    val overlayHost = remember { DesktopWorkspaceOverlayHost() }
 
     var isMainWindowVisible by remember { mutableStateOf(!startMinimized) }
     var showShiftAnalytics by remember { mutableStateOf(false) }
@@ -193,13 +197,17 @@ fun main(args: Array<String>) = application {
         title = "Help-CSL v${controller.currentVersion} — Служба технической поддержки (Windows)",
         icon = appIconPainter,
         onPreviewKeyEvent = { ev ->
-            val hasTopModalOpen = showShiftAnalytics ||
+            val hasTopModalOpen = overlayHost.hasOverlay || showShiftAnalytics ||
                 showToolboxDialog ||
                 showQrDialog ||
                 showFullGuide ||
                 state.pendingTransitionPrompt != null
             when {
-                ev.type == KeyEventType.KeyDown && ev.key == Key.F5 -> {
+                ev.type == KeyEventType.KeyDown && (ev.key == Key.Escape || (ev.isAltPressed && ev.key == Key.DirectionLeft)) && overlayHost.hasOverlay -> {
+                    overlayHost.dismissTop()
+                    true
+                }
+                ev.type == KeyEventType.KeyDown && ev.key == Key.F5 && !hasTopModalOpen -> {
                     when (state.activeTab) {
                         DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
                         DesktopMainTab.WIKI -> controller.refreshWikiSpacesAndPages()
@@ -253,8 +261,9 @@ fun main(args: Array<String>) = application {
                 val me = event as? MouseEvent ?: return@AWTEventListener
                 if (me.id == MouseEvent.MOUSE_PRESSED && me.button == 4) {
                     val srcWin = SwingUtilities.getWindowAncestor(me.component) ?: (me.component as? java.awt.Window)
-                    if (srcWin === window && !controller.isAtFreshHome()) {
-                        controller.navigateBackToFreshHome()
+                    if (srcWin === window) {
+                        if (overlayHost.hasOverlay) overlayHost.dismissTop()
+                        else if (!controller.isAtFreshHome()) controller.navigateBackToFreshHome()
                     }
                 }
             }
@@ -266,20 +275,23 @@ fun main(args: Array<String>) = application {
                 runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(mouseBackListener) }
             }
         }
+        val systemDensity = LocalDensity.current
+        CompositionLocalProvider(LocalDensity provides Density(systemDensity.density, systemDensity.fontScale * state.fontScalePercent / 100f)) {
         HelpCslDesktopTheme(
             darkTheme = state.darkTheme,
             darkPreset = state.settings.darkThemePreset,
             lightPreset = state.settings.lightThemePreset
         ) {
+            CompositionLocalProvider(LocalDesktopWorkspaceOverlayHost provides overlayHost) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 DesktopTopNavigationHeader(
                     state = state,
                     version = controller.currentVersion,
                     appIconBitmap = appIconBitmap,
                     newQueueCount = newQueueCount,
-                    canNavigateBackToFresh = !controller.isAtFreshHome(state),
-                    onNavigateBackToFresh = { controller.navigateBackToFreshHome() },
-                    onSelectTab = { controller.selectTab(it) },
+                    canNavigateBackToFresh = overlayHost.hasOverlay || !controller.isAtFreshHome(state),
+                    onNavigateBackToFresh = { if (overlayHost.hasOverlay) overlayHost.dismissTop() else controller.navigateBackToFreshHome() },
+                    onSelectTab = { overlayHost.dismissAll(); controller.selectTab(it) },
                     onRefresh = {
                         when (state.activeTab) {
                             DesktopMainTab.ZABBIX -> controller.refreshZabbix(silent = false)
@@ -289,15 +301,20 @@ fun main(args: Array<String>) = application {
                             else -> controller.refreshTickets(silent = false)
                         }
                     },
-                    onOpenToolbox = { showToolboxDialog = true },
-                    onOpenAnalytics = { showShiftAnalytics = true },
-                    onOpenQr = { showQrDialog = true },
-                    onOpenGuide = { showFullGuide = true },
+                    onOpenToolbox = { overlayHost.dismissAll(); showToolboxDialog = true },
+                    onOpenAnalytics = { overlayHost.dismissAll(); showShiftAnalytics = true },
+                    onOpenQr = { overlayHost.dismissAll(); showQrDialog = true },
+                    onOpenGuide = { overlayHost.dismissAll(); showFullGuide = true },
                     onToggleDarkTheme = { controller.toggleDarkTheme() },
                     onCycleDarkPreset = {
                         val presets = DarkThemePreset.entries
                         val nextIdx = (presets.indexOf(state.settings.darkThemePreset) + 1) % presets.size
                         controller.setDarkThemePreset(presets[nextIdx])
+                    },
+                    onCycleLightPreset = {
+                        val presets = LightThemePreset.entries
+                        val nextIdx = (presets.indexOf(state.settings.lightThemePreset) + 1) % presets.size
+                        controller.setLightThemePreset(presets[nextIdx])
                     }
                 )
 
@@ -322,6 +339,7 @@ fun main(args: Array<String>) = application {
                             onOpenQrDialog = { showQrDialog = true }
                         )
                     }
+                    DesktopWorkspaceOverlayLayers(overlayHost)
                 }
             }
 
@@ -404,6 +422,8 @@ fun main(args: Array<String>) = application {
                     )
                 }
             }
+            }
+        }
         }
 }
 
@@ -422,7 +442,8 @@ private fun DesktopTopNavigationHeader(
     onOpenQr: () -> Unit,
     onOpenGuide: () -> Unit,
     onToggleDarkTheme: () -> Unit,
-    onCycleDarkPreset: () -> Unit
+    onCycleDarkPreset: () -> Unit,
+    onCycleLightPreset: () -> Unit
 ) {
     val rbStatus = remember(state.settings) { BelarusWorkCalendar.evaluate(state.settings) }
     val activeRepairsCount = remember(state.repairItems) {
@@ -472,7 +493,7 @@ private fun DesktopTopNavigationHeader(
                     border = BorderStroke(1.dp, DesktopColors.CslOrange),
                     contentColor = Color.White,
                     modifier = Modifier
-                        .height(34.dp)
+                        .heightIn(min = 38.dp)
                         .clickable(onClick = onNavigateBackToFresh)
                 ) {
                     Row(
@@ -514,7 +535,7 @@ private fun DesktopTopNavigationHeader(
                     ),
                     contentColor = Color.White,
                     modifier = Modifier
-                        .height(34.dp)
+                        .heightIn(min = 38.dp)
                         .clickable { onSelectTab(tab) }
                 ) {
                     Row(
@@ -563,7 +584,7 @@ private fun DesktopTopNavigationHeader(
             border = BorderStroke(1.dp, DesktopColors.CslNavyBorder),
             contentColor = Color.White,
             modifier = Modifier
-                .height(32.dp)
+                .heightIn(min = 38.dp)
                 .clickable(onClick = onClick)
         ) {
             Box(
@@ -635,7 +656,7 @@ private fun DesktopTopNavigationHeader(
             border = BorderStroke(1.2.dp, DesktopColors.CslOrange),
             contentColor = Color.White,
             modifier = Modifier
-                .height(32.dp)
+                .heightIn(min = 38.dp)
                 .clickable(onClick = onOpenAnalytics)
         ) {
             Box(
@@ -656,6 +677,8 @@ private fun DesktopTopNavigationHeader(
         HeaderUtilityPill(if (state.darkTheme) "☀ Светлая" else "🌙 Тёмная", onToggleDarkTheme)
         if (state.darkTheme) {
             HeaderUtilityPill("🎨 ${state.settings.darkThemePreset.shortTitle}", onCycleDarkPreset)
+        } else {
+            HeaderUtilityPill("🎨 ${state.settings.lightThemePreset.title}", onCycleLightPreset)
         }
         HeaderUtilityPill("⊞ QR", onOpenQr)
         HeaderUtilityPill("📖 Гайд", onOpenGuide)
@@ -669,10 +692,11 @@ private fun DesktopTopNavigationHeader(
             shape = RoundedCornerShape(8.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = DesktopColors.ButtonAccent,
+                contentColor = Color.White,
                 disabledContainerColor = DesktopColors.CslOrange.copy(alpha = 0.5f)
             ),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-            modifier = Modifier.height(32.dp)
+            modifier = Modifier.heightIn(min = 38.dp)
         ) {
             Text(
                 text = if (state.isRefreshing) "Синхр…" else "🔄 Обновить",
@@ -685,7 +709,7 @@ private fun DesktopTopNavigationHeader(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val isWideSingleRow = maxWidth >= 1680.dp
+        val isWideSingleRow = maxWidth >= 2050.dp
         val isCompactToolbar = maxWidth < 1360.dp
 
         Surface(

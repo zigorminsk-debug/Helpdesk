@@ -1467,7 +1467,7 @@ class SettingsRepository private constructor(context: Context) {
             ).orEmpty(),
             themeMode = enumOrDefault(prefs.getString(KEY_THEME_MODE, null), AppThemeMode.SYSTEM),
             darkThemePreset = enumOrDefault(prefs.getString(KEY_DARK_THEME_PRESET, null), DarkThemePreset.CSL_NAVY),
-            lightThemePreset = enumOrDefault(prefs.getString(KEY_LIGHT_THEME_PRESET, null), com.helpdesk.jiraagent.model.LightThemePreset.CLASSIC)
+            lightThemePreset = enumOrDefault(prefs.getString(KEY_LIGHT_THEME_PRESET, null), com.helpdesk.jiraagent.model.LightThemePreset.SOFT)
         )
     }
 

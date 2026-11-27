@@ -48,6 +48,7 @@ data class DesktopPersistedState(
     val appSettings: AppSettings = AppSettings(),
     val filterSettings: FilterSettings = FilterSettings(),
     val darkTheme: Boolean = false,
+    val fontScalePercent: Int = 120,
     val minimizeToTray: Boolean = true,
     val respectWorkScheduleOnDesktop: Boolean = false,
     val dismissedGifDateIso: String = "",

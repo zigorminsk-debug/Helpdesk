@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.ui.theme.SoftLightColors
+import com.helpdesk.jiraagent.ui.theme.WarmLightColors
 import com.helpdesk.jiraagent.ui.theme.buildAndroidDarkColors
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,7 +17,7 @@ class CalmThemeContrastTest {
     }
 
     @Test fun calmThemesProvideReadableCoreTextAndControls() {
-        listOf(SoftLightColors, buildAndroidDarkColors(DarkThemePreset.SOFT_SLATE)).forEach { colors ->
+        listOf(SoftLightColors, WarmLightColors, buildAndroidDarkColors(DarkThemePreset.SOFT_SLATE)).forEach { colors ->
             assertTrue(contrast(colors.onSurface, colors.surface) >= 4.5f)
             assertTrue(contrast(colors.onSurfaceVariant, colors.surfaceVariant) >= 4.5f)
             assertTrue(contrast(colors.onPrimary, colors.primary) >= 4.5f)

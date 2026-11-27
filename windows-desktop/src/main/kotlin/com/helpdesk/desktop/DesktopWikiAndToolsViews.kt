@@ -38,8 +38,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogWindow
-import androidx.compose.ui.window.rememberDialogState
 import com.helpdesk.jiraagent.data.ConfluenceAttachment
 import com.helpdesk.jiraagent.data.ConfluenceBlock
 import com.helpdesk.jiraagent.data.ConfluenceCalloutKind
@@ -1421,18 +1419,7 @@ fun DesktopImageLightboxDialog(
     var zoom by remember { mutableStateOf(1.0f) }
     var copied by remember { mutableStateOf(false) }
 
-    val currentDarkTheme = LocalDesktopDarkTheme.current
-    val currentDarkPreset = LocalDesktopDarkPreset.current
-    val currentLightPreset = LocalDesktopLightPreset.current
-
-    DialogWindow(
-        onCloseRequest = onDismiss,
-        title = "🔍 $title",
-        state = rememberDialogState(width = 1040.dp, height = 760.dp),
-        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
-    ) {
-        MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
+    DesktopWorkspaceWindow(onDismissRequest = onDismiss, title = "🔍 $title") {
             Column(modifier = Modifier.fillMaxSize().background(DesktopColors.CslMidnight)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1505,7 +1492,6 @@ fun DesktopImageLightboxDialog(
                     )
                 }
             }
-        }
     }
 }
 
@@ -1526,18 +1512,7 @@ fun DesktopClientPassportDialog(
     var servers by remember { mutableStateOf(initialPassport.serversAndServices) }
     var notes by remember { mutableStateOf(initialPassport.contactsAndNotes) }
 
-    val currentDarkTheme = LocalDesktopDarkTheme.current
-    val currentDarkPreset = LocalDesktopDarkPreset.current
-    val currentLightPreset = LocalDesktopLightPreset.current
-
-    DialogWindow(
-        onCloseRequest = onDismiss,
-        title = "🏢 Техпаспорт клиента · ${initialPassport.clientDisplayName}",
-        state = rememberDialogState(width = 720.dp, height = 650.dp),
-        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
-    ) {
-        MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
+    DesktopWorkspaceWindow(onDismissRequest = onDismiss, title = "🏢 Техпаспорт клиента · ${initialPassport.clientDisplayName}") {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1629,7 +1604,6 @@ fun DesktopClientPassportDialog(
                     }
                 }
             }
-        }
     }
 }
 
@@ -1656,18 +1630,7 @@ fun DesktopKnowledgeArchiveDialog(
         }
     }
 
-    val currentDarkTheme = LocalDesktopDarkTheme.current
-    val currentDarkPreset = LocalDesktopDarkPreset.current
-    val currentLightPreset = LocalDesktopLightPreset.current
-
-    DialogWindow(
-        onCloseRequest = onDismiss,
-        title = "📚 База решений (поиск по решённым заявкам Jira)",
-        state = rememberDialogState(width = 860.dp, height = 640.dp),
-        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
-    ) {
-        MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
+    DesktopWorkspaceWindow(onDismissRequest = onDismiss, title = "📚 База решений (поиск по решённым заявкам Jira)") {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1798,7 +1761,6 @@ fun DesktopKnowledgeArchiveDialog(
                     }
                 }
             }
-        }
     }
 }
 
@@ -1826,22 +1788,11 @@ fun DesktopSysadminToolboxDialog(
         }
     }
 
-    DialogWindow(
-        onCloseRequest = onDismiss,
-        title = "🛠 Инструменты системного администратора · Help-CSL",
-        state = rememberDialogState(width = 920.dp, height = 650.dp),
-        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
-    ) {
-        MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme(
-            darkTheme = state.darkTheme,
-            darkPreset = state.settings.darkThemePreset,
-            lightPreset = state.settings.lightThemePreset
-        ) {
+    DesktopWorkspaceWindow(onDismissRequest = onDismiss, title = "🛠 Инструменты системного администратора · Help-CSL") {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                 // Wrap tabs instead of hiding the first/last item behind horizontal scrolling.
                 FlowRow(
-                    modifier = Modifier.fillMaxWidth().background(DesktopColors.CslMidnight).padding(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp).verticalScroll(rememberScrollState()).background(DesktopColors.CslMidnight).padding(horizontal = 8.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
@@ -2407,8 +2358,8 @@ fun DesktopSysadminToolboxDialog(
                             Column {
                                 if (adCopyStatus.isNotBlank()) Text(adCopyStatus, style = MaterialTheme.typography.bodySmall)
                                 Box(Modifier.weight(1f)) {
-                                    DomainDiagnosticCardView(onCopy = { _, text ->
-                                        adCopyStatus = if (runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) }.isSuccess) "Скопировано в буфер обмена" else "Буфер обмена недоступен"
+                                    DomainDiagnosticCardView(onCopy = { title, text ->
+                                        adCopyStatus = if (runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) }.isSuccess) "Скопировано: $title" else "Не удалось скопировать: буфер обмена недоступен"
                                     })
                                 }
                             }
@@ -2426,7 +2377,6 @@ fun DesktopSysadminToolboxDialog(
                     }
                 }
             }
-        }
     }
 }
 

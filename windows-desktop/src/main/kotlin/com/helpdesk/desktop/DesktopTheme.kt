@@ -201,28 +201,44 @@ object DesktopColors {
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).headerBg
         } else {
-            com.helpdesk.desktop.CslMidnight
+            when (LocalDesktopLightPreset.current) {
+                LightThemePreset.SOFT -> Color(0xFF34464B)
+                LightThemePreset.WARM -> Color(0xFF504B43)
+                LightThemePreset.CLASSIC -> com.helpdesk.desktop.CslMidnight
+            }
         }
 
     val CslNavySurface: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).headerSurface
         } else {
-            com.helpdesk.desktop.CslNavySurface
+            when (LocalDesktopLightPreset.current) {
+                LightThemePreset.SOFT -> Color(0xFF465B60)
+                LightThemePreset.WARM -> Color(0xFF645E54)
+                LightThemePreset.CLASSIC -> com.helpdesk.desktop.CslNavySurface
+            }
         }
 
     val CslNavyBorder: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).headerBorder
         } else {
-            com.helpdesk.desktop.CslNavyBorder
+            when (LocalDesktopLightPreset.current) {
+                LightThemePreset.SOFT -> Color(0xFF687C80)
+                LightThemePreset.WARM -> Color(0xFF827C70)
+                LightThemePreset.CLASSIC -> com.helpdesk.desktop.CslNavyBorder
+            }
         }
 
     val SubHeaderBg: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).subHeaderBg
         } else {
-            Color(0xFF0A132C)
+            when (LocalDesktopLightPreset.current) {
+                LightThemePreset.SOFT -> Color(0xFF3C4F53)
+                LightThemePreset.WARM -> Color(0xFF5B554C)
+                LightThemePreset.CLASSIC -> Color(0xFF0A132C)
+            }
         }
 
     // Foreground accent and filled-button accent are separate to preserve contrast in both modes.
@@ -235,7 +251,11 @@ object DesktopColors {
                 DarkThemePreset.WARM_ESPRESSO -> Color(0xFFE9BD82)
                 else -> Color(0xFFFFAF83)
             }
-        } else if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFF8C4D35) else Color(0xFFA94F29)
+        } else when (LocalDesktopLightPreset.current) {
+            LightThemePreset.SOFT -> Color(0xFF3D626E)
+            LightThemePreset.WARM -> Color(0xFF6D5D4F)
+            LightThemePreset.CLASSIC -> Color(0xFFA94F29)
+        }
 
     val ButtonAccent: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
@@ -246,31 +266,40 @@ object DesktopColors {
                 DarkThemePreset.SOFT_SLATE -> Color(0xFF86513A)
                 else -> Color(0xFFA94F29)
             }
-        } else if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFF8C4D35) else Color(0xFFA94F29)
+        } else when (LocalDesktopLightPreset.current) {
+            LightThemePreset.SOFT -> Color(0xFF3D626E)
+            LightThemePreset.WARM -> Color(0xFF6D5D4F)
+            LightThemePreset.CLASSIC -> Color(0xFFA94F29)
+        }
 
-    val HeaderAccent: Color get() = Color(0xFFF2C6AD)
+    val HeaderAccent: Color
+        @Composable get() = if (!LocalDesktopDarkTheme.current && LocalDesktopLightPreset.current != LightThemePreset.CLASSIC) Color(0xFFE5EFEC) else Color(0xFFF2C6AD)
 
     val CslOrangeContainer: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).selectedContainer
         } else {
-            CslOrangeContainerLight
+            when (LocalDesktopLightPreset.current) {
+                LightThemePreset.SOFT -> Color(0xFFDCE8E8)
+                LightThemePreset.WARM -> Color(0xFFE9E0D3)
+                LightThemePreset.CLASSIC -> CslOrangeContainerLight
+            }
         }
 
     val StatusGreen: Color
-        @Composable get() = if (LocalDesktopDarkTheme.current) CslSuccessGreenDark else CslSuccessGreen
+        @Composable get() = if (LocalDesktopDarkTheme.current) CslSuccessGreenDark else Color(0xFF31745A)
 
     val StatusBlue: Color
-        @Composable get() = if (LocalDesktopDarkTheme.current) CslInfoBlueDark else Color(0xFF2563EB)
+        @Composable get() = if (LocalDesktopDarkTheme.current) CslInfoBlueDark else Color(0xFF3D6782)
 
     val StatusBlueContainer: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) CslInfoBlueContainerDark else CslInfoBlueContainerLight
 
     val StatusAmber: Color
-        @Composable get() = if (LocalDesktopDarkTheme.current) Color(0xFFFBBF24) else CslWarningAmber
+        @Composable get() = if (LocalDesktopDarkTheme.current) Color(0xFFFBBF24) else Color(0xFF80602F)
 
     val StatusRed: Color
-        @Composable get() = if (LocalDesktopDarkTheme.current) Color(0xFFF87171) else CslDangerRed
+        @Composable get() = if (LocalDesktopDarkTheme.current) Color(0xFFF87171) else Color(0xFFA63F3B)
 
     val DeletedRed = CslDeletedRed
 
@@ -278,21 +307,21 @@ object DesktopColors {
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).listPaneBg
         } else {
-            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFF1EEE8) else Color(0xFFF8FAFC)
+            when (LocalDesktopLightPreset.current) { LightThemePreset.SOFT -> Color(0xFFE8EEEC); LightThemePreset.WARM -> Color(0xFFECE6DD); LightThemePreset.CLASSIC -> Color(0xFFF8FAFC) }
         }
 
     val WorkspaceBg: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).workspaceBg
         } else {
-            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFF6F3EE) else Color(0xFFF1F5F9)
+            when (LocalDesktopLightPreset.current) { LightThemePreset.SOFT -> Color(0xFFEFF2F1); LightThemePreset.WARM -> Color(0xFFF1EDE6); LightThemePreset.CLASSIC -> Color(0xFFF1F5F9) }
         }
 
     val CardBg: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).cardBg
         } else {
-            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFFFFBF7) else Color.White
+            when (LocalDesktopLightPreset.current) { LightThemePreset.SOFT -> Color(0xFFF7F8F6); LightThemePreset.WARM -> Color(0xFFF7F3EC); LightThemePreset.CLASSIC -> Color.White }
         }
 
     val SubtleBg: Color
@@ -364,18 +393,29 @@ private val DesktopLightColors = lightColorScheme(
 )
 
 internal val DesktopSoftLightColors = lightColorScheme(
-    primary = Color(0xFF8C4D35), onPrimary = Color.White,
-    primaryContainer = Color(0xFFF2E1D7), onPrimaryContainer = Color(0xFF4C281B),
-    secondary = Color(0xFF52635D), onSecondary = Color.White,
+    primary = Color(0xFF3D626E), onPrimary = Color.White,
+    primaryContainer = Color(0xFFDCE8E8), onPrimaryContainer = Color(0xFF20373D),
+    secondary = Color(0xFF52645F), onSecondary = Color.White,
     secondaryContainer = Color(0xFFDFE8E1), onSecondaryContainer = Color(0xFF263B31),
-    tertiary = Color(0xFF52635D), onTertiary = Color.White,
+    tertiary = Color(0xFF52645F), onTertiary = Color.White,
     tertiaryContainer = Color(0xFFDFE8E1), onTertiaryContainer = Color(0xFF263B31),
-    background = Color(0xFFF6F3EE), onBackground = Color(0xFF292B29),
-    surface = Color(0xFFFFFBF7), onSurface = Color(0xFF292B29),
-    surfaceVariant = Color(0xFFECE8E1), onSurfaceVariant = Color(0xFF4E5551),
-    outline = Color(0xFF858C86), outlineVariant = Color(0xFFD1D5CE),
-    error = Color(0xFF9A3634), onError = Color.White,
-    errorContainer = Color(0xFFF8DCD8), onErrorContainer = Color(0xFF501C1B)
+    background = Color(0xFFEFF2F1), onBackground = Color(0xFF283537),
+    surface = Color(0xFFF7F8F6), onSurface = Color(0xFF283537),
+    surfaceVariant = Color(0xFFE3EAE8), onSurfaceVariant = Color(0xFF445853),
+    outline = Color(0xFF7C918A), outlineVariant = Color(0xFFCAD7D2),
+    error = Color(0xFFA13E3A), onError = Color.White,
+    errorContainer = Color(0xFFF5DEDA), onErrorContainer = Color(0xFF501C1B)
+)
+internal val DesktopWarmLightColors = lightColorScheme(
+    primary = Color(0xFF6D5D4F), onPrimary = Color.White,
+    primaryContainer = Color(0xFFE9E0D3), onPrimaryContainer = Color(0xFF3C3126),
+    secondary = Color(0xFF5C6557), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE1E7DA), onSecondaryContainer = Color(0xFF303B2C),
+    background = Color(0xFFF1EDE6), onBackground = Color(0xFF332F2A),
+    surface = Color(0xFFF7F3EC), onSurface = Color(0xFF332F2A),
+    surfaceVariant = Color(0xFFEAE4DB), onSurfaceVariant = Color(0xFF585148),
+    outline = Color(0xFF8F8679), outlineVariant = Color(0xFFD5CDC1),
+    error = Color(0xFFA13E3A), onError = Color.White
 )
 
 internal fun buildDesktopDarkColorScheme(preset: DarkThemePreset) = resolveDesktopDarkPalette(preset).let { p ->
@@ -430,7 +470,7 @@ fun HelpCslDesktopTheme(
         LocalSharedConfirmationPresenter provides DesktopConfirmationPresenter,
         LocalScrollbarStyle provides scrollbarStyle
     ) {
-        val colors = if (darkTheme) buildDesktopDarkColorScheme(darkPreset) else if (lightPreset == LightThemePreset.SOFT) DesktopSoftLightColors else DesktopLightColors
+        val colors = if (darkTheme) buildDesktopDarkColorScheme(darkPreset) else when (lightPreset) { LightThemePreset.SOFT -> DesktopSoftLightColors; LightThemePreset.WARM -> DesktopWarmLightColors; LightThemePreset.CLASSIC -> DesktopLightColors }
         MaterialTheme(colorScheme = colors) {
             // background() does not provide a content color; set a safe default for every window.
             CompositionLocalProvider(LocalContentColor provides colors.onSurface, content = content)
