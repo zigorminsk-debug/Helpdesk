@@ -98,6 +98,8 @@ data class TicketAttachment(
         }
 }
 
+data class JiraOrganizationRef(val fieldId: String, val id: String, val name: String)
+
 data class HelpdeskTicket(
     val id: String,
     val key: String,
@@ -129,7 +131,10 @@ data class HelpdeskTicket(
     val attachments: List<TicketAttachment>? = emptyList(),
     val webUrl: String,
     val isClientTicket: Boolean = true,
-    val filterReason: String? = null
+    val filterReason: String? = null,
+    // Nullable for tickets persisted by older versions. Only explicit Jira identities are used.
+    val reporterIdentity: String? = null,
+    val organizations: List<JiraOrganizationRef>? = null
 ) {
     val stage: TicketStage
         get() = TicketStage.fromJiraStatus(status, statusCategoryKey)

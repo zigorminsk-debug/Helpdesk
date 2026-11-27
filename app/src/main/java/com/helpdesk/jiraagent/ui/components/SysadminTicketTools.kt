@@ -1177,7 +1177,7 @@ fun ClientHistoryCard(
                         "${historyState.items.size}"
                     }
                     Text(
-                        text = "Прошлые обращения клиента ($countText)",
+                        text = "Возможные обращения автора ($countText)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = CslOrange
@@ -1233,7 +1233,7 @@ fun ClientHistoryCard(
                     if (filteredItems.isEmpty()) {
                         Text(
                             text = if (historyState.isLoading) {
-                                "Загрузка всей истории обращений из Jira..."
+                                "Поиск истории автора в Jira..."
                             } else {
                                 "По запросу «$searchQuery» заявок не найдено"
                             },

@@ -2752,15 +2752,16 @@ class JiraApiClient {
     }
 
     /**
-     * Searches Jira across pages for the complete ticket history of the given client/organization
-     * (up to 500 historical issues, sorted newest-first).
+     * Best-effort reporter search (not organization history), up to 500 issues per JQL.
+     * Name matching is approximate; callers must not describe this as a complete history.
      */
     suspend fun fetchClientHistory(
         reporterName: String,
         excludeTicketKey: String,
         settings: AppSettings,
         filterSettings: FilterSettings,
-        reporterLoginOrEmail: String = ""
+        reporterLoginOrEmail: String = "",
+        reporterIdentity: String? = null
     ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanReporter = reporterName.trim()
@@ -2783,7 +2784,9 @@ class JiraApiClient {
                 .orEmpty()
 
             val safeExclude = excludeTicketKey.replace("\"", "")
+            val identityValue = reporterIdentity?.substringAfter(':', "")?.replace("\"", "")?.replace("\\", "").orEmpty()
             val jqlCandidates = buildList {
+                if (identityValue.isNotBlank()) add("${projectClause}key != \"$safeExclude\" AND reporter = \"$identityValue\" ORDER BY created DESC")
                 add("${projectClause}key != \"$safeExclude\" AND reporter = \"$cleanReporter\" ORDER BY created DESC")
                 if (primaryLogin.isNotEmpty()) {
                     add("${projectClause}key != \"$safeExclude\" AND reporter = \"$primaryLogin\" ORDER BY created DESC")
@@ -2791,6 +2794,7 @@ class JiraApiClient {
                 add("${projectClause}key != \"$safeExclude\" AND text ~ \"$cleanReporter\" ORDER BY created DESC")
             }
 
+            var searchFailure: Throwable? = null
             for (jql in jqlCandidates) {
                 val list = runCatching {
                     executePaginatedHistorySearch(
@@ -2811,16 +2815,47 @@ class JiraApiClient {
                                 )
                         }
                         .filter {
-                            it.reporterName.contains(cleanReporter, ignoreCase = true) ||
+                            (!reporterIdentity.isNullOrBlank() && it.reporterIdentity == reporterIdentity) ||
+                                it.reporterName.contains(cleanReporter, ignoreCase = true) ||
                                 cleanReporter.contains(it.reporterName, ignoreCase = true) ||
                                 (primaryLogin.isNotEmpty() && it.reporterLoginOrEmail.contains(primaryLogin, ignoreCase = true))
                         }
                         .distinctBy { it.key.uppercase(Locale.ROOT) }
                         .sortedByDescending { it.createdEpochMillis }
-                }.getOrNull()
+                }.onFailure { searchFailure = it }.getOrNull()
                 if (!list.isNullOrEmpty()) return@runCatching list
             }
+            // An unsupported JQL, network or permissions failure cannot prove an empty history.
+            searchFailure?.let { throw it }
             emptyList()
+        }
+    }
+
+    /** Searches the explicitly identified JSM organization; never falls back to name/text matching. */
+    suspend fun fetchOrganizationHistory(
+        organization: com.helpdesk.jiraagent.model.JiraOrganizationRef,
+        settings: AppSettings,
+        filterSettings: FilterSettings
+    ): Result<List<HelpdeskTicket>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val fieldNumber = organization.fieldId.removePrefix("customfield_")
+            require(organization.fieldId == "customfield_$fieldNumber" && fieldNumber.matches(Regex("[0-9]+")) && organization.id.matches(Regex("[0-9]+"))) { "Неизвестный идентификатор организации Jira" }
+            val projects = TicketFilterEngine.splitCsv(filterSettings.projectKeys)
+                .takeIf { it.isNotEmpty() }
+                ?.joinToString(", ") { "\"${it.replace("\"", "")}\"" }
+                ?.let { "project in ($it) AND " }.orEmpty()
+            val base = normalizeBaseUrl(settings.serverUrl)
+            val jql = "${projects}cf[$fieldNumber] = ${organization.id} ORDER BY created DESC"
+            val found = executePaginatedHistorySearch(base, jql, isCloudTarget(settings, base), settings, filterSettings, 500, organization.fieldId)
+            check(found.isEmpty() || found.any { it.organizations.orEmpty().isNotEmpty() }) {
+                "Jira не вернула распознаваемое поле организации"
+            }
+            found.filter { candidate ->
+                    candidate.isClientTicket &&
+                        com.helpdesk.jiraagent.domain.ClientRequestAnalysis.sameOrganization(organization, candidate) &&
+                        !AdminChatCodec.isAdminChatStorageIssue(candidate.key, candidate.summary, candidate.labels, settings.adminChatIssueKey)
+                }
+                .distinctBy { it.key.uppercase(Locale.ROOT) }
         }
     }
 
@@ -2896,24 +2931,25 @@ class JiraApiClient {
         preferCloud: Boolean,
         settings: AppSettings,
         filterSettings: FilterSettings,
-        maxTotal: Int = 500
+        maxTotal: Int = 500,
+        organizationField: String? = null
     ): List<HelpdeskTicket> {
         return if (preferCloud) {
             try {
-                executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal, organizationField)
             } catch (e: JiraApiException) {
                 if (e.httpCode == 404 || e.httpCode == 405 || e.httpCode == 410) {
-                    executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                    executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal, organizationField)
                 } else {
                     throw e
                 }
             }
         } else {
             try {
-                executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                executePaginatedV2HistorySearch(baseUrl, jql, settings, filterSettings, maxTotal, organizationField)
             } catch (e: JiraApiException) {
                 if (e.httpCode == 404 || e.httpCode == 410) {
-                    executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal)
+                    executePaginatedCloudHistorySearch(baseUrl, jql, settings, filterSettings, maxTotal, organizationField)
                 } else {
                     throw e
                 }
@@ -2926,9 +2962,10 @@ class JiraApiClient {
         jql: String,
         settings: AppSettings,
         filterSettings: FilterSettings,
-        maxTotal: Int
+        maxTotal: Int,
+        organizationField: String?
     ): List<HelpdeskTicket> {
-        val fieldsCsv = "summary,status,priority,issuetype,project,reporter,creator,assignee,created,updated,resolutiondate,labels"
+        val fieldsCsv = "summary,status,priority,issuetype,project,reporter,creator,assignee,created,updated,resolutiondate,labels" + (organizationField?.let { ",$it" } ?: "")
         val encodedJql = URLEncoder.encode(jql, "UTF-8")
         val collected = mutableListOf<HelpdeskTicket>()
         var startAt = 0
@@ -2936,7 +2973,7 @@ class JiraApiClient {
 
         while (collected.size < maxTotal) {
             val batchSize = minOf(pageSize, maxTotal - collected.size)
-            val url = "$baseUrl/rest/api/2/search?jql=$encodedJql&startAt=$startAt&maxResults=$batchSize&fields=$fieldsCsv"
+            val url = "$baseUrl/rest/api/2/search?jql=$encodedJql&startAt=$startAt&maxResults=$batchSize&fields=$fieldsCsv${if (organizationField != null) "&expand=names" else ""}"
             val req = Request.Builder().url(url).get().applyAuth(settings).build()
             val bodyStr = try {
                 clientFor(settings).newCall(req).execute().use { resp ->
@@ -2967,12 +3004,13 @@ class JiraApiClient {
         jql: String,
         settings: AppSettings,
         filterSettings: FilterSettings,
-        maxTotal: Int
+        maxTotal: Int,
+        organizationField: String?
     ): List<HelpdeskTicket> {
         val fieldsList = listOf(
             "summary", "status", "priority", "issuetype", "project",
             "reporter", "creator", "assignee", "created", "updated", "resolutiondate", "labels"
-        )
+        ) + listOfNotNull(organizationField)
         val collected = mutableListOf<HelpdeskTicket>()
         var nextPageToken: String? = null
         var startAt = 0
@@ -2985,6 +3023,7 @@ class JiraApiClient {
                 addProperty("jql", jql)
                 addProperty("maxResults", batchSize)
                 add("fields", JsonArray().apply { fieldsList.forEach { add(it) } })
+                if (organizationField != null) addProperty("expand", "names")
                 if (useClassicEndpoint) {
                     addProperty("startAt", startAt)
                 } else if (!nextPageToken.isNullOrBlank()) {

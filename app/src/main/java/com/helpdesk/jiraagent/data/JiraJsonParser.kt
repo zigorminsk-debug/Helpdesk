@@ -8,6 +8,7 @@ import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.FilterSettings
+import com.helpdesk.jiraagent.model.JiraOrganizationRef
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.PhoneMatch
 import com.helpdesk.jiraagent.model.TicketAttachment
@@ -122,6 +123,27 @@ object JiraJsonParser {
             .distinct()
             .joinToString(" | ")
 
+        val reporterIdentity = listOf("accountId", "key", "name").firstNotNullOfOrNull { field ->
+            reporterObj?.getStringOrNull(field)?.trim()?.takeIf { it.isNotEmpty() }?.let { "$field:$it" }
+        }
+        // Only a named JSM Organizations field containing explicit object IDs is reliable.
+        // Never infer an organization from reporter display names or arbitrary company text.
+        val organizations = mutableListOf<JiraOrganizationRef>()
+        namesObj?.entrySet()?.forEach { (fieldId, label) ->
+            val normalized = if (label.isJsonPrimitive) label.asString.trim().lowercase() else ""
+            if (fieldId.matches(Regex("customfield_\\d+")) && normalized in setOf("organizations", "organisations", "организации")) {
+                val value = fields.get(fieldId)
+                if (value != null && value.isJsonArray) value.asJsonArray.forEach { element ->
+                    if (element.isJsonObject) {
+                        val obj = element.asJsonObject
+                        val orgId = obj.getStringOrNull("id")?.trim().orEmpty()
+                        val name = obj.getStringOrNull("name")?.trim().orEmpty()
+                        if (orgId.isNotEmpty() && name.isNotEmpty()) organizations.add(JiraOrganizationRef(fieldId, orgId, name))
+                    }
+                }
+            }
+        }
+
         val assigneeObj = fields.getObjectOrNull("assignee")
         val assigneeName = assigneeObj?.getStringOrNull("displayName")
         val assigneeLogin = listOfNotNull(
@@ -214,7 +236,9 @@ object JiraJsonParser {
             telegramHandles = tgHandles,
             comments = comments,
             attachments = attachments,
-            webUrl = webUrl
+            webUrl = webUrl,
+            reporterIdentity = reporterIdentity,
+            organizations = organizations.distinctBy { it.fieldId to it.id }
         )
 
         val eval = TicketFilterEngine.evaluate(

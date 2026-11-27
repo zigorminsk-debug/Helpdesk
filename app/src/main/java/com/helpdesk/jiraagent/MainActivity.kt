@@ -674,6 +674,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 isLoading = isLoadingDetail,
                 actionState = ticketActionState,
                 clientHistoryState = clientHistoryState,
+                analysisLoadedTickets = tickets,
                 hostDiagnosticState = hostDiagnosticState,
                 appSettings = appSettings,
                 engineerDisplayName = engineerName,

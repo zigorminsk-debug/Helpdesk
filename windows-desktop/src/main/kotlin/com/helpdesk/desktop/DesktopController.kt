@@ -125,6 +125,8 @@ data class DesktopUiState(
     val clientHistoryForKey: String? = null,
     val clientHistoryTickets: List<HelpdeskTicket> = emptyList(),
     val isLoadingClientHistory: Boolean = false,
+    val clientHistoryFailed: Boolean = false,
+    val organizationHistories: Map<String, com.helpdesk.jiraagent.domain.OrganizationHistory> = emptyMap(),
     val serialSearchResults: List<HelpdeskTicket> = emptyList(),
     val isSearchingSerial: Boolean = false,
     val knowledgeArchiveResults: List<HelpdeskTicket> = emptyList(),
@@ -589,7 +591,10 @@ class DesktopController(
         }
     }
 
+    private var ticketSelectionGeneration = 0
+
     fun selectTicket(ticketKey: String?) {
+        val generation = ++ticketSelectionGeneration
         _state.update { st ->
             val previewFromHistory = if (ticketKey != null && st.tickets.none { it.key == ticketKey }) {
                 st.clientHistoryTickets.firstOrNull { it.key == ticketKey }
@@ -624,24 +629,43 @@ class DesktopController(
                 diagnosticReport = null,
                 clientHistoryForKey = ticketKey,
                 clientHistoryTickets = localMatches,
-                isLoadingClientHistory = ticketKey != null && st.settings.isConfigured
+                isLoadingClientHistory = ticketKey != null && st.settings.isConfigured,
+                clientHistoryFailed = false,
+                organizationHistories = emptyMap()
             )
         }
         if (ticketKey != null && _state.value.settings.isConfigured) {
             scope.launch {
                 val cur = _state.value
                 apiClient.fetchTicketByKey(ticketKey, cur.settings, cur.filterSettings).onSuccess { fresh ->
+                    if (generation != ticketSelectionGeneration || _state.value.selectedTicketKey != ticketKey) return@onSuccess
                     replaceTicketInMemory(fresh)
+                    val organizations = fresh.organizations.orEmpty()
+                    _state.update { st -> if (generation == ticketSelectionGeneration && st.selectedTicketKey == fresh.key) st.copy(
+                        organizationHistories = organizations.associate { "${it.fieldId}:${it.id}" to com.helpdesk.jiraagent.domain.OrganizationHistory(loading = true) }
+                    ) else st }
+                    organizations.forEach { organization ->
+                        scope.launch {
+                            val result = apiClient.fetchOrganizationHistory(organization, cur.settings, cur.filterSettings)
+                            _state.update { st ->
+                                if (generation == ticketSelectionGeneration && st.selectedTicketKey == fresh.key) {
+                                    val key = "${organization.fieldId}:${organization.id}"
+                                    st.copy(organizationHistories = st.organizationHistories + (key to com.helpdesk.jiraagent.domain.OrganizationHistory(failed = result.isFailure, tickets = result.getOrDefault(emptyList()))))
+                                } else st
+                            }
+                        }
+                    }
                     if (fresh.reporterName.isNotBlank()) {
                         apiClient.fetchClientHistory(
                             reporterName = fresh.reporterName,
                             excludeTicketKey = fresh.key,
                             settings = cur.settings,
                             filterSettings = cur.filterSettings,
-                            reporterLoginOrEmail = fresh.reporterLoginOrEmail
+                            reporterLoginOrEmail = fresh.reporterLoginOrEmail,
+                            reporterIdentity = fresh.reporterIdentity
                         ).onSuccess { history ->
                             _state.update { st ->
-                                if (st.selectedTicketKey == fresh.key) {
+                                if (generation == ticketSelectionGeneration && st.selectedTicketKey == fresh.key) {
                                     val localMatches = st.tickets.filter {
                                         !it.key.equals(fresh.key, ignoreCase = true) &&
                                             it.isClientTicket &&
@@ -659,22 +683,22 @@ class DesktopController(
                             }
                         }.onFailure {
                             _state.update { st ->
-                                if (st.selectedTicketKey == fresh.key) {
-                                    st.copy(isLoadingClientHistory = false)
+                                if (generation == ticketSelectionGeneration && st.selectedTicketKey == fresh.key) {
+                                    st.copy(isLoadingClientHistory = false, clientHistoryFailed = true)
                                 } else st
                             }
                         }
                     } else {
                         _state.update { st ->
-                            if (st.selectedTicketKey == fresh.key) {
+                            if (generation == ticketSelectionGeneration && st.selectedTicketKey == fresh.key) {
                                 st.copy(isLoadingClientHistory = false)
                             } else st
                         }
                     }
                 }.onFailure {
                     _state.update { st ->
-                        if (st.selectedTicketKey == ticketKey) {
-                            st.copy(isLoadingClientHistory = false)
+                        if (generation == ticketSelectionGeneration && st.selectedTicketKey == ticketKey) {
+                            st.copy(isLoadingClientHistory = false, clientHistoryFailed = true)
                         } else st
                     }
                 }

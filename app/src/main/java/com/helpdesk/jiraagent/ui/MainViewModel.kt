@@ -119,7 +119,9 @@ data class TicketActionUiState(
 data class ClientHistoryUiState(
     val isLoading: Boolean = false,
     val forTicketKey: String = "",
-    val items: List<HelpdeskTicket> = emptyList()
+    val items: List<HelpdeskTicket> = emptyList(),
+    val failed: Boolean = false,
+    val organizationHistories: Map<String, com.helpdesk.jiraagent.domain.OrganizationHistory> = emptyMap()
 )
 
 data class HostDiagnosticUiState(
@@ -552,7 +554,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _appUpdateState.update { it.copy(bannerDismissed = true) }
     }
 
+    private var ticketOpenGeneration = 0
+
     fun openTicket(ticketKey: String) {
+        val openGeneration = ++ticketOpenGeneration
         _selectedTicketKey.value = ticketKey
         _ticketActionState.value = TicketActionUiState()
         _hostDiagnosticState.value = HostDiagnosticUiState()
@@ -570,14 +575,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isLoadingTicketDetail.value = true
             apiClient.fetchTicketByKey(ticketKey, settings, filterSettings.value)
                 .onSuccess { freshTicket ->
-                    repository.upsertSingleTicket(freshTicket)
-                    loadClientHistoryFor(freshTicket)
+                    if (openGeneration == ticketOpenGeneration && _selectedTicketKey.value.equals(ticketKey, true)) {
+                        repository.upsertSingleTicket(freshTicket)
+                        loadClientHistoryFor(freshTicket)
+                    }
+                }.onFailure {
+                    if (openGeneration == ticketOpenGeneration && _selectedTicketKey.value.equals(ticketKey, true)) {
+                        _clientHistoryState.update { state -> state.copy(isLoading = false, failed = true) }
+                    }
                 }
-            _isLoadingTicketDetail.value = false
+            if (openGeneration == ticketOpenGeneration) _isLoadingTicketDetail.value = false
         }
     }
 
+    private var clientAnalysisGeneration = 0
+
     private fun loadClientHistoryFor(ticket: HelpdeskTicket) {
+        val generation = ++clientAnalysisGeneration
         val reporterClean = ticket.reporterName.trim()
         val localMatches = tickets.value
             .filter {
@@ -588,13 +602,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .sortedByDescending { it.createdEpochMillis }
 
         _clientHistoryState.value = ClientHistoryUiState(
-            isLoading = appSettings.value.isConfigured && !ticket.key.startsWith("DEMO-"),
+            isLoading = appSettings.value.isConfigured && !ticket.key.startsWith("DEMO-") && reporterClean.length >= 2,
             forTicketKey = ticket.key,
-            items = localMatches
+            items = localMatches,
+            organizationHistories = if (appSettings.value.isConfigured && !ticket.key.startsWith("DEMO-"))
+                ticket.organizations.orEmpty().associate { "${it.fieldId}:${it.id}" to com.helpdesk.jiraagent.domain.OrganizationHistory(loading = true) }
+                else emptyMap()
         )
 
         val settings = appSettings.value
-        if (!settings.isConfigured || ticket.key.startsWith("DEMO-") || reporterClean.length < 2) return
+        if (!settings.isConfigured || ticket.key.startsWith("DEMO-")) return
+        ticket.organizations.orEmpty().forEach { organization ->
+            viewModelScope.launch {
+                val result = apiClient.fetchOrganizationHistory(organization, settings, filterSettings.value)
+                if (generation == clientAnalysisGeneration && _selectedTicketKey.value.equals(ticket.key, true)) {
+                    val key = "${organization.fieldId}:${organization.id}"
+                    _clientHistoryState.update { state -> state.copy(organizationHistories = state.organizationHistories +
+                        (key to com.helpdesk.jiraagent.domain.OrganizationHistory(failed = result.isFailure, tickets = result.getOrDefault(emptyList())))) }
+                }
+            }
+        }
+        if (reporterClean.length < 2) return
 
         viewModelScope.launch {
             apiClient.fetchClientHistory(
@@ -602,21 +630,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 excludeTicketKey = ticket.key,
                 settings = settings,
                 filterSettings = filterSettings.value,
-                reporterLoginOrEmail = ticket.reporterLoginOrEmail
+                reporterLoginOrEmail = ticket.reporterLoginOrEmail,
+                reporterIdentity = ticket.reporterIdentity
             ).onSuccess { remoteItems ->
                 val merged = (remoteItems + localMatches)
                     .distinctBy { it.key.uppercase() }
                     .sortedByDescending { it.createdEpochMillis }
-                if (_selectedTicketKey.value.equals(ticket.key, ignoreCase = true)) {
-                    _clientHistoryState.value = ClientHistoryUiState(
-                        isLoading = false,
-                        forTicketKey = ticket.key,
-                        items = merged
-                    )
+                if (generation == clientAnalysisGeneration && _selectedTicketKey.value.equals(ticket.key, ignoreCase = true)) {
+                    _clientHistoryState.update { it.copy(isLoading = false, items = merged) }
                 }
             }.onFailure {
-                if (_selectedTicketKey.value.equals(ticket.key, ignoreCase = true)) {
-                    _clientHistoryState.update { it.copy(isLoading = false) }
+                if (generation == clientAnalysisGeneration && _selectedTicketKey.value.equals(ticket.key, ignoreCase = true)) {
+                    _clientHistoryState.update { it.copy(isLoading = false, failed = true) }
                 }
             }
         }

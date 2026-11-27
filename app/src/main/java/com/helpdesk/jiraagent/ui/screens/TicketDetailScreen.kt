@@ -114,6 +114,7 @@ import com.helpdesk.jiraagent.model.TicketStage
 import com.helpdesk.jiraagent.model.TicketTimingFormatter
 import com.helpdesk.jiraagent.ui.components.AssignColleagueDialog
 import com.helpdesk.jiraagent.ui.components.ClientDossierCard
+import com.helpdesk.jiraagent.shared.ClientRequestAnalysisView
 import com.helpdesk.jiraagent.ui.components.ClientTechPassportAndroidDialog
 import com.helpdesk.jiraagent.ui.components.KnowledgeBaseArchiveAndroidDialog
 import com.helpdesk.jiraagent.ui.components.ServiceActPdfDialog
@@ -159,6 +160,7 @@ fun TicketDetailScreen(
     isLoading: Boolean,
     actionState: TicketActionUiState,
     clientHistoryState: ClientHistoryUiState,
+    analysisLoadedTickets: List<HelpdeskTicket> = emptyList(),
     hostDiagnosticState: HostDiagnosticUiState,
     appSettings: AppSettings,
     engineerDisplayName: String = "",
@@ -965,6 +967,16 @@ fun TicketDetailScreen(
                     clientName = ticket.reporterName,
                     savedNote = clientDossierNote,
                     onSaveNote = onSaveClientDossier
+                )
+
+                ClientRequestAnalysisView(
+                    ticket = ticket,
+                    loadedTickets = analysisLoadedTickets,
+                    history = if (clientHistoryState.forTicketKey.equals(ticket.key, true)) clientHistoryState.items else emptyList(),
+                    historyLoading = clientHistoryState.isLoading,
+                    historyFailed = clientHistoryState.failed,
+                    organizationHistories = clientHistoryState.organizationHistories,
+                    onOpenTicket = onOpenHistoricalTicket
                 )
 
                 // 4d. Client Historical Tickets Card

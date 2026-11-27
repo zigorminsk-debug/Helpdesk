@@ -59,6 +59,7 @@ import com.helpdesk.jiraagent.domain.TicketAgeFilter
 import com.helpdesk.jiraagent.domain.TicketFreshnessClassifier
 import com.helpdesk.jiraagent.domain.TicketHangingSeverity
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
+import com.helpdesk.jiraagent.shared.ClientRequestAnalysisView
 import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.HelpdeskTicket
 import com.helpdesk.jiraagent.model.TicketStage
@@ -2929,7 +2930,17 @@ private fun DesktopTicketInspector(
             }
         }
 
-        // 5. Client's Complete Tickets History (with Scrollbar, Filter & Expand)
+        ClientRequestAnalysisView(
+            ticket = ticket,
+            loadedTickets = state.tickets,
+            history = if (state.clientHistoryForKey == ticket.key) state.clientHistoryTickets else emptyList(),
+            historyLoading = state.isLoadingClientHistory,
+            historyFailed = state.clientHistoryFailed,
+            organizationHistories = state.organizationHistories,
+            onOpenTicket = { controller.selectTicket(it) }
+        )
+
+        // 5. Client's historical tickets (with Scrollbar, Filter & Expand)
         if (state.clientHistoryForKey == ticket.key && (state.isLoadingClientHistory || state.clientHistoryTickets.isNotEmpty())) {
             var historyFilterQuery by remember(ticket.key) { mutableStateOf("") }
             var historyExpandedHeight by remember(ticket.key) { mutableStateOf(false) }
@@ -2970,7 +2981,7 @@ private fun DesktopTicketInspector(
                                 "${state.clientHistoryTickets.size}"
                             }
                             Text(
-                                "🗂 Прошлые заявки клиента «${ticket.reporterName}» ($countLabel)",
+                                "🗂 Возможные заявки автора «${ticket.reporterName}» ($countLabel)",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 maxLines = 1,
@@ -3027,7 +3038,7 @@ private fun DesktopTicketInspector(
                     if (filteredHistory.isEmpty()) {
                         Text(
                             text = if (state.isLoadingClientHistory) {
-                                "Загрузка всей истории заявок клиента из Jira..."
+                                "Поиск истории автора в Jira..."
                             } else {
                                 "По запросу «$historyFilterQuery» прошлых заявок не найдено."
                             },
