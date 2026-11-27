@@ -1,0 +1,1819 @@
+package com.helpdesk.jiraagent.ui.screens
+
+import android.app.Activity
+import android.app.role.RoleManager
+import android.content.Context
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.OpenableColumns
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SettingsApplications
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.helpdesk.jiraagent.BuildConfig
+import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
+import com.helpdesk.jiraagent.domain.PhoneNumberNormalizer
+import com.helpdesk.jiraagent.model.AlertSoundPreset
+import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.AppThemeMode
+import com.helpdesk.jiraagent.model.AuthType
+import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.model.JiraServerType
+import com.helpdesk.jiraagent.model.PhoneRegion
+import com.helpdesk.jiraagent.model.TtsReadoutMode
+import com.helpdesk.jiraagent.model.ZabbixSeverity
+import com.helpdesk.jiraagent.notification.AlertSoundPlayer
+import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.notification.TicketSpeechAnnouncer
+import com.helpdesk.jiraagent.ui.AppUpdateUiState
+import com.helpdesk.jiraagent.ui.ConnectionTestState
+import com.helpdesk.jiraagent.ui.theme.CslMidnight
+import com.helpdesk.jiraagent.ui.theme.CslOrange
+import com.helpdesk.jiraagent.ui.theme.CslSuccessGreen
+import com.helpdesk.jiraagent.util.DialerLauncher
+
+private val POLL_INTERVAL_OPTIONS = listOf(
+    15 to "15 сек",
+    30 to "30 сек",
+    60 to "1 мин",
+    120 to "2 мин",
+    300 to "5 мин"
+)
+
+private val OFF_HOURS_POLL_OPTIONS = listOf(
+    15 to "15 мин",
+    30 to "30 мин",
+    60 to "1 час",
+    120 to "2 часа",
+    180 to "3 часа",
+    240 to "4 часа",
+    360 to "6 часов",
+    AppSettings.OFF_HOURS_POLL_DISABLED to "Пауза до смены",
+    AppSettings.OFF_HOURS_POLL_SAME_AS_WORK to "Как днём"
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ServerSettingsScreen(
+    currentSettings: AppSettings,
+    connectionTest: ConnectionTestState,
+    appUpdateState: AppUpdateUiState = AppUpdateUiState(),
+    isCleaningSystemRooms: Boolean = false,
+    systemRoomsCleanupMessage: String? = null,
+    onCleanupSystemRooms: () -> Unit = {},
+    onTestConnection: (AppSettings) -> Unit,
+    onSaveSettings: (AppSettings) -> Unit,
+    onTriggerTestBanner: () -> Unit = {},
+    onOpenGuide: () -> Unit = {},
+    onOpenQrTransfer: () -> Unit = {},
+    onCheckForUpdate: () -> Unit = {},
+    onDownloadAndInstallUpdate: () -> Unit = {},
+    onInstallReadyUpdate: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var draft by remember { mutableStateOf(currentSettings) }
+    var showSecret by rememberSaveable { mutableStateOf(false) }
+    var showZabbixSecret by rememberSaveable { mutableStateOf(false) }
+    var samplePhoneInput by rememberSaveable { mutableStateOf("8 (029) 654-32-10") }
+
+    val ringtonePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            @Suppress("DEPRECATION")
+            val pickedUri: Uri? = result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            if (pickedUri != null) {
+                val title = runCatching {
+                    RingtoneManager.getRingtone(context, pickedUri)?.getTitle(context)
+                }.getOrNull().orEmpty().ifBlank { "Системная мелодия" }
+                val updated = draft.copy(
+                    alertSoundPreset = AlertSoundPreset.CUSTOM_URI,
+                    customAlertSoundUri = pickedUri.toString(),
+                    customAlertSoundTitle = title
+                )
+                draft = updated
+                onSaveSettings(updated)
+                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+            }
+        }
+    }
+
+    val audioDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { pickedUri: Uri? ->
+        if (pickedUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    pickedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val fileName = runCatching {
+                context.contentResolver.query(pickedUri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIdx >= 0 && cursor.moveToFirst()) cursor.getString(nameIdx) else null
+                }
+            }.getOrNull().orEmpty().ifBlank { "Аудиофайл с телефона" }
+
+            val updated = draft.copy(
+                alertSoundPreset = AlertSoundPreset.CUSTOM_URI,
+                customAlertSoundUri = pickedUri.toString(),
+                customAlertSoundTitle = fileName
+            )
+            draft = updated
+            onSaveSettings(updated)
+            AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+        }
+    }
+
+    LaunchedEffect(currentSettings) {
+        draft = currentSettings
+    }
+
+    val sampleNormalized = remember(samplePhoneInput, draft.phoneRegion, draft.customCountryCode) {
+        PhoneNumberNormalizer.normalizeSingle(
+            rawInput = samplePhoneInput,
+            region = draft.phoneRegion,
+            customCountryCode = draft.customCountryCode,
+            strictForFreeText = false
+        )
+    }
+
+    val rbCalendarStatus = remember(
+        draft.workScheduleEnabled,
+        draft.workStartTime,
+        draft.workEndTime,
+        draft.extraWorkingDates,
+        draft.extraHolidayDates
+    ) {
+        BelarusWorkCalendar.evaluate(draft)
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // 0. Quick Onboarding & Full App Guide Bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onOpenGuide,
+                modifier = Modifier.weight(1f),
+                border = BorderStroke(1.dp, CslOrange)
+            ) {
+                Icon(Icons.Default.MenuBook, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Полный гайд", maxLines = 1, softWrap = false, fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(
+                onClick = onOpenQrTransfer,
+                modifier = Modifier.weight(1f),
+                border = BorderStroke(1.dp, CslOrange)
+            ) {
+                Icon(Icons.Default.QrCode2, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Перенос QR", maxLines = 1, softWrap = false, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // 0a. Theme Mode Selector Card (System / Light / Dark)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "🌓 Тема оформления интерфейса",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AppThemeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = draft.themeMode == mode,
+                            onClick = {
+                                val updated = draft.copy(themeMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = {
+                                Text(mode.title, maxLines = 1, softWrap = false)
+                            }
+                        )
+                    }
+                }
+
+                Text("Светлая палитра:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    com.helpdesk.jiraagent.model.LightThemePreset.entries.forEach { preset ->
+                        FilterChip(selected = draft.lightThemePreset == preset, onClick = {
+                            val updated = draft.copy(themeMode = AppThemeMode.LIGHT, lightThemePreset = preset)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }, label = { Text(preset.title) })
+                    }
+                }
+                Text(
+                    text = "🎨 Вариант оформления тёмной темы:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DarkThemePreset.entries.forEach { preset ->
+                        val isSelected = draft.darkThemePreset == preset
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(preset.previewCardHex),
+                            border = BorderStroke(
+                                width = if (isSelected) 2.dp else 1.dp,
+                                color = if (isSelected) Color(preset.previewAccentHex) else Color(0xFF475569)
+                            ),
+                            modifier = Modifier.clickable {
+                                val updated = draft.copy(
+                                    themeMode = AppThemeMode.DARK,
+                                    darkThemePreset = preset
+                                )
+                                draft = updated
+                                onSaveSettings(updated)
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(preset.previewBgHex)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(preset.previewAccentHex))
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isSelected) "✓ ${preset.title}" else preset.title,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = Color(0xFFF8FAFC),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                    Text(
+                                        text = preset.subtitle,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFCBD5E1),
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Jira Connection Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Подключение к серверу Jira",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                OutlinedTextField(
+                    value = draft.serverUrl,
+                    onValueChange = { draft = draft.copy(serverUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL сервера Jira") },
+                    placeholder = { Text("https://jira.company.by или https://org.atlassian.net") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
+                OutlinedTextField(
+                    value = draft.confluenceUrl,
+                    onValueChange = { draft = draft.copy(confluenceUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL Confluence Wiki (вход с теми же данными Jira)") },
+                    placeholder = { Text("https://w.csl.by") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
+                OutlinedTextField(
+                    value = draft.confluenceToken,
+                    onValueChange = { draft = draft.copy(confluenceToken = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Токен Confluence PAT (необязательно — если включена 2FA)") },
+                    placeholder = { Text("Оставьте пустым для веб-входа или вставьте PAT из w.csl.by") },
+                    singleLine = true
+                )
+
+                HorizontalDivider()
+
+                Text(
+                    text = "Мониторинг Zabbix (z.csl.by)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "При появлении ошибки или критического предупреждения в Zabbix программа выводит срочный баннер со звуком как заявка от клиента.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixUrl,
+                    onValueChange = { draft = draft.copy(zabbixUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL сервера Zabbix") },
+                    placeholder = { Text("http://z.csl.by") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixLogin,
+                    onValueChange = { draft = draft.copy(zabbixLogin = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Логин Zabbix") },
+                    placeholder = { Text("Логин на z.csl.by") },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = draft.zabbixPassword,
+                    onValueChange = { draft = draft.copy(zabbixPassword = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Пароль Zabbix") },
+                    singleLine = true,
+                    visualTransformation = if (showZabbixSecret) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showZabbixSecret = !showZabbixSecret }) {
+                            Icon(
+                                imageVector = if (showZabbixSecret) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Показать пароль Zabbix"
+                            )
+                        }
+                    }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Фоновый опрос и баннеры Zabbix",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Порог: ${ZabbixSeverity.formatThresholdOptionLabel(draft.normalizedZabbixMinSeverity)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.zabbixEnabled,
+                        onCheckedChange = {
+                            val updated = draft.copy(zabbixEnabled = it)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        5 to "Только Disaster (5)",
+                        4 to "High и Disaster (4–5)",
+                        3 to "Average и выше (3–5)",
+                        2 to "Warning и выше (2–5)"
+                    ).forEach { (lvl, label) ->
+                        FilterChip(
+                            selected = draft.normalizedZabbixMinSeverity == lvl,
+                            onClick = {
+                                val updated = draft.copy(zabbixMinAlertSeverity = lvl)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = { Text(label, maxLines = 1) }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                Text(
+                    text = "Тип сервера",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                JiraServerType.entries.forEach { serverType ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = draft.serverType == serverType,
+                            onClick = { draft = draft.copy(serverType = serverType) }
+                        )
+                        Column {
+                            Text(serverType.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(
+                                serverType.subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Способ авторизации",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                AuthType.entries.forEach { authType ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = draft.authType == authType,
+                            onClick = { draft = draft.copy(authType = authType) }
+                        )
+                        Text(authType.title, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+
+                OutlinedTextField(
+                    value = draft.usernameOrEmail,
+                    onValueChange = { draft = draft.copy(usernameOrEmail = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(draft.authType.loginLabel) },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = draft.passwordOrToken,
+                    onValueChange = { draft = draft.copy(passwordOrToken = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(draft.authType.secretLabel) },
+                    singleLine = true,
+                    visualTransformation = if (showSecret) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showSecret = !showSecret }) {
+                            Icon(
+                                if (showSecret) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Показать/скрыть"
+                            )
+                        }
+                    }
+                )
+
+                SwitchRow(
+                    title = "Доверять самоподписанным SSL",
+                    subtitle = "Для внутренних корпоративных серверов Jira в локальной сети или VPN",
+                    checked = draft.trustSelfSignedSsl,
+                    onCheckedChange = { draft = draft.copy(trustSelfSignedSsl = it) }
+                )
+
+                OutlinedButton(
+                    onClick = { onTestConnection(draft) },
+                    enabled = !connectionTest.isTesting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (connectionTest.isTesting) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.NetworkCheck, contentDescription = null)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Проверить подключение")
+                }
+
+                OutlinedButton(
+                    onClick = onCleanupSystemRooms,
+                    enabled = draft.isConfigured && !isCleaningSystemRooms,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isCleaningSystemRooms) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Очистка [HELPCSL_*_ROOM]…")
+                    } else {
+                        Text("🧹 Убрать дубли [HELPCSL_*_ROOM] из Jira")
+                    }
+                }
+
+                if (!systemRoomsCleanupMessage.isNullOrBlank()) {
+                    Text(
+                        text = systemRoomsCleanupMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
+                if (connectionTest.message != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (connectionTest.isSuccess == true) {
+                                Icons.Default.CheckCircle
+                            } else {
+                                Icons.Default.ErrorOutline
+                            },
+                            contentDescription = null,
+                            tint = if (connectionTest.isSuccess == true) {
+                                MaterialTheme.colorScheme.secondary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = connectionTest.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (connectionTest.isSuccess == true) {
+                                MaterialTheme.colorScheme.secondary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. Background Monitoring Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Фоновый мониторинг и баннеры",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                SwitchRow(
+                    title = "Активный фоновый агент",
+                    subtitle = "Поддерживать постоянное подключение и выводить баннер при новой заявке от клиента",
+                    checked = draft.pollingEnabled,
+                    onCheckedChange = { draft = draft.copy(pollingEnabled = it) }
+                )
+
+                val powerManager = remember(context) {
+                    context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                }
+                var isIgnoringBatteryOpt by remember {
+                    mutableStateOf(
+                        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                    )
+                }
+                val batteryOptLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) {
+                    isIgnoringBatteryOpt = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                }
+                if (!isIgnoringBatteryOpt) {
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val intent = Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                batteryOptLauncher.launch(intent)
+                            }.onFailure {
+                                runCatching {
+                                    batteryOptLauncher.launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(1.dp, CslOrange)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = null,
+                            tint = CslOrange,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Отключить экономию батареи (пробуждение в 09:00)",
+                            color = CslOrange,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "✓ Работа без ограничений батареи включена · утренний будильник смены 09:00 РБ активен",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CslSuccessGreen,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Text(
+                    text = "Интервал проверки в рабочее время (${draft.workStartTime}–${draft.workEndTime})",
+                    style = MaterialTheme.typography.labelLarge
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    POLL_INTERVAL_OPTIONS.forEach { (sec, label) ->
+                        FilterChip(
+                            selected = draft.pollIntervalSeconds == sec,
+                            onClick = {
+                                val updated = draft.copy(pollIntervalSeconds = sec)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = { Text(label, maxLines = 1, softWrap = false) }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                val currentOffMin = draft.normalizedOffHoursPollMinutes
+                var customOffMinutesText by remember(currentOffMin) {
+                    mutableStateOf(if (currentOffMin > 0) currentOffMin.toString() else "")
+                }
+
+                Text(
+                    text = "Синхронизация в нерабочее время (экономия батареи)",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "Вечером, ночью, в выходные и праздничные дни РБ опрос автоматически переходит в энергосберегающий режим (сейчас: ${AppSettings.formatOffHoursIntervalLabel(currentOffMin).lowercase()}), а ровно в ${draft.workStartTime} снова включается быстрый дневной режим.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OFF_HOURS_POLL_OPTIONS.forEach { (mins, label) ->
+                        FilterChip(
+                            selected = currentOffMin == mins,
+                            onClick = {
+                                val updated = draft.copy(offHoursPollIntervalMinutes = mins)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            label = { Text(label, maxLines = 1, softWrap = false) }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = customOffMinutesText,
+                        onValueChange = { raw ->
+                            customOffMinutesText = raw.filter(Char::isDigit).take(4)
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Свой интервал (мин, 5–720)", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text("120") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val parsed = customOffMinutesText.toIntOrNull()?.coerceIn(5, 720)
+                            if (parsed != null) {
+                                val updated = draft.copy(offHoursPollIntervalMinutes = parsed)
+                                draft = updated
+                                onSaveSettings(updated)
+                                Toast.makeText(
+                                    context,
+                                    "Нерабочее время: ${AppSettings.formatOffHoursIntervalLabel(parsed).lowercase()}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    ) {
+                        Text("Применить", maxLines = 1)
+                    }
+                }
+
+                SwitchRow(
+                    title = "Автозапуск при включении телефона",
+                    subtitle = "Автоматически запускать агент после перезагрузки или обновления APK поверх",
+                    checked = draft.startOnBoot,
+                    onCheckedChange = { draft = draft.copy(startOnBoot = it) }
+                )
+            }
+        }
+
+        // 2a. Выбор мелодии звукового сигнала и всплывающие баннеры
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.45f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Мелодия сигнала и всплывающий баннер",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = "Выберите мелодию оповещения о новой заявке (звучит автоматически при поступлении заявки и при срабатывании отложенной заявки):",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                AlertSoundPreset.entries.forEach { preset ->
+                    if (preset == AlertSoundPreset.CUSTOM_URI && draft.customAlertSoundUri.isBlank()) {
+                        return@forEach
+                    }
+                    val isSelected = draft.alertSoundPreset == preset
+                    val subtitleText = if (preset == AlertSoundPreset.CUSTOM_URI) {
+                        "Файл: ${draft.customAlertSoundTitle.ifBlank { "Выбранная мелодия" }}"
+                    } else {
+                        preset.subtitle
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val updated = draft.copy(alertSoundPreset = preset)
+                                draft = updated
+                                onSaveSettings(updated)
+                                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+                            }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = {
+                                val updated = draft.copy(alertSoundPreset = preset)
+                                draft = updated
+                                onSaveSettings(updated)
+                                AlertSoundPlayer.playTicketAlert(context, updated, forcePreview = true)
+                            }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = preset.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val existingUri = draft.customAlertSoundUri
+                                .takeIf { it.isNotBlank() }
+                                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                putExtra(
+                                    RingtoneManager.EXTRA_RINGTONE_TYPE,
+                                    RingtoneManager.TYPE_NOTIFICATION or RingtoneManager.TYPE_RINGTONE or RingtoneManager.TYPE_ALARM
+                                )
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Выберите мелодию сигнала Help-CSL")
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, existingUri)
+                            }
+                            runCatching { ringtonePickerLauncher.launch(intent) }
+                                .onFailure {
+                                    Toast.makeText(context, "Не удалось открыть список рингтонов", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("Рингтон телефона", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { audioDocumentLauncher.launch(arrayOf("audio/*")) }
+                                .onFailure {
+                                    Toast.makeText(context, "Не удалось открыть выбор файла", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("Свой MP3/файл", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            AlertSoundPlayer.playTicketAlert(context, draft, forcePreview = true)
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = CslOrange)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Прослушать")
+                    }
+
+                    OutlinedButton(
+                        onClick = { AlertSoundPlayer.stopCurrent() }
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Стоп")
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onSaveSettings(draft)
+                        onTriggerTestBanner()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = CslMidnight)
+                ) {
+                    Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Тест всплывающего баннера и звука")
+                }
+
+                OutlinedButton(
+                    onClick = { NotificationHelper.openBannerChannelSettings(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.SettingsApplications, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Включить всплывающие баннеры в MIUI / Android")
+                }
+            }
+        }
+
+        // 2b. Рабочие дни (календарь РБ) + кнопка уведомлений в нерабочее время
+        val allowOffHours = !draft.workScheduleEnabled
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, CslOrange.copy(alpha = 0.4f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Рабочие дни (календарь РБ)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = CslOrange
+                )
+
+                Text(
+                    text = if (allowOffHours) {
+                        "Сейчас уведомления в нерабочее время ВКЛЮЧЕНЫ: баннеры и звук приходят круглосуточно (24/7), включая вечера, выходные и праздники."
+                    } else {
+                        "Сейчас уведомления в нерабочее время ОТКЛЮЧЕНЫ: баннеры и звук работают строго в рабочие дни РБ (${draft.workStartTime}–${draft.workEndTime})."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                // Dedicated prominent button requested by user to toggle non-working hours notifications
+                Button(
+                    onClick = {
+                        val updated = draft.copy(workScheduleEnabled = allowOffHours)
+                        draft = updated
+                        onSaveSettings(updated)
+                        val msg = if (!updated.workScheduleEnabled) {
+                            "Уведомления в нерабочее время включены (24/7)"
+                        } else {
+                            "Уведомления в нерабочее время отключены (только рабочие дни РБ)"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (allowOffHours) CslMidnight else CslOrange
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (allowOffHours) {
+                            Icons.Default.NotificationsOff
+                        } else {
+                            Icons.Default.NotificationsActive
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (allowOffHours) {
+                            "Отключить уведомления в нерабочее время"
+                        } else {
+                            "Включить уведомления в нерабочее время"
+                        },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                SwitchRow(
+                    title = "Уведомления в нерабочее время",
+                    subtitle = "Показывать баннеры и подавать звуковой сигнал также вечером, ночью и в выходные дни",
+                    checked = allowOffHours,
+                    onCheckedChange = { enabledOffHours ->
+                        val updated = draft.copy(workScheduleEnabled = !enabledOffHours)
+                        draft = updated
+                        onSaveSettings(updated)
+                    }
+                )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (rbCalendarStatus.isAllowedNow) {
+                            CslSuccessGreen.copy(alpha = 0.12f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = rbCalendarStatus.statusTitle,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (rbCalendarStatus.isAllowedNow) {
+                                CslSuccessGreen
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = rbCalendarStatus.detailMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                if (draft.workScheduleEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = draft.workStartTime,
+                            onValueChange = { draft = draft.copy(workStartTime = it) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Начало", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            placeholder = { Text("09:00") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = draft.workEndTime,
+                            onValueChange = { draft = draft.copy(workEndTime = it) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Окончание", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            placeholder = { Text("17:30") },
+                            singleLine = true
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = draft.extraWorkingDates,
+                        onValueChange = { draft = draft.copy(extraWorkingDates = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Доп. рабочие субботы (необязательно)") },
+                        placeholder = { Text("ДД.ММ.ГГГГ через запятую (основные переносы РБ уже встроены)") }
+                    )
+
+                    OutlinedTextField(
+                        value = draft.extraHolidayDates,
+                        onValueChange = { draft = draft.copy(extraHolidayDates = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Доп. выходные дни (необязательно)") },
+                        placeholder = { Text("ДД.ММ.ГГГГ через запятую") }
+                    )
+                }
+            }
+        }
+
+        // 3. International Phone Formatting Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Международный формат телефонов",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                PhoneRegion.entries.forEach { region ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = draft.phoneRegion == region,
+                            onClick = { draft = draft.copy(phoneRegion = region) }
+                        )
+                        Column {
+                            Text(region.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(
+                                region.example,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (draft.phoneRegion == PhoneRegion.CUSTOM) {
+                    OutlinedTextField(
+                        value = draft.customCountryCode,
+                        onValueChange = { draft = draft.copy(customCountryCode = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Международный код страны") },
+                        placeholder = { Text("+375") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = draft.customPhoneFieldNames,
+                    onValueChange = { draft = draft.copy(customPhoneFieldNames = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Названия полей телефона в Jira") },
+                    placeholder = { Text("Телефон, Phone, customfield_10100") }
+                )
+
+                // Interactive tester for international normalization + default dialer
+                OutlinedTextField(
+                    value = samplePhoneInput,
+                    onValueChange = { samplePhoneInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Тест формата номера", maxLines = 1) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    trailingIcon = {
+                        if (sampleNormalized != null) {
+                            IconButton(
+                                onClick = {
+                                    DialerLauncher.openSystemDialer(
+                                        context = context,
+                                        phoneInput = sampleNormalized.first,
+                                        region = draft.phoneRegion,
+                                        customCountryCode = draft.customCountryCode
+                                    )
+                                }
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = "Проверить звонилку")
+                            }
+                        }
+                    }
+                )
+
+                Text(
+                    text = if (sampleNormalized != null) {
+                        "Результат: ${sampleNormalized.second} (набор: tel:${sampleNormalized.first})"
+                    } else {
+                        "Введите номер для проверки конвертации"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = if (sampleNormalized != null) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        }
+
+        // 3b. SLA Escalation Reminder & Quick Reply Templates Card
+        var newTemplateDraft by rememberSaveable { mutableStateOf("") }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Schedule, contentDescription = null, tint = CslOrange)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Контроль SLA и шаблоны ответов",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Повторный сигнал о неразобранной заявке",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Напомнить баннером и звуком, если новую заявку никто не взял в работу",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.staleTicketReminderEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(staleTicketReminderEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                if (draft.staleTicketReminderEnabled) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(10, 15, 30, 60).forEach { mins ->
+                            FilterChip(
+                                selected = draft.staleTicketReminderMinutes == mins,
+                                onClick = {
+                                    val updated = draft.copy(staleTicketReminderMinutes = mins)
+                                    draft = updated
+                                    onSaveSettings(updated)
+                                },
+                                label = { Text("Через $mins мин") }
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Bolt, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Быстрые шаблоны комментариев (${draft.quickReplyTemplates.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = {
+                            val updated = draft.copy(
+                                quickReplyTemplates = AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
+                            )
+                            draft = updated
+                            onSaveSettings(updated)
+                            Toast.makeText(context, "Стандартные шаблоны восстановлены", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(Icons.Default.Restore, contentDescription = "Сбросить шаблоны", tint = CslOrange)
+                    }
+                }
+
+                draft.quickReplyTemplates.forEachIndexed { index, tpl ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "• $tpl",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                val nextList = draft.quickReplyTemplates.filterIndexed { i, _ -> i != index }
+                                val updated = draft.copy(quickReplyTemplates = nextList)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Удалить шаблон",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newTemplateDraft,
+                        onValueChange = { newTemplateDraft = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Новый шаблон ответа") }
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val clean = newTemplateDraft.trim()
+                            if (clean.isNotEmpty()) {
+                                val updated = draft.copy(
+                                    quickReplyTemplates = draft.quickReplyTemplates + clean
+                                )
+                                draft = updated
+                                newTemplateDraft = ""
+                                onSaveSettings(updated)
+                            }
+                        },
+                        enabled = newTemplateDraft.isNotBlank()
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        // 3c. Hands-Free TTS ("За рулём"), Storm Protection, Caller ID & Biometric Security
+        val callerIdRoleLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { res ->
+            if (res.resultCode == Activity.RESULT_OK) {
+                Toast.makeText(context, "Help-CSL активирован как определитель номера!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Headphones, contentDescription = null, tint = CslOrange)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Режим «За рулём», Телефония и Защита",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "Голосовое чтение новых заявок (TTS):",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TtsReadoutMode.entries.forEach { mode ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val updated = draft.copy(ttsReadoutMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = draft.ttsReadoutMode == mode,
+                            onClick = {
+                                val updated = draft.copy(ttsReadoutMode = mode)
+                                draft = updated
+                                onSaveSettings(updated)
+                            }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(mode.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(mode.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = { TicketSpeechAnnouncer.speakPreview(context) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.RecordVoiceOver, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Прослушать голосовое чтение (тест TTS)")
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Защита от «Шторма заявок»",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "При пачке из 3+ новых тикетов играть 1 сигнал и группировать сводку",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.stormProtectionEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(stormProtectionEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Определитель клиента при звонке (Caller ID)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Показывать плашку с клиентом и открытой заявкой при входящем вызове",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.callerIdEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(callerIdEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && draft.callerIdEnabled) {
+                    OutlinedButton(
+                        onClick = {
+                            val rm = context.getSystemService(RoleManager::class.java)
+                            if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
+                                if (rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
+                                    Toast.makeText(context, "Help-CSL уже назначен определителем номера!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    callerIdRoleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
+                                }
+                            } else {
+                                Toast.makeText(context, "На этом устройстве системная роль АОН недоступна", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Call, contentDescription = null, tint = CslOrange, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Включить системный определитель (АОН)")
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Предлагать Worklog после звонка клиенту",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "После звонка из карточки заявки открывать окно списания минут и итога",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.postCallWorklogPromptEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(postCallWorklogPromptEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Fingerprint, contentDescription = null, tint = CslOrange, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Вход по отпечатку пальца / FaceID",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Text(
+                            text = "Запрашивать биометрию или PIN экрана после сворачивания приложения",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.biometricLockEnabled,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(biometricLockEnabled = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                onSaveSettings(draft)
+                Toast.makeText(context, "Настройки сохранены", Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Сохранить настройки", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+
+        // 4. GitHub Auto-Update & Version card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = CslOrange
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Автообновление с GitHub",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Установлена: v${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Автоматически проверять новые версии",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "При запуске и в фоне проверять релизы на GitHub и предлагать обновление",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = draft.autoCheckUpdates,
+                        onCheckedChange = { enabled ->
+                            val updated = draft.copy(autoCheckUpdates = enabled)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }
+                    )
+                }
+
+                val availableUpdate = appUpdateState.availableUpdate
+                if (availableUpdate != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Доступна новая версия: Help-CSL v${availableUpdate.versionName}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+
+                            if (appUpdateState.isDownloading) {
+                                val progress = if (appUpdateState.totalBytes > 0L) {
+                                    (appUpdateState.downloadedBytes.toFloat() / appUpdateState.totalBytes.toFloat())
+                                        .coerceIn(0f, 1f)
+                                } else {
+                                    null
+                                }
+                                if (progress != null) {
+                                    LinearProgressIndicator(
+                                        progress = { progress },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    val doneMb = appUpdateState.downloadedBytes / (1024f * 1024f)
+                                    val totalMb = appUpdateState.totalBytes / (1024f * 1024f)
+                                    Text(
+                                        text = String.format(
+                                            java.util.Locale.US,
+                                            "Скачано %.1f / %.1f МБ (%d%%)",
+                                            doneMb,
+                                            totalMb,
+                                            (progress * 100).toInt()
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                } else {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        if (appUpdateState.readyApkPath != null) {
+                                            onInstallReadyUpdate()
+                                        } else {
+                                            onDownloadAndInstallUpdate()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        if (appUpdateState.readyApkPath != null) {
+                                            "Установить скачанный APK (v${availableUpdate.versionName})"
+                                        } else {
+                                            "Скачать и обновить до v${availableUpdate.versionName}"
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                appUpdateState.statusMessage?.let { status ->
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (appUpdateState.isError) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onCheckForUpdate,
+                    enabled = !appUpdateState.isChecking && !appUpdateState.isDownloading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (appUpdateState.isChecking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Проверка GitHub…")
+                    } else {
+                        Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Проверить наличие новой версии")
+                    }
+                }
+
+                Text(
+                    text = "Пакет: ${BuildConfig.APPLICATION_ID} · Обновление ставится поверх текущей версии с сохранением всех настроек.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}

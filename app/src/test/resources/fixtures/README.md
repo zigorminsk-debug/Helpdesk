@@ -1,0 +1,1 @@
+`network-test-only.p12` is a deliberately public, self-signed test fixture. Its password is `testonly`; the private key is not used for production signing, authentication, or TLS. The certificate is valid only for the name `localhost` and is used to test TLS trust and hostname verification against a loopback test server.

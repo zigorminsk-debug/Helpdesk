@@ -1,0 +1,34 @@
+# Gradle & Android / Windows Desktop build outputs
+.gradle/
+build/
+app/build/
+windows-desktop/.gradle/
+windows-desktop/build/
+windows-desktop/installer/output/
+local.properties
+
+# CI temporary staging & build logs
+dist/
+dist-win/
+release-assets/
+gradle-build.log
+windows-build.log
+*.log
+*.hprof
+
+# Android Studio / IntelliJ IDEA / VS Code
+.idea/
+*.iml
+.cxx/
+captures/
+.externalNativeBuild/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Explicitly keep Gradle wrapper & persistent Android release signing key in repository
+!gradle/wrapper/gradle-wrapper.jar
+!keystore/helpdesk-release.p12
+!keystore/signing.properties

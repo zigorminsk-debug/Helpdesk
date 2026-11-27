@@ -1,0 +1,82 @@
+package com.helpdesk.jiraagent.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.helpdesk.jiraagent.domain.CommandPlatform
+import com.helpdesk.jiraagent.domain.CommandTopic
+import com.helpdesk.jiraagent.domain.SysadminCommandCatalog
+
+@Composable
+fun SysadminCommandsAndroidView(onCopy: (String, String) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var platform by rememberSaveable { mutableStateOf<CommandPlatform?>(null) }
+    var topic by rememberSaveable { mutableStateOf<CommandTopic?>(null) }
+    val entries = remember(query, platform, topic) { SysadminCommandCatalog.search(query, platform, topic) }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = 16.dp)
+    ) {
+        item(key = "command_filters") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Команды и скрипты", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("Только копирование: приложение ничего не запускает. Перед выполнением проверьте адреса, права и предупреждения.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Поиск: DNS, диск, служба…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = platform == null, onClick = { platform = null }, label = { Text("Все", maxLines = 1) })
+                    CommandPlatform.entries.forEach { item ->
+                        FilterChip(selected = platform == item, onClick = { platform = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+                    }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = topic == null, onClick = { topic = null }, label = { Text("Все темы", maxLines = 1, softWrap = false) })
+                    CommandTopic.entries.filter { it != CommandTopic.GENERAL }.forEach { item ->
+                        FilterChip(selected = topic == item, onClick = { topic = item }, label = { Text(item.label, maxLines = 1, softWrap = false) })
+                    }
+                }
+                Text("Найдено: ${entries.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (entries.isEmpty()) Text("Ничего не найдено. Измените запрос, платформу или тему.")
+            }
+        }
+            items(entries, key = { it.id }) { entry ->
+                var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
+                Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("${entry.platform.label} · ${entry.title}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(entry.description, fontSize = 13.sp)
+                        Text(if (entry.changesSystem) "⚠ Изменяет систему · ${entry.topic.label}" else "Диагностика / справка · ${entry.topic.label}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (entry.changesSystem) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                            Text(if (expanded) "▲ Скрыть инструкцию и команду" else "▼ Показать инструкцию и команду")
+                        }
+                        if (expanded) {
+                            Text("Как применять: ${entry.instructions}", fontSize = 12.5.sp)
+                            Text("Важно: ${entry.impact}", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error)
+                            SelectionContainer {
+                                Text(entry.command, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp)).padding(10.dp), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            }
+                        }
+                        if (expanded) {
+                            Button(onClick = { onCopy(entry.title, entry.command) }) { Text("📋 Скопировать команду") }
+                            OutlinedButton(onClick = { onCopy(entry.title, SysadminCommandCatalog.formatInstructions(entry)) }) {
+                                Text("📋 Скопировать инструкцию для коллеги")
+                            }
+                        }
+                    }
+                }
+            }
+    }
+}

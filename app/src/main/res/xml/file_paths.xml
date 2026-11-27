@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path
+        name="wiki_offline_attachments"
+        path="confluence_offline/wiki_offline_attachments/" />
+    <cache-path
+        name="apk_updates"
+        path="updates/" />
+    <cache-path
+        name="camera_captures"
+        path="camera_captures/" />
+    <cache-path
+        name="shared_attachments"
+        path="shared_attachments/" />
+    <cache-path
+        name="service_acts"
+        path="service_acts/" />
+</paths>
