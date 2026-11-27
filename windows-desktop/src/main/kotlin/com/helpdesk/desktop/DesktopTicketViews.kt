@@ -2280,6 +2280,7 @@ private fun DesktopTicketInspector(
     var showCompleteDialog by remember { mutableStateOf(false) }
     var showRejectDialog by remember { mutableStateOf(false) }
     var showPostponeModal by remember { mutableStateOf(false) }
+    var showReminder by remember(ticket.key) { mutableStateOf(false) }
     var showTransferDialog by remember { mutableStateOf(false) }
     var showWorklogDialog by remember { mutableStateOf(false) }
     var showActPdfDialog by remember { mutableStateOf(false) }
@@ -2490,6 +2491,12 @@ private fun DesktopTicketInspector(
                         Text("👤 Коллеге", maxLines = 1, softWrap = false)
                     }
                 }
+
+                val reminder = state.ticketReminders.firstOrNull { it.ticketKey.equals(ticket.key, true) }
+                OutlinedButton(onClick = { showReminder = true }) {
+                    Text(if (reminder == null) "⏰ Напомнить о заявке" else "⏰ Напоминание: ${PostponeDateTimeParser.formatEpochMillis(reminder.atMillis)}")
+                }
+                Text("Личное напоминание на этом компьютере; статус заявки не меняется.", fontSize = 12.sp)
 
                 // Secondary Engineer Actions (organic wrap, all tools visible at once)
                 FlowRow(
@@ -3281,6 +3288,13 @@ private fun DesktopTicketInspector(
         )
     }
 
+    if (showReminder) {
+        PersonalReminderDialog(ticket, state.ticketReminders.firstOrNull { it.ticketKey.equals(ticket.key, true) },
+            onDismiss = { showReminder = false },
+            onSave = { at -> controller.setTicketReminder(ticket, at); showReminder = false },
+            onDelete = { controller.cancelTicketReminder(ticket.key); showReminder = false })
+    }
+
     if (showPostponeModal) {
         PostponeScheduleDialog(
             ticket = ticket,
@@ -3418,6 +3432,34 @@ private fun WorkflowCommentDialog(
             TextButton(onClick = onDismiss) { Text("Отмена") }
         }
     )
+}
+
+@Composable
+private fun PersonalReminderDialog(
+    ticket: HelpdeskTicket,
+    existing: com.helpdesk.jiraagent.domain.TicketReminder?,
+    onDismiss: () -> Unit,
+    onSave: (Long) -> Unit,
+    onDelete: () -> Unit
+) {
+    val initial = remember(existing?.atMillis) { existing?.atMillis ?: System.currentTimeMillis() + 60 * 60_000L }
+    val dateTime = remember(initial) { Instant.ofEpochMilli(initial).atZone(ZoneId.systemDefault()) }
+    var date by remember(initial) { mutableStateOf(dateTime.toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT)) }
+    var time by remember(initial) { mutableStateOf(dateTime.toLocalTime().format(PostponeDateTimeParser.DISPLAY_TIME_DASH_FMT)) }
+    var error by remember { mutableStateOf<String?>(null) }
+    DesktopWorkspaceAlert(onDismissRequest = onDismiss, title = { Text("⏰ Напомнить · ${ticket.key}") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Дата и время компьютера. Заявка не закрывается и не пересоздаётся. Напоминание появится при запущенном Help-CSL.")
+            OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Дата ДД.ММ.ГГГГ") }, singleLine = true)
+            OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text("Время ЧЧ:ММ") }, singleLine = true)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (existing != null) TextButton(onClick = onDelete) { Text("Удалить напоминание") }
+        }
+    }, confirmButton = { TextButton(onClick = {
+        val target = PostponeDateTimeParser.parseToEpochMillis(date, time)?.first
+        if (target == null || target <= System.currentTimeMillis()) error = "Укажите корректные будущие дату и время"
+        else onSave(target)
+    }) { Text("Сохранить") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } })
 }
 
 @Composable

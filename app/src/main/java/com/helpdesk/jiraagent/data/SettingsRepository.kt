@@ -487,6 +487,9 @@ class SettingsRepository private constructor(context: Context) {
             newSettings.confluenceToken != _appSettings.value.confluenceToken ||
             newSettings.passwordOrToken != _appSettings.value.passwordOrToken || newSettings.authType != _appSettings.value.authType
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
+        if (serverChanged || newSettings.usernameOrEmail.trim() != _appSettings.value.usernameOrEmail.trim()) {
+            com.helpdesk.jiraagent.service.TicketReminderScheduler.clear(appContext)
+        }
         val zabbixChanged = newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim() ||
             newSettings.zabbixLogin.trim() != _appSettings.value.zabbixLogin.trim()
         val manualRoomChanged = newSettings.adminChatIssueKey.trim() != _appSettings.value.adminChatIssueKey.trim()
@@ -646,7 +649,7 @@ class SettingsRepository private constructor(context: Context) {
             for (ticket in sortedChronologically) {
                 val isUnseen = seenKeys.add(ticket.key)
                 val isFreshNew = ticket.createdEpochMillis <= 0L || (nowMs - ticket.createdEpochMillis) <= maxAlertAgeMs
-                if (isUnseen && ticket.isClientTicket && ticket.stage == TicketStage.NEW && isFreshNew) {
+                if (isUnseen && com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligible(ticket) && isFreshNew) {
                     deferredKeys.add(ticket.key)
                 }
             }
@@ -660,7 +663,7 @@ class SettingsRepository private constructor(context: Context) {
             val wasDeferred = deferredKeys.remove(ticket.key)
             val isUnseen = seenKeys.add(ticket.key)
             val isFreshNew = ticket.createdEpochMillis <= 0L || (nowMs - ticket.createdEpochMillis) <= maxAlertAgeMs
-            if (ticket.isClientTicket && ticket.stage == TicketStage.NEW) {
+            if (com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligible(ticket)) {
                 if ((isUnseen && isFreshNew) || wasDeferred) {
                     newClientTickets.add(ticket)
                 }
@@ -1020,9 +1023,7 @@ class SettingsRepository private constructor(context: Context) {
 
         val due = mutableListOf<HelpdeskTicket>()
         for (ticket in polled) {
-            if (!ticket.isClientTicket) continue
-            if (ticket.stage != TicketStage.NEW) continue
-            if (!ticket.assigneeName.isNullOrBlank()) continue
+            if (!com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligibleUnassigned(ticket)) continue
             if (ticket.createdEpochMillis <= 0L) continue
             val ageMs = nowMillis - ticket.createdEpochMillis
             if (ageMs in thresholdMs..maxLookbackMs && reminded.add(ticket.key)) {
@@ -1368,6 +1369,7 @@ class SettingsRepository private constructor(context: Context) {
      */
     @Synchronized
     fun wipeAllProgramDataOnAccountDisabled(reason: String) {
+        com.helpdesk.jiraagent.service.TicketReminderScheduler.clear(appContext)
         // 1. Delete offline Confluence database + media + session caches
         wikiOfflineStore.clearOfflineDatabase()
         wikiClient.clearSessionCache()

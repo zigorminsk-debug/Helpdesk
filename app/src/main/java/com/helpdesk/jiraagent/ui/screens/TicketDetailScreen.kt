@@ -83,6 +83,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -106,6 +107,8 @@ import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.PostponeDateTimeParser
+import com.helpdesk.jiraagent.domain.TicketReminder
+import com.helpdesk.jiraagent.service.TicketReminderScheduler
 import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
@@ -150,6 +153,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -626,6 +630,8 @@ fun TicketDetailScreen(
                     },
                     onCopy = { e164 -> copyToClipboard(context, e164) }
                 )
+
+                PersonalTicketReminderCard(ticket)
 
                 // 2a. Field & Shift Engineer Action Bar (Colleague, Worklog, PDF Act, S/N Scanner, Chat)
                 Card(
@@ -1248,6 +1254,42 @@ private fun VoiceCommentTextField(
             }
         }
     )
+}
+
+@Composable
+private fun PersonalTicketReminderCard(ticket: HelpdeskTicket) {
+    val context = LocalContext.current
+    val reminders by remember { TicketReminderScheduler.observe(context.applicationContext) }.collectAsState()
+    val current = reminders.firstOrNull { it.ticketKey.equals(ticket.key, true) }
+    var show by remember(ticket.key) { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(onClick = { show = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (current == null) "⏰ Напомнить о заявке" else "⏰ Напоминание: ${PostponeDateTimeParser.formatEpochMillis(current.atMillis)}")
+        }
+        Text("Личное напоминание на этом устройстве; статус заявки не меняется.", style = MaterialTheme.typography.bodySmall)
+    }
+    if (show) {
+        val initial = remember(current?.atMillis) { current?.atMillis ?: System.currentTimeMillis() + 60 * 60_000L }
+        var date by remember(initial) { mutableStateOf(Instant.ofEpochMilli(initial).atZone(ZoneId.systemDefault()).toLocalDate().format(PostponeDateTimeParser.DISPLAY_DATE_FMT)) }
+        var time by remember(initial) { mutableStateOf(Instant.ofEpochMilli(initial).atZone(ZoneId.systemDefault()).toLocalTime().format(PostponeDateTimeParser.DISPLAY_TIME_DASH_FMT)) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(onDismissRequest = { show = false }, title = { Text("Напомнить · ${ticket.key}") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text("Дата и время устройства. Напоминание не закрывает и не пересоздаёт заявку.")
+                OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Дата ДД.ММ.ГГГГ") }, singleLine = true)
+                OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text("Время ЧЧ:ММ") }, singleLine = true)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (current != null) TextButton(onClick = {
+                    runCatching { TicketReminderScheduler.cancel(context, ticket.key) }.onSuccess { show = false }.onFailure { error = it.message }
+                }) { Text("Удалить напоминание") }
+            }
+        }, confirmButton = { TextButton(onClick = {
+            val target = PostponeDateTimeParser.parseToEpochMillis(date, time)?.first
+            if (target == null || target <= System.currentTimeMillis()) error = "Укажите корректные будущие дату и время"
+            else runCatching { TicketReminderScheduler.set(context, TicketReminder(ticket.key, ticket.summary, target)) }
+                .onSuccess { show = false }.onFailure { error = it.message ?: "Не удалось сохранить" }
+        }) { Text("Сохранить") } }, dismissButton = { TextButton(onClick = { show = false }) { Text("Отмена") } })
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)

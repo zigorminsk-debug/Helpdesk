@@ -43,6 +43,8 @@ import com.helpdesk.jiraagent.model.ClientTechPassport
 import com.helpdesk.jiraagent.model.ClientTechPassportCodec
 import com.helpdesk.jiraagent.model.FilterSettings
 import com.helpdesk.jiraagent.model.HelpdeskTicket
+import com.helpdesk.jiraagent.domain.TicketReminder
+import com.helpdesk.jiraagent.domain.TicketReminderRules
 import com.helpdesk.jiraagent.model.PostponedTicket
 import com.helpdesk.jiraagent.model.RepairEquipmentCodec
 import com.helpdesk.jiraagent.model.RepairEquipmentItem
@@ -118,6 +120,7 @@ data class DesktopUiState(
     val respectWorkScheduleOnDesktop: Boolean = false,
     val tickets: List<HelpdeskTicket> = emptyList(),
     val postponedTickets: List<PostponedTicket> = emptyList(),
+    val ticketReminders: List<TicketReminder> = emptyList(),
     val selectedTicketKey: String? = null,
     val isRefreshing: Boolean = false,
     val jiraConnectionUnavailable: Boolean = false,
@@ -246,6 +249,7 @@ class DesktopController(
             connectedUserName = persisted.connectedUserName,
             tickets = persisted.cachedTickets,
             postponedTickets = persisted.postponedTickets,
+            ticketReminders = storage.loadTicketReminders(),
             clientPassports = persisted.clientPassports,
             watchlistHosts = persisted.watchlistHosts,
             watchlistLabels = persisted.watchlistLabels,
@@ -305,6 +309,7 @@ class DesktopController(
 
     init {
         loadHabrFeed(force = false)
+        startReminderLoop()
         restartPollingLoop()
         startWatchlistBackgroundLoop()
         startWikiDailySyncLoop()
@@ -481,6 +486,7 @@ class DesktopController(
         baselineInitialized = false
         seenChatIds = emptySet()
 
+        _state.update { it.copy(ticketReminders = emptyList()) }
         storage.wipeAllPersistedData(
             keptServerUrl = cur.settings.serverUrl,
             keptConfluenceUrl = cur.settings.confluenceUrl
@@ -943,6 +949,14 @@ class DesktopController(
     @Synchronized
     fun saveSettings(newSettings: AppSettings) {
         val old = _state.value.settings
+        if (old.serverUrl.trim() != newSettings.serverUrl.trim() || old.usernameOrEmail.trim() != newSettings.usernameOrEmail.trim()) {
+            val cleared = runCatching { storage.saveTicketReminders(emptyList()) }
+            if (cleared.isFailure) {
+                _state.update { it.copy(errorBanner = "Не удалось очистить личные напоминания; настройки не сохранены") }
+                return
+            }
+            _state.update { it.copy(ticketReminders = emptyList()) }
+        }
         val wikiIdentityChanged = old.confluenceUrl.trim() != newSettings.confluenceUrl.trim() ||
             old.usernameOrEmail.trim() != newSettings.usernameOrEmail.trim() || old.confluenceToken != newSettings.confluenceToken || old.passwordOrToken != newSettings.passwordOrToken || old.authType != newSettings.authType
         if (wikiIdentityChanged) {
@@ -1099,7 +1113,7 @@ class DesktopController(
                                 for (t in chronological) {
                                     val isUnseen = notifiedTicketKeys.add(t.key)
                                     val isFreshNew = t.createdEpochMillis <= 0L || (nowEpochMs - t.createdEpochMillis) <= maxAlertAgeMs
-                                    if (isUnseen && t.isClientTicket && t.stage == TicketStage.NEW && isFreshNew) {
+                                    if (isUnseen && com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligible(t) && isFreshNew) {
                                         deferredTicketKeys.add(t.key)
                                     }
                                 }
@@ -1108,7 +1122,7 @@ class DesktopController(
                                     val wasDeferred = deferredTicketKeys.remove(t.key)
                                     val isUnseen = notifiedTicketKeys.add(t.key)
                                     val isFreshNew = t.createdEpochMillis <= 0L || (nowEpochMs - t.createdEpochMillis) <= maxAlertAgeMs
-                                    if (t.isClientTicket && t.stage == TicketStage.NEW) {
+                                    if (com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligible(t)) {
                                         if ((isUnseen && isFreshNew) || wasDeferred) {
                                             freshNewClientTickets.add(t)
                                         }
@@ -1184,6 +1198,51 @@ class DesktopController(
     ): Boolean {
         if (!respectScheduleOnDesktop) return true
         return BelarusWorkCalendar.evaluate(settings).isAllowedNow
+    }
+
+    @Synchronized
+    fun setTicketReminder(ticket: HelpdeskTicket, atMillis: Long) {
+        runCatching {
+            val updated = TicketReminderRules.upsert(_state.value.ticketReminders, TicketReminder(ticket.key, ticket.summary, atMillis), System.currentTimeMillis())
+            storage.saveTicketReminders(updated)
+            _state.update { it.copy(ticketReminders = updated, statusBanner = "Напоминание о ${ticket.key} сохранено на этом компьютере") }
+        }.onFailure { err -> _state.update { it.copy(errorBanner = "Не удалось сохранить напоминание: ${err.message}") } }
+    }
+
+    @Synchronized
+    fun cancelTicketReminder(key: String) {
+        runCatching {
+            val updated = TicketReminderRules.remove(_state.value.ticketReminders, key)
+            storage.saveTicketReminders(updated)
+            _state.update { it.copy(ticketReminders = updated, statusBanner = "Напоминание удалено") }
+        }.onFailure { err -> _state.update { it.copy(errorBanner = "Не удалось удалить напоминание: ${err.message}") } }
+    }
+
+    @Synchronized
+    private fun deliverDueTicketReminders() {
+        val due = TicketReminderRules.due(_state.value.ticketReminders, System.currentTimeMillis())
+        if (due.isEmpty()) return
+        for (item in due) {
+            val alert = DesktopToastAlert(id = "reminder-${item.ticketKey}-${item.atMillis}",
+                title = "⏰ Напоминание · ${item.ticketKey}", subtitle = item.summary,
+                ticketKey = item.ticketKey, isStormSummary = true)
+            emitDesktopAlert(alert, playSound = true)
+            val updated = TicketReminderRules.remove(_state.value.ticketReminders, item.ticketKey)
+            runCatching { storage.saveTicketReminders(updated) }.onSuccess { _state.update { it.copy(ticketReminders = updated) } }
+                .onFailure { return }
+        }
+    }
+
+    private fun startReminderLoop() {
+        scope.launch {
+            delay(2_000L)
+            while (true) {
+                runCatching { deliverDueTicketReminders() }.onFailure { err ->
+                    _state.update { it.copy(errorBanner = "Не удалось показать напоминание: ${err.message}") }
+                }
+                delay(15_000L)
+            }
+        }
     }
 
     private fun emitDesktopAlert(alert: DesktopToastAlert, playSound: Boolean = true) {
@@ -1641,7 +1700,7 @@ class DesktopController(
 
         // Clean up keys no longer in NEW stage
         val activeNewKeys = tickets.asSequence()
-            .filter { it.isClientTicket && it.stage == TicketStage.NEW && it.assigneeName.isNullOrBlank() }
+            .filter { com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligibleUnassigned(it) }
             .map { it.key }
             .toSet()
         synchronized(lastStaleReminderByKey) {
@@ -1649,9 +1708,7 @@ class DesktopController(
         }
 
         val overdueCandidates = tickets.filter { t ->
-            t.isClientTicket &&
-                t.stage == TicketStage.NEW &&
-                t.assigneeName.isNullOrBlank() &&
+            com.helpdesk.jiraagent.domain.AutomaticTicketAlertPolicy.eligibleUnassigned(t) &&
                 t.createdEpochMillis > 0L &&
                 (nowMs - t.createdEpochMillis) >= thresholdMs
         }

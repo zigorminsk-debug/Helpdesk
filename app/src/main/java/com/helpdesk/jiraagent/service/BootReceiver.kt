@@ -13,6 +13,7 @@ class BootReceiver : BroadcastReceiver() {
 
         // Always re-arm exact alarms for any postponed tickets & 09:00 RB shift wakeup across reboots, clock/timezone changes, or APK updates
         PostponeScheduler.scheduleNextAlarm(context)
+        TicketReminderScheduler.schedule(context)
         ShiftWakeupScheduler.scheduleNextWakeup(context)
 
         val hasPostponed = repo.postponedTickets.value.isNotEmpty()

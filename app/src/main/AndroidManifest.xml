@@ -111,6 +111,8 @@
             </intent-filter>
         </receiver>
 
+        <receiver android:name=".service.TicketReminderReceiver" android:exported="false" />
+
         <receiver
             android:name=".service.PostponeAlarmReceiver"
             android:enabled="true"

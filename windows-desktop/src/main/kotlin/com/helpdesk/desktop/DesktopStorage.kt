@@ -11,6 +11,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
+import com.helpdesk.jiraagent.domain.TicketReminder
 import com.helpdesk.jiraagent.domain.TicketStopwatchEntry
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
@@ -263,11 +264,39 @@ class DesktopStorage {
         }
     }
 
+    private val remindersFile = File(dataDir, "ticket_reminders.enc")
+
+    @Synchronized
+    fun loadTicketReminders(): List<TicketReminder> = runCatching {
+        if (!remindersFile.exists()) return emptyList()
+        val bytes = Base64.getDecoder().decode(remindersFile.readText())
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateAesKey(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+        val type = object : TypeToken<List<TicketReminder>>() {}.type
+        gson.fromJson<List<TicketReminder>>(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), StandardCharsets.UTF_8), type) ?: emptyList()
+    }.getOrDefault(emptyList())
+
+    @Synchronized
+    fun saveTicketReminders(items: List<TicketReminder>) {
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateAesKey(), GCMParameterSpec(128, iv))
+        val encrypted = iv + cipher.doFinal(gson.toJson(items).toByteArray(StandardCharsets.UTF_8))
+        val temp = File(dataDir, "ticket_reminders.tmp")
+        temp.writeText(Base64.getEncoder().encodeToString(encrypted))
+        try {
+            java.nio.file.Files.move(temp.toPath(), remindersFile.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(temp.toPath(), remindersFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
     fun offlineWikiDir(): File = File(dataDir, "confluence_offline")
 
     @Synchronized
     fun wipeAllPersistedData(keptServerUrl: String, keptConfluenceUrl: String) {
         runCatching { if (stateFile.exists()) stateFile.delete() }
+        runCatching { remindersFile.delete() }
         saveState(
             DesktopPersistedState(
                 appSettings = AppSettings(
