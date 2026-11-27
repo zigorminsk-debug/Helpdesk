@@ -1,5 +1,6 @@
 package com.helpdesk.jiraagent
 
+import com.helpdesk.jiraagent.shared.JiraConnectionAlarmBanner
 import android.Manifest
 import android.content.Intent
 import android.os.Build
@@ -796,7 +797,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                         Spacer(modifier = Modifier.width(6.dp))
                         val dotColor = when {
                             !appSettings.isConfigured -> Color(0xFF97A0AF)
-                            syncStatus.lastError != null -> Color(0xFFF44A40)
+                            syncStatus.jiraConnectionUnavailable || syncStatus.lastError != null -> Color(0xFFF44A40)
                             syncStatus.isServiceRunning || appSettings.pollingEnabled -> CslSuccessGreen
                             else -> Color(0xFFFFAB00)
                         }
@@ -1083,6 +1084,9 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            if (syncStatus.jiraConnectionUnavailable) {
+                JiraConnectionAlarmBanner(onRetry = { viewModel.refreshNow() }, isRetrying = syncStatus.isSyncing)
+            }
             if (!hasNotifPermission) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,

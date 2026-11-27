@@ -186,6 +186,7 @@ data class HelpdeskTicket(
 data class SyncStatus(
     val isServiceRunning: Boolean = false,
     val isSyncing: Boolean = false,
+    val jiraConnectionUnavailable: Boolean = false,
     val lastSyncEpochMillis: Long? = null,
     val lastError: String? = null,
     val connectedUser: String? = null

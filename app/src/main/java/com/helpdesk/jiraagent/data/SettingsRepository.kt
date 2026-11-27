@@ -6,6 +6,12 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarmChange
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarmTracker
+import com.helpdesk.jiraagent.domain.JiraConnectionObservation
+import com.helpdesk.jiraagent.notification.NotificationHelper
+import com.helpdesk.jiraagent.notification.TicketSpeechAnnouncer
+import com.helpdesk.jiraagent.notification.AlertSoundPlayer
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
@@ -97,6 +103,35 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _syncStatus = MutableStateFlow(SyncStatus())
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
+    private val jiraConnectionTracker = JiraConnectionAlarmTracker()
+
+    @Synchronized
+    fun observeJiraConnection(settings: AppSettings, observation: JiraConnectionObservation) {
+        val current = _appSettings.value
+        if (!current.isConfigured || current.serverUrl.trim() != settings.serverUrl.trim()) return
+        when (jiraConnectionTracker.observe(observation)) {
+            JiraConnectionAlarmChange.STARTED -> {
+                _syncStatus.update { it.copy(jiraConnectionUnavailable = true) }
+                NotificationHelper.showJiraConnectionAlarm(appContext)
+                AlertSoundPlayer.playTicketAlert(appContext, current.copy(alertSoundPreset = AlertSoundPreset.URGENT_ALARM))
+                TicketSpeechAnnouncer.announceJiraConnectionAlarm(appContext)
+            }
+            JiraConnectionAlarmChange.RECOVERED -> clearJiraAlarmEffects()
+            JiraConnectionAlarmChange.NONE -> Unit
+        }
+    }
+
+    private fun clearJiraAlarmEffects() {
+        _syncStatus.update { it.copy(jiraConnectionUnavailable = false) }
+        NotificationHelper.clearJiraConnectionAlarm(appContext)
+        TicketSpeechAnnouncer.cancelJiraConnectionAlarm()
+    }
+
+    @Synchronized
+    private fun resetJiraConnectionAlarm() {
+        jiraConnectionTracker.reset()
+        clearJiraAlarmEffects()
+    }
 
     private val _latestInAppBanner = MutableStateFlow<InAppBannerAlert?>(null)
     val latestInAppBanner: StateFlow<InAppBannerAlert?> = _latestInAppBanner.asStateFlow()
@@ -445,6 +480,7 @@ class SettingsRepository private constructor(context: Context) {
         _latestInAppBanner.value = null
     }
 
+    @Synchronized
     fun saveAppSettings(newSettings: AppSettings) {
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
         val zabbixChanged = newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim() ||
@@ -518,6 +554,7 @@ class SettingsRepository private constructor(context: Context) {
             }
         }
         _appSettings.value = newSettings.copy(adminChatIssueKey = newSettings.adminChatIssueKey.trim().uppercase())
+        if (serverChanged || !newSettings.isConfigured) resetJiraConnectionAlarm()
         runCatching { HelpCslAppWidgetProvider.requestUpdateAll(appContext) }
     }
 
@@ -1375,6 +1412,7 @@ class SettingsRepository private constructor(context: Context) {
         _zabbixLastError.value = null
         _dismissedZabbixKeys.value = emptySet()
         _mutedZabbixRules.value = emptyList()
+        resetJiraConnectionAlarm()
         _appSettings.value = loadAppSettings()
         _filterSettings.value = loadFilterSettings()
         _syncStatus.value = SyncStatus(

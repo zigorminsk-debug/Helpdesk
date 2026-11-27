@@ -43,6 +43,7 @@ import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.LightThemePreset
+import com.helpdesk.jiraagent.shared.JiraConnectionAlarmBanner
 import com.helpdesk.jiraagent.model.TicketStage
 import java.awt.AWTEvent
 import java.awt.Frame
@@ -318,6 +319,9 @@ fun main(args: Array<String>) = application {
                     }
                 )
 
+                if (state.jiraConnectionUnavailable) {
+                    JiraConnectionAlarmBanner(onRetry = { controller.refreshTickets(silent = false) }, isRetrying = state.isRefreshing)
+                }
                 // Status / Error / New Update Strip
                 DesktopStatusBannerStrip(
                     state = state,

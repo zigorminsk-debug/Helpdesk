@@ -18,6 +18,8 @@ import com.helpdesk.jiraagent.data.JiraApiClient
 import com.helpdesk.jiraagent.data.JiraApiException
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.data.ZabbixApiClient
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarm
+import com.helpdesk.jiraagent.domain.JiraConnectionObservation
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
@@ -274,6 +276,9 @@ class JiraMonitorService : Service() {
 
                 if (!hasActiveInternetConnection()) {
                     skippedPollWhileOffline = true
+                    if (settings.isConfigured && settings.pollingEnabled && !isOffHoursPaused) {
+                        repository.observeJiraConnection(settings, JiraConnectionObservation.UNREACHABLE)
+                    }
                     updateForegroundText(
                         statusText = "Ожидание сети · офлайн-режим энергосбережения",
                         coreStateKey = "offline_no_net"
@@ -366,6 +371,7 @@ class JiraMonitorService : Service() {
 
         val result = apiClient.fetchRecentTickets(settings, filter)
         result.onSuccess { tickets ->
+            repository.observeJiraConnection(settings, JiraConnectionObservation.REACHABLE)
             consecutiveJiraNetworkErrors = 0
             val nowMillis = System.currentTimeMillis()
             val schedule = BelarusWorkCalendar.evaluate(settings, Instant.ofEpochMilli(nowMillis))
@@ -430,6 +436,7 @@ class JiraMonitorService : Service() {
                 )
             }
         }.onFailure { err ->
+            repository.observeJiraConnection(settings, JiraConnectionAlarm.classify(err))
             val isTransientNet = (err as? JiraApiException)?.isNetworkError == true
             if (isTransientNet) {
                 consecutiveJiraNetworkErrors++

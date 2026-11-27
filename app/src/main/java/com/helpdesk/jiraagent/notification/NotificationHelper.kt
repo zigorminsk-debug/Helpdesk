@@ -29,11 +29,13 @@ object NotificationHelper {
     const val CHANNEL_CLIENT_BANNER = "help_csl_urgent_banner_v4"
     const val CHANNEL_ADMIN_CHAT = "help_csl_admin_chat_v1"
     const val CHANNEL_HOST_MONITOR = "help_csl_host_monitor_v1"
+    const val CHANNEL_JIRA_CONNECTION = "help_csl_jira_connection_v1"
     const val CHANNEL_MONITOR_SERVICE = "jira_agent_service_status_v1"
 
     const val SERVICE_NOTIFICATION_ID = 1001
     const val UPDATE_NOTIFICATION_ID = 1002
     const val SECURITY_WIPE_NOTIFICATION_ID = 1009
+    const val JIRA_CONNECTION_NOTIFICATION_ID = 1010
     const val EXTRA_OPEN_TICKET_KEY = "extra_open_ticket_key"
     const val EXTRA_AUTO_CALL_PHONE_E164 = "extra_auto_call_phone_e164"
     const val EXTRA_AUTO_CALL_CLIENT_NAME = "extra_auto_call_client_name"
@@ -99,9 +101,40 @@ object NotificationHelper {
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
 
+        val jiraConnectionChannel = NotificationChannel(
+            CHANNEL_JIRA_CONNECTION, "Потеря связи с Help Desk", NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Недоступность Jira для этого устройства; сигнал при начале потери связи"
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setSound(null, null) // The dedicated alarm sound is played once separately.
+        }
         manager.createNotificationChannels(
-            listOf(bannerChannel, chatChannel, hostMonitorChannel, statusChannel)
+            listOf(bannerChannel, chatChannel, hostMonitorChannel, statusChannel, jiraConnectionChannel)
         )
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showJiraConnectionAlarm(context: Context) {
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+        val open = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(context, JIRA_CONNECTION_NOTIFICATION_ID, open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notice = NotificationCompat.Builder(context, CHANNEL_JIRA_CONNECTION)
+            .setSmallIcon(R.drawable.ic_notification_ticket)
+            .setColor(0xFFAB282C.toInt())
+            .setContentTitle("⚠ Help Desk недоступен")
+            .setContentText("Срочно проверьте сеть, VPN и сервер Jira.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("Help Desk недоступен с этого устройства. Срочно проверьте сеть, VPN и сервер Jira."))
+            .setContentIntent(pending).setOngoing(true).setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH).setCategory(NotificationCompat.CATEGORY_ERROR).build()
+        runCatching { NotificationManagerCompat.from(context).notify(JIRA_CONNECTION_NOTIFICATION_ID, notice) }
+    }
+
+    fun clearJiraConnectionAlarm(context: Context) {
+        runCatching { NotificationManagerCompat.from(context).cancel(JIRA_CONNECTION_NOTIFICATION_ID) }
     }
 
     fun hasNotificationPermission(context: Context): Boolean {

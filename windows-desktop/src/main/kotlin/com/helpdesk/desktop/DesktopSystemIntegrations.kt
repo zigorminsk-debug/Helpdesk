@@ -241,6 +241,22 @@ object DesktopSoundPlayer {
         }.getOrDefault(false)
     }
 
+    /** Uses only a fixed phrase, never server-provided text, in the PowerShell command. */
+    fun speakJiraConnectionAlarm() {
+        if (!System.getProperty("os.name").orEmpty().contains("win", ignoreCase = true)) return
+        thread(isDaemon = true, name = "helpcsl-jira-alarm-tts") {
+            runCatching {
+                val phrase = com.helpdesk.jiraagent.domain.JiraConnectionAlarm.SPEECH.replace("'", "''")
+                val script = "Add-Type -AssemblyName System.Speech; " +
+                    "\$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; " +
+                    "try { \$s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::NotSet, [System.Speech.Synthesis.VoiceAge]::NotSet, 0, [System.Globalization.CultureInfo]::GetCultureInfo('ru-RU')) } catch {}; " +
+                    "\$s.Speak('$phrase'); \$s.Dispose()"
+                ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+                    .start().waitFor(20, TimeUnit.SECONDS)
+            }
+        }
+    }
+
     fun speakTicketSummaryWindows(clientName: String, summary: String) {
         val isWin = System.getProperty("os.name").orEmpty().contains("win", ignoreCase = true)
         if (!isWin) return

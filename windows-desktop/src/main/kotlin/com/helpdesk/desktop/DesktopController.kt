@@ -18,6 +18,10 @@ import com.helpdesk.jiraagent.data.JiraAssignableUser
 import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
 import com.helpdesk.jiraagent.data.ZabbixApiClient
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarm
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarmChange
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarmTracker
+import com.helpdesk.jiraagent.domain.JiraConnectionObservation
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
@@ -31,6 +35,7 @@ import com.helpdesk.jiraagent.domain.TicketStopwatchTracker
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AdminChatMessage
+import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
@@ -58,6 +63,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
@@ -114,6 +120,7 @@ data class DesktopUiState(
     val postponedTickets: List<PostponedTicket> = emptyList(),
     val selectedTicketKey: String? = null,
     val isRefreshing: Boolean = false,
+    val jiraConnectionUnavailable: Boolean = false,
     val isPerformingAction: Boolean = false,
     val isCleaningSystemRooms: Boolean = false,
     val statusBanner: String? = null,
@@ -261,6 +268,39 @@ class DesktopController(
     private var systemRoomsAutoCleanedV70: Boolean = persisted.systemRoomsAutoCleanedV70
     private var onBringWindowToFront: (() -> Unit)? = null
     private var onSystemTrayNotify: ((title: String, message: String) -> Unit)? = null
+    private val jiraAlarmTracker = JiraConnectionAlarmTracker()
+    private val jiraRefreshMutex = Mutex()
+    private var jiraAlarmSpeechJob: Job? = null
+
+    @Synchronized
+    private fun observeJiraConnection(settings: AppSettings, observation: JiraConnectionObservation) {
+        val current = _state.value.settings
+        if (!current.isConfigured || current.serverUrl.trim() != settings.serverUrl.trim()) return
+        when (jiraAlarmTracker.observe(observation)) {
+            JiraConnectionAlarmChange.STARTED -> {
+                _state.update { it.copy(jiraConnectionUnavailable = true) }
+                runCatching { onSystemTrayNotify?.invoke("⚠ Help Desk недоступен", "Проверьте сеть, VPN и сервер Jira.") }
+                DesktopSoundPlayer.playAlert(AlertSoundPreset.URGENT_ALARM)
+                jiraAlarmSpeechJob?.cancel()
+                jiraAlarmSpeechJob = scope.launch {
+                    delay(2_500L)
+                    if (_state.value.jiraConnectionUnavailable) DesktopSoundPlayer.speakJiraConnectionAlarm()
+                }
+            }
+            JiraConnectionAlarmChange.RECOVERED -> {
+                jiraAlarmSpeechJob?.cancel()
+                _state.update { it.copy(jiraConnectionUnavailable = false) }
+            }
+            JiraConnectionAlarmChange.NONE -> Unit
+        }
+    }
+
+    @Synchronized
+    private fun resetJiraConnectionAlarm() {
+        jiraAlarmTracker.reset()
+        jiraAlarmSpeechJob?.cancel()
+        _state.update { it.copy(jiraConnectionUnavailable = false) }
+    }
 
     init {
         loadHabrFeed(force = false)
@@ -899,8 +939,10 @@ class DesktopController(
         }
     }
 
+    @Synchronized
     fun saveSettings(newSettings: AppSettings) {
         val old = _state.value.settings
+        if (old.serverUrl.trim() != newSettings.serverUrl.trim() || !newSettings.isConfigured) resetJiraConnectionAlarm()
         if (old.zabbixUrl.trim() != newSettings.zabbixUrl.trim() ||
             old.zabbixLogin.trim() != newSettings.zabbixLogin.trim()
         ) {
@@ -942,6 +984,7 @@ class DesktopController(
         scope.launch {
             apiClient.testConnection(candidateSettings)
                 .onSuccess { displayName ->
+                    observeJiraConnection(candidateSettings, JiraConnectionObservation.REACHABLE)
                     _state.update {
                         it.copy(
                             isPerformingAction = false,
@@ -952,6 +995,7 @@ class DesktopController(
                     persistCurrentState()
                 }
                 .onFailure { err ->
+                    observeJiraConnection(candidateSettings, JiraConnectionAlarm.classify(err))
                     _state.update {
                         it.copy(
                             isPerformingAction = false,
@@ -1010,8 +1054,10 @@ class DesktopController(
             }
             return
         }
+        if (!jiraRefreshMutex.tryLock()) return
         _state.update { it.copy(isRefreshing = true, errorBanner = if (silent) it.errorBanner else null) }
         scope.launch {
+            try {
             if (cur.connectedUserName == null || EngineerNameResolver.looksLikeLoginOrEmail(cur.connectedUserName)) {
                 apiClient.testConnection(cur.settings).onSuccess { name ->
                     _state.update { it.copy(connectedUserName = name) }
@@ -1020,6 +1066,7 @@ class DesktopController(
             }
             apiClient.fetchRecentTickets(cur.settings, cur.filterSettings, maxResults = 65)
                 .onSuccess { fetched ->
+                    observeJiraConnection(cur.settings, JiraConnectionObservation.REACHABLE)
                     val nowStr = java.time.LocalTime.now()
                         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))
                     val freshNewClientTickets = mutableListOf<HelpdeskTicket>()
@@ -1105,6 +1152,7 @@ class DesktopController(
                     }
                 }
                 .onFailure { err ->
+                    observeJiraConnection(cur.settings, JiraConnectionAlarm.classify(err))
                     _state.update {
                         it.copy(
                             isRefreshing = false,
@@ -1112,6 +1160,9 @@ class DesktopController(
                         )
                     }
                 }
+            } finally {
+                jiraRefreshMutex.unlock()
+            }
         }
     }
 

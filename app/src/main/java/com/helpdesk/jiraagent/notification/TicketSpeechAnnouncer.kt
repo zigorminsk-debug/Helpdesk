@@ -27,6 +27,7 @@ object TicketSpeechAnnouncer {
     private var pendingUtterance: String? = null
     private var announceJob: Job? = null
     private var idleShutdownJob: Job? = null
+    private var jiraAlarmJob: Job? = null
 
     fun stopSpeaking() {
         announceJob?.cancel()
@@ -130,6 +131,28 @@ object TicketSpeechAnnouncer {
         announceJob = scope.launch {
             if (delayAfterChimeMs > 0L) delay(delayAfterChimeMs)
             speakNow(context.applicationContext, "Внимание, поступило $count новых заявок от клиентов.")
+        }
+    }
+
+    /** Independent of ticket readout settings, but respects the device's silent/vibrate mode. */
+    fun announceJiraConnectionAlarm(context: Context) {
+        val appContext = context.applicationContext
+        scope.launch {
+            val audio = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audio != null && audio.ringerMode != AudioManager.RINGER_MODE_NORMAL) return@launch
+            jiraAlarmJob?.cancel()
+            jiraAlarmJob = scope.launch {
+                delay(2_500L)
+                speakNow(appContext, com.helpdesk.jiraagent.domain.JiraConnectionAlarm.SPEECH)
+            }
+        }
+    }
+
+    fun cancelJiraConnectionAlarm() {
+        scope.launch {
+            jiraAlarmJob?.cancel()
+            jiraAlarmJob = null
+            if (pendingUtterance == com.helpdesk.jiraagent.domain.JiraConnectionAlarm.SPEECH) pendingUtterance = null
         }
     }
 

@@ -28,6 +28,8 @@ import com.helpdesk.jiraagent.data.JiraTransitionOption
 import com.helpdesk.jiraagent.data.PendingCallSession
 import com.helpdesk.jiraagent.data.SettingsRepository
 import com.helpdesk.jiraagent.data.TicketWorkflowAction
+import com.helpdesk.jiraagent.domain.JiraConnectionAlarm
+import com.helpdesk.jiraagent.domain.JiraConnectionObservation
 import com.helpdesk.jiraagent.domain.BelarusWorkCalendar
 import com.helpdesk.jiraagent.domain.EngineerNameResolver
 import com.helpdesk.jiraagent.domain.HostDiagnosticReport
@@ -1064,6 +1066,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.updateSyncStatus { it.copy(isSyncing = true) }
                 apiClient.fetchRecentTickets(settings, filterSettings.value)
                     .onSuccess { fetched ->
+                        repository.observeJiraConnection(settings, JiraConnectionObservation.REACHABLE)
                         val allowedNow = BelarusWorkCalendar.isWorkingTimeNow(settings)
                         val newOnes = repository.processPolledTicketsAndFindNewClientOnes(
                             polled = fetched,
@@ -1081,6 +1084,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     .onFailure { err ->
+                        repository.observeJiraConnection(settings, JiraConnectionAlarm.classify(err))
                         repository.updateSyncStatus {
                             it.copy(isSyncing = false, lastError = err.message ?: "Ошибка сети")
                         }
@@ -1303,6 +1307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _connectionTest.value = ConnectionTestState(isTesting = true)
             apiClient.testConnection(candidateSettings)
                 .onSuccess { userName ->
+                    repository.observeJiraConnection(candidateSettings, JiraConnectionObservation.REACHABLE)
                     repository.updateSyncStatus { it.copy(connectedUser = userName, lastError = null) }
                     _connectionTest.value = ConnectionTestState(
                         isTesting = false,
@@ -1311,6 +1316,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 .onFailure { err ->
+                    repository.observeJiraConnection(candidateSettings, JiraConnectionAlarm.classify(err))
                     _connectionTest.value = ConnectionTestState(
                         isTesting = false,
                         isSuccess = false,
