@@ -160,6 +160,10 @@ import java.time.ZoneOffset
 @Composable
 fun TicketDetailScreen(
     ticket: HelpdeskTicket?,
+    confirmedSolutions: List<com.helpdesk.jiraagent.domain.ConfirmedSolution>,
+    onAddSolution: (HelpdeskTicket, String, String) -> Boolean,
+    onVoteSolution: (HelpdeskTicket, String, Int) -> Boolean,
+    onDeleteSolution: (String) -> Boolean,
     ticketKey: String,
     isLoading: Boolean,
     actionState: TicketActionUiState,
@@ -597,6 +601,14 @@ fun TicketDetailScreen(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                com.helpdesk.jiraagent.shared.LocalRecommendationsView(
+                    ticket = ticket,
+                    scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(appSettings.serverUrl, appSettings.usernameOrEmail),
+                    items = confirmedSolutions,
+                    onAdd = { symptoms, solution -> onAddSolution(ticket, symptoms, solution) },
+                    onVote = { id, vote -> onVoteSolution(ticket, id, vote) },
+                    onDelete = onDeleteSolution
+                )
                 // 1. Workflow Action Buttons Card ("В работу", "Отложить на", "Завершить", "Отклонить")
                 WorkflowActionsCard(
                     actionState = actionState,

@@ -291,12 +291,41 @@ class DesktopStorage {
         }
     }
 
+    private val solutionsFile = File(dataDir, "confirmed_solutions.enc")
+
+    @Synchronized
+    fun loadConfirmedSolutions(): List<com.helpdesk.jiraagent.domain.ConfirmedSolution> {
+        if (!solutionsFile.exists()) return emptyList()
+        val bytes = Base64.getDecoder().decode(solutionsFile.readText())
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateAesKey(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+        val type = object : TypeToken<List<com.helpdesk.jiraagent.domain.ConfirmedSolution>>() {}.type
+        return gson.fromJson<List<com.helpdesk.jiraagent.domain.ConfirmedSolution>>(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), StandardCharsets.UTF_8), type) ?: emptyList()
+    }
+
+    @Synchronized
+    fun saveConfirmedSolutions(items: List<com.helpdesk.jiraagent.domain.ConfirmedSolution>) {
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateAesKey(), GCMParameterSpec(128, iv))
+        val encrypted = iv + cipher.doFinal(gson.toJson(items).toByteArray(StandardCharsets.UTF_8))
+        val temp = File(dataDir, "confirmed_solutions.tmp")
+        temp.writeText(Base64.getEncoder().encodeToString(encrypted))
+        try {
+            java.nio.file.Files.move(temp.toPath(), solutionsFile.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(temp.toPath(), solutionsFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
     fun offlineWikiDir(): File = File(dataDir, "confluence_offline")
 
     @Synchronized
     fun wipeAllPersistedData(keptServerUrl: String, keptConfluenceUrl: String) {
         runCatching { if (stateFile.exists()) stateFile.delete() }
         runCatching { remindersFile.delete() }
+        runCatching { solutionsFile.delete() }
+        runCatching { File(dataDir, "confirmed_solutions.tmp").delete() }
         saveState(
             DesktopPersistedState(
                 appSettings = AppSettings(

@@ -121,6 +121,7 @@ data class DesktopUiState(
     val tickets: List<HelpdeskTicket> = emptyList(),
     val postponedTickets: List<PostponedTicket> = emptyList(),
     val ticketReminders: List<TicketReminder> = emptyList(),
+    val confirmedSolutions: List<com.helpdesk.jiraagent.domain.ConfirmedSolution> = emptyList(),
     val selectedTicketKey: String? = null,
     val isRefreshing: Boolean = false,
     val jiraConnectionUnavailable: Boolean = false,
@@ -267,6 +268,36 @@ class DesktopController(
     )
     val state: StateFlow<DesktopUiState> = _state.asStateFlow()
 
+    private var solutionStorageAvailable = true
+
+    private fun saveSolutions(items: List<com.helpdesk.jiraagent.domain.ConfirmedSolution>): Boolean {
+        if (!solutionStorageAvailable) return false
+        return runCatching { storage.saveConfirmedSolutions(items) }.fold(
+            onSuccess = { _state.update { it.copy(confirmedSolutions = items) }; true },
+            onFailure = { failure -> _state.update { it.copy(errorBanner = "Не удалось сохранить локальную базу решений: ${failure.message}") }; false }
+        )
+    }
+
+    fun addConfirmedSolution(ticket: HelpdeskTicket, symptoms: String, solution: String): Boolean {
+        val current = _state.value
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(current.settings.serverUrl, current.settings.usernameOrEmail)
+        val updated = com.helpdesk.jiraagent.domain.LocalRecommendations.add(current.confirmedSolutions, scope, ticket.key, symptoms, solution) ?: return false
+        return saveSolutions(updated)
+    }
+
+    fun voteConfirmedSolution(ticket: HelpdeskTicket, id: String, vote: Int): Boolean {
+        val current = _state.value
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(current.settings.serverUrl, current.settings.usernameOrEmail)
+        return saveSolutions(com.helpdesk.jiraagent.domain.LocalRecommendations.vote(current.confirmedSolutions, scope, id, ticket.key, vote))
+    }
+
+    fun deleteConfirmedSolution(id: String): Boolean {
+        val current = _state.value
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(current.settings.serverUrl, current.settings.usernameOrEmail)
+        return saveSolutions(com.helpdesk.jiraagent.domain.LocalRecommendations.remove(current.confirmedSolutions, scope, id))
+    }
+
+
     private var pollingJob: Job? = null
     private var watchlistBackgroundJob: Job? = null
     private var wikiDailySyncJob: Job? = null
@@ -308,6 +339,12 @@ class DesktopController(
     }
 
     init {
+        runCatching { storage.loadConfirmedSolutions() }.onSuccess { solutions ->
+            _state.update { it.copy(confirmedSolutions = solutions) }
+        }.onFailure {
+            solutionStorageAvailable = false
+            _state.update { state -> state.copy(errorBanner = "Не удалось открыть локальную базу решений; сохранение отключено, чтобы не перезаписать данные.") }
+        }
         loadHabrFeed(force = false)
         startReminderLoop()
         restartPollingLoop()
@@ -486,7 +523,8 @@ class DesktopController(
         baselineInitialized = false
         seenChatIds = emptySet()
 
-        _state.update { it.copy(ticketReminders = emptyList()) }
+        _state.update { it.copy(ticketReminders = emptyList(), confirmedSolutions = emptyList()) }
+        solutionStorageAvailable = true
         storage.wipeAllPersistedData(
             keptServerUrl = cur.settings.serverUrl,
             keptConfluenceUrl = cur.settings.confluenceUrl

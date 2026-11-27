@@ -182,6 +182,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val wikiOfflineStore = repository.wikiOfflineStore
 
     val appSettings: StateFlow<AppSettings> = repository.appSettings
+
+    val confirmedSolutions = repository.confirmedSolutions
+
+    fun addConfirmedSolution(ticket: HelpdeskTicket, symptoms: String, solution: String): Boolean {
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(appSettings.value.serverUrl, appSettings.value.usernameOrEmail)
+        val items = com.helpdesk.jiraagent.domain.LocalRecommendations.add(confirmedSolutions.value, scope, ticket.key, symptoms, solution) ?: return false
+        return repository.saveConfirmedSolutions(items)
+    }
+
+    fun voteConfirmedSolution(ticket: HelpdeskTicket, id: String, vote: Int): Boolean {
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(appSettings.value.serverUrl, appSettings.value.usernameOrEmail)
+        return repository.saveConfirmedSolutions(com.helpdesk.jiraagent.domain.LocalRecommendations.vote(confirmedSolutions.value, scope, id, ticket.key, vote))
+    }
+
+    fun deleteConfirmedSolution(id: String): Boolean {
+        val scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(appSettings.value.serverUrl, appSettings.value.usernameOrEmail)
+        return repository.saveConfirmedSolutions(com.helpdesk.jiraagent.domain.LocalRecommendations.remove(confirmedSolutions.value, scope, id))
+    }
+
+
     val filterSettings: StateFlow<FilterSettings> = repository.filterSettings
     val tickets: StateFlow<List<HelpdeskTicket>> = repository.tickets
     val postponedTickets: StateFlow<List<PostponedTicket>> = repository.postponedTickets

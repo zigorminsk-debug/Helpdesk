@@ -283,6 +283,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     val context = LocalContext.current
 
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
+    val confirmedSolutions by viewModel.confirmedSolutions.collectAsStateWithLifecycle()
     val filterSettings by viewModel.filterSettings.collectAsStateWithLifecycle()
     val tickets by viewModel.tickets.collectAsStateWithLifecycle()
     val postponedTickets by viewModel.postponedTickets.collectAsStateWithLifecycle()
@@ -681,6 +682,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         Box(modifier = Modifier.fillMaxSize()) {
             TicketDetailScreen(
                 ticket = activeTicket,
+                confirmedSolutions = confirmedSolutions,
+                onAddSolution = { ticket, symptoms, solution -> viewModel.addConfirmedSolution(ticket, symptoms, solution) },
+                onVoteSolution = { ticket, id, vote -> viewModel.voteConfirmedSolution(ticket, id, vote) },
+                onDeleteSolution = { viewModel.deleteConfirmedSolution(it) },
                 ticketKey = activeKey,
                 isLoading = isLoadingDetail,
                 actionState = ticketActionState,

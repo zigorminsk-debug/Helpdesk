@@ -2315,6 +2315,14 @@ private fun DesktopTicketInspector(
             .padding(start = 16.dp, end = 22.dp, top = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        com.helpdesk.jiraagent.shared.LocalRecommendationsView(
+            ticket = ticket,
+            scope = com.helpdesk.jiraagent.domain.LocalRecommendations.scope(state.settings.serverUrl, state.settings.usernameOrEmail),
+            items = state.confirmedSolutions,
+            onAdd = { symptoms, solution -> controller.addConfirmedSolution(ticket, symptoms, solution) },
+            onVote = { id, vote -> controller.voteConfirmedSolution(ticket, id, vote) },
+            onDelete = { controller.deleteConfirmedSolution(it) }
+        )
         // 1. Header Card (Client Name prominent at top, Ticket Key smaller below)
         Surface(
             shape = RoundedCornerShape(12.dp),

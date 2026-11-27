@@ -78,6 +78,21 @@ class SettingsRepository private constructor(context: Context) {
         migrateLegacyFilterDefaults(it, cachePrefs)
     }
 
+    private val confirmedSolutionsLoad = runCatching {
+        val type = object : TypeToken<List<com.helpdesk.jiraagent.domain.ConfirmedSolution>>() {}.type
+        gson.fromJson<List<com.helpdesk.jiraagent.domain.ConfirmedSolution>>(prefs.getString("confirmed_solutions_v1", "[]"), type) ?: emptyList()
+    }
+    private var confirmedSolutionsAvailable = confirmedSolutionsLoad.isSuccess
+    private val _confirmedSolutions = MutableStateFlow(confirmedSolutionsLoad.getOrDefault(emptyList()))
+    val confirmedSolutions: StateFlow<List<com.helpdesk.jiraagent.domain.ConfirmedSolution>> = _confirmedSolutions.asStateFlow()
+
+    @Synchronized
+    fun saveConfirmedSolutions(items: List<com.helpdesk.jiraagent.domain.ConfirmedSolution>): Boolean {
+        if (!confirmedSolutionsAvailable || !prefs.edit().putString("confirmed_solutions_v1", gson.toJson(items)).commit()) return false
+        _confirmedSolutions.value = items
+        return true
+    }
+
     private val _appSettings = MutableStateFlow(loadAppSettings())
     val appSettings: StateFlow<AppSettings> = _appSettings.asStateFlow()
 
@@ -1401,6 +1416,8 @@ class SettingsRepository private constructor(context: Context) {
             .apply()
 
         // 4. Reset all in-memory state flows of program records
+        _confirmedSolutions.value = emptyList()
+        confirmedSolutionsAvailable = true
         _tickets.value = emptyList()
         _postponedTickets.value = emptyList()
         _resolvedChatRoomKey.value = ""
