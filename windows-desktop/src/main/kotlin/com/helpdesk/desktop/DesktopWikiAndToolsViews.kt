@@ -1809,8 +1809,9 @@ fun DesktopSysadminToolboxDialog(
             darkPreset = state.settings.darkThemePreset
         ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-                TabRow(
+                ScrollableTabRow(
                     selectedTabIndex = SysadminToolboxTabs.positionFor(tabIndex),
+                    edgePadding = 0.dp,
                     containerColor = DesktopColors.CslMidnight,
                     contentColor = Color.White
                 ) {
@@ -2371,6 +2372,7 @@ fun DesktopSysadminToolboxDialog(
                         }
                         SysadminToolboxTabs.COMMANDS -> DesktopCommandsView()
                         SysadminToolboxTabs.PORTS -> DesktopServicePortsView()
+                        SysadminToolboxTabs.DNS -> DesktopDnsLookupView()
                     }
                 }
             }

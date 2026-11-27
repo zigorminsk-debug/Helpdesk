@@ -611,6 +611,7 @@ fun SysadminToolboxAndroidDialog(
                     }
                     SysadminToolboxTabs.COMMANDS -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.PORTS -> ServicePortsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
+                    SysadminToolboxTabs.DNS -> DnsLookupAndroidView(onCopy = { text -> copyToClipboard("DNS", text) })
                 }
             }
         }

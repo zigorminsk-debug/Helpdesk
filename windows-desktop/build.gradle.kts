@@ -54,6 +54,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("dnsjava:dnsjava:3.5.3")
     implementation("com.google.zxing:core:3.5.3")
     implementation("org.apache.pdfbox:pdfbox:2.0.32")
 
