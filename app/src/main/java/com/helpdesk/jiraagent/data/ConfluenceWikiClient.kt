@@ -8,6 +8,8 @@ import com.helpdesk.jiraagent.model.AppSettings
 import com.helpdesk.jiraagent.model.AuthType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.Credentials
@@ -18,6 +20,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -68,7 +71,8 @@ data class ConfluenceAttachment(
     val title: String,
     val mediaType: String,
     val fileSizeBytes: Long,
-    val downloadUrl: String
+    val downloadUrl: String,
+    val versionNumber: Int = 0
 ) {
     val fileSize: Long get() = fileSizeBytes
 }
@@ -650,8 +654,9 @@ class ConfluenceWikiClient {
                 }
                 val hasNext = json.optObj("_links")?.optStr("next")?.isNotBlank() == true
                 if (results.size() < limit && !hasNext) break
-                if (results.size() == 0) break
+                if (results.size() == 0) throw IllegalStateException("Пустая страница списка пространств Wiki")
                 start += results.size()
+                if (start >= 1000) throw IllegalStateException("Достигнут предел 1000 пространств Wiki; синхронизация неполная")
             }
 
             val ruCollator = Collator.getInstance(Locale("ru", "RU")).apply {
@@ -918,37 +923,7 @@ class ConfluenceWikiClient {
                 hasNativeChildPages = childPages.isNotEmpty()
             )
 
-            val attachments = runCatching {
-                val (_, attJson) = executeRestGetJson(
-                    "content/$encodedId/child/attachment?limit=100",
-                    settings
-                )
-                attJson.optArray("results")?.mapNotNull { el ->
-                    val ao = el.asObj() ?: return@mapNotNull null
-                    val aid = ao.optStr("id") ?: return@mapNotNull null
-                    val atitle = ao.optStr("title") ?: return@mapNotNull null
-                    val ext = ao.optObj("extensions")
-                    val media = ext?.optStr("mediaType")
-                        ?: ao.optObj("metadata")?.optStr("mediaType")
-                        ?: "application/octet-stream"
-                    val size = ext?.optLong("fileSize") ?: 0L
-                    val dlRel = ao.optObj("_links")?.optStr("download").orEmpty()
-                    val dlUrl = when {
-                        dlRel.startsWith("http://", ignoreCase = true) ||
-                            dlRel.startsWith("https://", ignoreCase = true) -> dlRel
-                        dlRel.isNotBlank() -> "$baseRoot/${dlRel.trimStart('/')}"
-                        else -> ""
-                    }
-                    if (dlUrl.isEmpty()) null
-                    else ConfluenceAttachment(
-                        id = aid,
-                        title = atitle,
-                        mediaType = media,
-                        fileSizeBytes = size,
-                        downloadUrl = dlUrl
-                    )
-                }.orEmpty()
-            }.getOrDefault(emptyList())
+            val attachments = fetchPageAttachments(pageId, settings).getOrDefault(emptyList())
 
             val hasRealBody = attachments.isNotEmpty() || inlineTabs.isNotEmpty() || parsedBlocks.any { b ->
                 when (b) {
@@ -1320,7 +1295,8 @@ class ConfluenceWikiClient {
                                 title = atitle,
                                 mediaType = media,
                                 fileSizeBytes = size,
-                                downloadUrl = dlUrl
+                                downloadUrl = dlUrl,
+                                versionNumber = ao.optObj("version")?.optInt("number") ?: 0
                             )
                         }
                         .orEmpty()
@@ -1347,6 +1323,7 @@ class ConfluenceWikiClient {
                 val hasNext = json.optObj("_links")?.optStr("next")?.isNotBlank() == true
                 if (rawCount < batchLimit && !hasNext) break
                 start += rawCount
+                if (start >= 5000) throw IllegalStateException("Достигнут предел 5000 страниц в пространстве $spaceKey; синхронизация неполная")
             }
 
             // Reconstruct direct children map from ancestors and sort strictly alphabetically
@@ -1383,6 +1360,105 @@ class ConfluenceWikiClient {
                     hasSubstantialBody = hasRealBody
                 )
             }
+        }
+    }
+
+    /** Fetch the complete child attachment list; expanded children are often paginated by Confluence. */
+    suspend fun fetchPageAttachments(pageId: String, settings: AppSettings): Result<List<ConfluenceAttachment>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val encoded = URLEncoder.encode(pageId, "UTF-8")
+            val found = LinkedHashMap<String, ConfluenceAttachment>()
+            val limit = 100
+            var start = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val (baseRoot, json) = executeRestGetJson("content/$encoded/child/attachment?expand=version&limit=$limit&start=$start", settings)
+                val results = json.optArray("results") ?: throw IllegalStateException("Нет списка вложений страницы $pageId")
+                for (el in results) {
+                    val ao = el.asObj() ?: continue
+                    val id = ao.optStr("id") ?: throw IllegalStateException("Вложение без ID на странице $pageId")
+                    val title = ao.optStr("title") ?: throw IllegalStateException("Вложение без имени на странице $pageId")
+                    val ext = ao.optObj("extensions")
+                    val rel = ao.optObj("_links")?.optStr("download").orEmpty()
+                    if (rel.isBlank()) throw IllegalStateException("Нет ссылки на вложение $title")
+                    val url = if (rel.startsWith("http://", true) || rel.startsWith("https://", true)) rel else "$baseRoot/${rel.trimStart('/')}"
+                    found[id] = ConfluenceAttachment(id, title, ext?.optStr("mediaType") ?: ao.optObj("metadata")?.optStr("mediaType") ?: "application/octet-stream",
+                        ext?.optLong("fileSize") ?: 0L, url, ao.optObj("version")?.optInt("number") ?: 0)
+                }
+                val count = results.size()
+                val total = json.optInt("totalSize") ?: json.optInt("total")
+                val hasNext = json.optObj("_links")?.optStr("next")?.isNotBlank() == true || (total != null && start + count < total)
+                if (count == 0 && hasNext) throw IllegalStateException("Пустая страница списка вложений $pageId")
+                if (count < limit && !hasNext) break
+                start += count
+                if (start >= 100_000) throw IllegalStateException("Слишком много вложений на странице $pageId")
+            }
+            found.values.toList()
+        }
+    }
+
+    /** Stream a protected attachment to a temporary file, never into an unbounded byte array. */
+    suspend fun downloadAttachmentToFile(att: ConfluenceAttachment, settings: AppSettings, target: File, maxBytes: Long): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rawCfg = settings.confluenceUrl.trim().ifBlank { AppSettings.DEFAULT_CONFLUENCE_URL }
+            val base = workingBaseUrlCache?.takeIf { it.first == rawCfg }?.second ?: resolveConfiguredWikiDisplayUrl(settings)
+            val origin = base.toHttpUrlOrNull() ?: throw IllegalArgumentException("Некорректный адрес Confluence")
+            var url = origin.resolve(att.downloadUrl) ?: throw IllegalArgumentException("Некорректная ссылка вложения")
+            fun isTrusted(u: HttpUrl) = u.scheme == origin.scheme && u.host == origin.host && u.port == origin.port
+            require(isTrusted(url)) { "Вложение ведёт на другой сервер; учётные данные не отправлены" }
+            require(!rawCfg.startsWith("https://", true) || origin.scheme == "https") { "Загрузка по незащищённому HTTP запрещена для HTTPS Confluence" }
+            if (att.fileSizeBytes > maxBytes) throw IllegalStateException("Файл превышает лимит ${maxBytes / 1024 / 1024} МБ")
+            val modes = buildList {
+                if (settings.confluenceToken.isNotBlank()) add(AuthAttemptMode.CONFLUENCE_PAT)
+                if (buildMergedCookieHeader(url.toString()) != null || cookieJar.hasCookiesForUrl(url.toString())) add(AuthAttemptMode.COOKIE_SESSION_ONLY)
+                if (settings.authType == AuthType.BEARER_PAT && settings.passwordOrToken.isNotBlank()) add(AuthAttemptMode.JIRA_BEARER_PAT)
+                if (settings.authType != AuthType.BEARER_PAT && settings.usernameOrEmail.isNotBlank() && settings.passwordOrToken.isNotBlank() && url.host.lowercase(Locale.ROOT) !in twoFactorHosts) add(AuthAttemptMode.BASIC_CREDENTIALS)
+                if (isEmpty()) add(AuthAttemptMode.COOKIE_SESSION_ONLY)
+            }
+            var lastCode = 0
+            val noRedirectClient = clientFor(settings).newBuilder().followRedirects(false).followSslRedirects(false).build()
+            for (mode in modes) {
+                url = origin.resolve(att.downloadUrl) ?: throw IllegalArgumentException("Некорректная ссылка вложения")
+                var modeFinished = false
+                repeat(6) {
+                    if (modeFinished) return@repeat
+                    currentCoroutineContext().ensureActive()
+                    val request = Request.Builder().url(url).get().applyModeHeaders(url.toString(), settings, mode, "*/*").build()
+                    noRedirectClient.newCall(request).execute().use { resp ->
+                        lastCode = resp.code
+                        if (resp.isRedirect) {
+                            val next = resp.header("Location")?.let { url.resolve(it) } ?: throw IllegalStateException("Некорректное перенаправление Wiki")
+                            require(isTrusted(next)) { "Перенаправление на другой сервер заблокировано" }
+                            require(!next.encodedPath.contains("login", true)) { "Требуется повторный вход в Confluence" }
+                            url = next
+                        } else if (resp.isSuccessful) {
+                            val body = resp.body ?: throw IllegalStateException("Пустой ответ Wiki")
+                            val contentType = body.contentType()?.toString().orEmpty()
+                            if (contentType.startsWith("text/html", true) && !att.mediaType.startsWith("text/html", true)) throw IllegalStateException("Вместо файла сервер вернул HTML-страницу входа")
+                            if (body.contentLength() > maxBytes) throw IllegalStateException("Файл превышает лимит ${maxBytes / 1024 / 1024} МБ")
+                            var written = 0L
+                            target.outputStream().buffered().use { out ->
+                                body.byteStream().use { input ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    while (true) {
+                                        currentCoroutineContext().ensureActive()
+                                        val count = input.read(buffer)
+                                        if (count < 0) break
+                                        written += count
+                                        if (written > maxBytes) throw IllegalStateException("Файл превышает лимит ${maxBytes / 1024 / 1024} МБ")
+                                        out.write(buffer, 0, count)
+                                    }
+                                }
+                            }
+                            if (att.fileSizeBytes > 0 && written != att.fileSizeBytes) throw IllegalStateException("Размер загруженного файла не совпадает с Confluence")
+                            return@runCatching Unit
+                        } else {
+                            modeFinished = true
+                        }
+                    }
+                }
+            }
+            throw IllegalStateException("HTTP $lastCode при загрузке вложения Wiki")
         }
     }
 

@@ -5,6 +5,9 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.helpdesk.jiraagent.model.AppSettings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,6 +20,9 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.UUID
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
@@ -33,9 +39,16 @@ data class ConfluenceOfflineSnapshot(
     val rootPagesBySpace: Map<String, List<ConfluencePageSummary>>,
     val recentPages: List<ConfluencePageSummary>,
     val childPagesByParent: Map<String, List<ConfluencePageSummary>>,
-    val pagesById: Map<String, ConfluencePageDetail>
+    val pagesById: Map<String, ConfluencePageDetail>,
+    val attachmentTotal: Int = 0,
+    val attachmentAvailable: Int = 0,
+    val attachmentProblems: Int = 0,
+    val attachmentSyncCompleted: Boolean = false
 ) {
     val totalPagesCount: Int get() = pagesById.size
+    val attachmentSummary: String get() = if (!attachmentSyncCompleted) "Вложения ещё не синхронизированы"
+        else "Вложения при синхр.: $attachmentAvailable/$attachmentTotal" +
+            if (attachmentProblems > 0) " · проблем: $attachmentProblems (списки или файлы); повторите синхронизацию" else ""
 }
 
 data class ConfluenceSyncProgress(
@@ -67,6 +80,9 @@ class ConfluenceOfflineStore(private val storageDir: File) {
 
     private val dbFile = File(storageDir, "wiki_offline_db.json.gz")
     private val mediaDir = File(storageDir, "wiki_offline_media")
+    private val attachmentDir = File(storageDir, "wiki_offline_attachments")
+    private val attachmentMutex = Mutex()
+    @Volatile private var generation = 0L
     private val syncMutex = Mutex()
 
     @Volatile
@@ -95,7 +111,7 @@ class ConfluenceOfflineStore(private val storageDir: File) {
 
     fun isDailySyncDue(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
         val snap = getSnapshot() ?: return true
-        if (snap.pagesById.isEmpty()) return true
+        if (snap.pagesById.isEmpty() || !snap.attachmentSyncCompleted) return true
         return (nowEpochMs - snap.syncedAtEpochMs) >= DAILY_SYNC_INTERVAL_MS
     }
 
@@ -190,6 +206,7 @@ class ConfluenceOfflineStore(private val storageDir: File) {
         return runCatching { f.readBytes() }.getOrNull()
     }
 
+    @Synchronized
     fun saveCachedMediaBytes(urlOrPath: String, bytes: ByteArray) {
         if (urlOrPath.isBlank() || bytes.isEmpty() || bytes.size > MAX_CACHED_IMAGE_BYTES) return
         runCatching {
@@ -198,8 +215,69 @@ class ConfluenceOfflineStore(private val storageDir: File) {
         }
     }
 
+    private fun attachmentKey(att: ConfluenceAttachment): String = sha256Hex(
+        "${att.downloadUrl}\n${att.id}\n${att.versionNumber}\n${att.fileSizeBytes}\n${att.title}"
+    )
+
+    private fun safeAttachmentName(title: String): String {
+        val name = title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimEnd('.')
+            .take(160).ifBlank { "wiki_file" }
+        val stem = name.substringBefore('.').uppercase(Locale.ROOT)
+        return if (stem in setOf("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")) "_$name" else name
+    }
+
+    @Synchronized
+    fun getCachedAttachmentFile(att: ConfluenceAttachment): File? {
+        if (att.downloadUrl.isBlank()) return null
+        val file = File(File(attachmentDir, attachmentKey(att)), safeAttachmentName(att.title))
+        return file.takeIf { it.isFile && (att.fileSizeBytes <= 0L || it.length() == att.fileSizeBytes) }
+    }
+
+    /** Atomically caches a specific attachment version. Failed/cancelled downloads never replace the old copy. */
+    suspend fun getOrDownloadAttachment(att: ConfluenceAttachment, wikiClient: ConfluenceWikiClient,
+        settings: AppSettings, forceRefresh: Boolean = false, expectedGeneration: Long? = null): Result<File> {
+        val requestGeneration = expectedGeneration ?: generation
+        return attachmentMutex.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                check(requestGeneration == generation) { "Офлайн-база была очищена" }
+                if (!forceRefresh) getCachedAttachmentFile(att)?.let { return@runCatching it }
+                val currentGeneration = requestGeneration
+                if (att.fileSizeBytes > MAX_ATTACHMENT_BYTES) throw IllegalStateException("Файл больше лимита ${MAX_ATTACHMENT_BYTES / 1024 / 1024} МБ")
+                val dir = File(attachmentDir, attachmentKey(att))
+                check(dir.mkdirs() || dir.isDirectory) { "Не удалось создать папку вложения" }
+                if (att.fileSizeBytes > 0L && dir.usableSpace > 0 && dir.usableSpace < att.fileSizeBytes + FREE_SPACE_RESERVE_BYTES) {
+                    throw IllegalStateException("Недостаточно места для вложения")
+                }
+                val tmp = File(dir, ".download-${UUID.randomUUID()}.tmp")
+                try {
+                    wikiClient.downloadAttachmentToFile(att, settings, tmp, MAX_ATTACHMENT_BYTES).getOrThrow()
+                    currentCoroutineContext().ensureActive()
+                    synchronized(this@ConfluenceOfflineStore) {
+                        check(currentGeneration == generation) { "Офлайн-база очищена во время загрузки" }
+                        val target = File(dir, safeAttachmentName(att.title))
+                        try {
+                            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        }
+                        target
+                    }
+                } finally { tmp.delete() }
+            }.onFailure { if (it is CancellationException) throw it }
+        }
+        }
+    }
+
+    /** Do not execute downloaded programs/scripts when the user opens a document. */
+    fun isSafeAttachmentToOpen(att: ConfluenceAttachment): Boolean {
+        val ext = att.title.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return ext !in setOf("exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "msi", "msp", "scr", "lnk", "url", "reg", "jar", "sh", "apk")
+    }
+
     @Synchronized
     fun clearOfflineDatabase() {
+        generation++
         memorySnapshot = null
         loadedFromDisk = true
         runCatching { if (dbFile.exists()) dbFile.delete() }
@@ -209,6 +287,7 @@ class ConfluenceOfflineStore(private val storageDir: File) {
         }
         runCatching {
             if (mediaDir.exists()) mediaDir.deleteRecursively()
+            if (attachmentDir.exists()) attachmentDir.deleteRecursively()
         }
     }
 
@@ -244,13 +323,16 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                 )
             }
 
+            val syncGeneration = generation
             val hadExistingDb = hasOfflineSnapshot()
             reportProgress(
                 msg = "Проверка связи и учётной записи на w.csl.by…",
                 fraction = 0.03f
             )
 
-            when (val access = wikiClient.verifyConfluenceAccountAccess(settings, hadExistingDb)) {
+            val access = wikiClient.verifyConfluenceAccountAccess(settings, hadExistingDb)
+            if (syncGeneration != generation) return@withContext ConfluenceSyncOutcome.OfflineUsingCache(null, "Настройки или офлайн-база изменились во время синхронизации")
+            when (access) {
                 is ConfluenceAccessCheckResult.OfflineUnreachable -> {
                     return@withContext ConfluenceSyncOutcome.OfflineUsingCache(
                         snapshot = getSnapshot(),
@@ -280,8 +362,8 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                         val allPagesById = LinkedHashMap<String, ConfluencePageDetail>()
                         val allChildPagesByParent = LinkedHashMap<String, List<ConfluencePageSummary>>()
 
-                        // Download global spaces + primary spaces (up to 25 spaces)
-                        val spacesToSync = spaces.take(25)
+                        // Synchronize every accessible space.
+                        val spacesToSync = spaces
                         val spaceSpan = 0.80f / spacesToSync.size.coerceAtLeast(1)
 
                         for ((idx, sp) in spacesToSync.withIndex()) {
@@ -327,7 +409,7 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                                         fraction = spaceBaseFraction + inSpaceRatio * spaceSpan
                                     )
                                 }
-                            ).getOrDefault(emptyList())
+                            ).getOrThrow()
 
                             for (d in spaceDetails) {
                                 allPagesById[d.id] = d
@@ -374,20 +456,54 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                                 if (newlyCachedImages >= 80) break
                                 if (getCachedMediaBytes(imgUrl) == null) {
                                     wikiClient.downloadProtectedBytes(imgUrl, settings).getOrNull()?.let { bytes ->
-                                        saveCachedMediaBytes(imgUrl, bytes)
+                                        synchronized(this@ConfluenceOfflineStore) {
+                                            check(syncGeneration == generation) { "Офлайн-база была очищена" }
+                                            saveCachedMediaBytes(imgUrl, bytes)
+                                        }
                                         newlyCachedImages++
                                         if (newlyCachedImages % 5 == 0) {
                                             reportProgress(
                                                 msg = "Кэширование схем и изображений ($newlyCachedImages) — база ${allPagesById.size} стр.…",
                                                 downloaded = allPagesById.size,
                                                 total = allPagesById.size,
-                                                fraction = 0.88f + (newlyCachedImages.coerceAtMost(80) / 80f) * 0.08f
+                                                fraction = 0.87f
                                             )
                                         }
                                     }
                                 }
                             }
                         }
+
+                        // Fetch complete attachment lists separately: expanded children can be truncated.
+                        var listingProblems = 0
+                        val oldSnapshot = getSnapshot()
+                        for ((index, id) in allPagesById.keys.toList().withIndex()) {
+                            currentCoroutineContext().ensureActive()
+                            check(syncGeneration == generation) { "Офлайн-база была очищена" }
+                            val page = allPagesById.getValue(id)
+                            val result = wikiClient.fetchPageAttachments(id, settings)
+                            val attachments = result.getOrElse {
+                                if (it is CancellationException) throw it
+                                listingProblems++
+                                (page.attachments + oldSnapshot?.pagesById?.get(id)?.attachments.orEmpty()).distinctBy { a -> a.id }
+                            }
+                            allPagesById[id] = page.copy(attachments = attachments)
+                            if (index % 10 == 0) reportProgress("Проверка вложений страниц: ${index + 1} / ${allPagesById.size}…",
+                                allPagesById.size, allPagesById.size, 0.88f)
+                        }
+                        val attachments = allPagesById.values.flatMap { it.attachments }.distinctBy { attachmentKey(it) }
+                        var downloadProblems = 0
+                        for ((index, att) in attachments.withIndex()) {
+                            currentCoroutineContext().ensureActive()
+                            check(syncGeneration == generation) { "Офлайн-база была очищена" }
+                            // Unknown versions must be revalidated at each sync, while known versions are reused.
+                            val result = getOrDownloadAttachment(att, wikiClient, settings, forceRefresh = att.versionNumber <= 0, expectedGeneration = syncGeneration)
+                            if (result.isFailure) downloadProblems++
+                            reportProgress("Синхронизация вложений: ${index + 1} / ${attachments.size} · ошибок: $downloadProblems",
+                                allPagesById.size, allPagesById.size, 0.89f + 0.08f * ((index + 1).toFloat() / attachments.size.coerceAtLeast(1)))
+                        }
+                        val available = attachments.count { getCachedAttachmentFile(it) != null }
+                        val attachmentProblems = listingProblems + downloadProblems
 
                         val nowMs = System.currentTimeMillis()
                         val minskFmt = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
@@ -400,7 +516,11 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                             rootPagesBySpace = rootPagesBySpace,
                             recentPages = recentPages,
                             childPagesByParent = allChildPagesByParent,
-                            pagesById = allPagesById
+                            pagesById = allPagesById,
+                            attachmentTotal = attachments.size,
+                            attachmentAvailable = available,
+                            attachmentProblems = attachmentProblems,
+                            attachmentSyncCompleted = true
                         )
 
                         reportProgress(
@@ -409,20 +529,33 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                             total = allPagesById.size,
                             fraction = 0.98f
                         )
-                        saveSnapshotToDisk(snapshot)
                         synchronized(this@ConfluenceOfflineStore) {
+                            check(syncGeneration == generation) { "Офлайн-база была очищена" }
+                            saveSnapshotToDisk(snapshot)
                             memorySnapshot = snapshot
                             loadedFromDisk = true
                         }
+                        if (attachmentProblems == 0) {
+                            val activeKeys = attachments.map { attachmentKey(it) }.toSet()
+                            attachmentMutex.withLock {
+                                synchronized(this@ConfluenceOfflineStore) {
+                                    if (syncGeneration == generation) attachmentDir.listFiles()?.filter { it.isDirectory && it.name !in activeKeys }?.forEach { it.deleteRecursively() }
+                                }
+                            }
+                        }
                         reportProgress(
-                            msg = "Офлайн-база w.csl.by загружена (${allPagesById.size} стр.)",
+                            msg = "Офлайн-база: ${allPagesById.size} стр., вложения $available/${attachments.size}; ошибок: $attachmentProblems",
                             downloaded = allPagesById.size,
                             total = allPagesById.size,
                             fraction = 1.0f
                         )
                         return@withContext ConfluenceSyncOutcome.Synced(snapshot)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
                     } catch (revoked: ConfluenceAccountRevokedException) {
-                        clearOfflineDatabase()
+                        synchronized(this@ConfluenceOfflineStore) {
+                            if (syncGeneration == generation) clearOfflineDatabase()
+                        }
                         return@withContext ConfluenceSyncOutcome.AccountRevokedWipeTriggered(
                             revoked.message ?: "Доступ учётной записи отклонён"
                         )
@@ -507,6 +640,10 @@ class ConfluenceOfflineStore(private val storageDir: File) {
             addProperty("syncedAtEpochMs", snapshot.syncedAtEpochMs)
             addProperty("syncedAtLabel", snapshot.syncedAtLabel)
             addProperty("syncedUsername", snapshot.syncedUsername)
+            addProperty("attachmentTotal", snapshot.attachmentTotal)
+            addProperty("attachmentAvailable", snapshot.attachmentAvailable)
+            addProperty("attachmentProblems", snapshot.attachmentProblems)
+            addProperty("attachmentSyncCompleted", snapshot.attachmentSyncCompleted)
             add("spaces", JsonArray().apply { snapshot.spaces.forEach { add(encodeSpace(it)) } })
             add("recentPages", JsonArray().apply { snapshot.recentPages.forEach { add(encodeSummary(it)) } })
             add(
@@ -574,7 +711,11 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                 rootPagesBySpace = rootsBySpace,
                 recentPages = recent,
                 childPagesByParent = childrenMap,
-                pagesById = pagesMap
+                pagesById = pagesMap,
+                attachmentTotal = root.optInt("attachmentTotal") ?: 0,
+                attachmentAvailable = root.optInt("attachmentAvailable") ?: 0,
+                attachmentProblems = root.optInt("attachmentProblems") ?: 0,
+                attachmentSyncCompleted = root.optBool("attachmentSyncCompleted") ?: false
             )
         }.getOrNull()
     }
@@ -761,6 +902,7 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                         addProperty("mediaType", a.mediaType)
                         addProperty("fileSizeBytes", a.fileSizeBytes)
                         addProperty("downloadUrl", a.downloadUrl)
+                        addProperty("versionNumber", a.versionNumber)
                     })
                 }
             }
@@ -793,7 +935,8 @@ class ConfluenceOfflineStore(private val storageDir: File) {
                 title = ao.optStr("title").orEmpty(),
                 mediaType = ao.optStr("mediaType") ?: "application/octet-stream",
                 fileSizeBytes = ao.optLong("fileSizeBytes") ?: 0L,
-                downloadUrl = ao.optStr("downloadUrl").orEmpty()
+                downloadUrl = ao.optStr("downloadUrl").orEmpty(),
+                versionNumber = ao.optInt("versionNumber") ?: 0
             )
         }.orEmpty()
         val blocks = o.optArray("blocks")?.mapNotNull { decodeBlock(it) }.orEmpty()
@@ -853,6 +996,8 @@ class ConfluenceOfflineStore(private val storageDir: File) {
     }
 
     companion object {
+        const val MAX_ATTACHMENT_BYTES: Long = 512L * 1024 * 1024
+        private const val FREE_SPACE_RESERVE_BYTES: Long = 64L * 1024 * 1024
         const val DAILY_SYNC_INTERVAL_MS: Long = 24L * 60L * 60L * 1000L
         private const val MAX_CACHED_IMAGE_BYTES: Int = 2 * 1024 * 1024
     }

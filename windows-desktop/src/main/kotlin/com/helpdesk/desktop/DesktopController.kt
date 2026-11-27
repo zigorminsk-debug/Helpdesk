@@ -167,6 +167,7 @@ data class DesktopUiState(
     val wikiSyncProgressFraction: Float = 0f,
     val wikiOfflineSyncedAtLabel: String = "",
     val wikiOfflinePagesCount: Int = 0,
+    val wikiOfflineAttachmentSummary: String = "",
     val wikiError: String? = null,
     val openWatchlistToolboxStamp: Long = 0L,
 
@@ -942,6 +943,17 @@ class DesktopController(
     @Synchronized
     fun saveSettings(newSettings: AppSettings) {
         val old = _state.value.settings
+        val wikiIdentityChanged = old.confluenceUrl.trim() != newSettings.confluenceUrl.trim() ||
+            old.usernameOrEmail.trim() != newSettings.usernameOrEmail.trim() || old.confluenceToken != newSettings.confluenceToken || old.passwordOrToken != newSettings.passwordOrToken || old.authType != newSettings.authType
+        if (wikiIdentityChanged) {
+            wikiOfflineStore.clearOfflineDatabase()
+            wikiClient.clearSessionCache()
+            wikiPageDetailCache.clear()
+            _state.update { it.copy(wikiSpaces = emptyList(), wikiPages = emptyList(), selectedWikiPage = null,
+                wikiPageHistoryStack = emptyList(), wikiChildPagesByParent = emptyMap(), wikiExpandedPageIds = emptySet(),
+                wikiSearchResults = null, selectedWikiSpaceKey = null, wikiOfflinePagesCount = 0,
+                wikiOfflineAttachmentSummary = "", wikiOfflineSyncedAtLabel = "") }
+        }
         if (old.serverUrl.trim() != newSettings.serverUrl.trim() || !newSettings.isConfigured) resetJiraConnectionAlarm()
         if (old.zabbixUrl.trim() != newSettings.zabbixUrl.trim() ||
             old.zabbixLogin.trim() != newSettings.zabbixLogin.trim()
@@ -3221,6 +3233,7 @@ class DesktopController(
                 selectedWikiPage = autoSelected,
                 wikiOfflineSyncedAtLabel = snapshot.syncedAtLabel,
                 wikiOfflinePagesCount = snapshot.totalPagesCount,
+                wikiOfflineAttachmentSummary = snapshot.attachmentSummary,
                 wikiError = null
             )
         }
@@ -3288,7 +3301,7 @@ class DesktopController(
                             wikiSyncProgressText = null,
                             wikiSyncProgressFraction = 1f,
                             wikiError = null,
-                            statusBanner = "✅ Офлайн-база w.csl.by загружена (${outcome.snapshot.totalPagesCount} стр.)"
+                            statusBanner = "Офлайн-база: ${outcome.snapshot.totalPagesCount} стр. · ${outcome.snapshot.attachmentSummary}"
                         )
                     }
                 }
@@ -3534,20 +3547,30 @@ class DesktopController(
     }
 
     fun downloadAndOpenWikiAttachment(att: ConfluenceAttachment) {
+        if (!wikiOfflineStore.isSafeAttachmentToOpen(att)) {
+            _state.update { it.copy(errorBanner = "Исполняемые файлы и скрипты из Wiki не открываются автоматически") }
+            return
+        }
         val cur = _state.value
         _state.update { it.copy(isPerformingAction = true) }
         scope.launch(Dispatchers.IO) {
-            wikiClient.downloadProtectedBytes(att.downloadUrl, cur.settings)
-                .onSuccess { bytes ->
-                    val dir = File(System.getProperty("java.io.tmpdir"), "HelpCSL-Wiki").apply { mkdirs() }
-                    val safeName = att.title.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "wiki_file" }
-                    val target = File(dir, safeName)
-                    target.writeBytes(bytes)
-                    WindowsExternalLaunchers.openFile(target)
-                    _state.update { it.copy(isPerformingAction = false, statusBanner = "📘 Открыт файл из Wiki: $safeName") }
+            wikiOfflineStore.getOrDownloadAttachment(att, wikiClient, cur.settings)
+                .onSuccess { cached ->
+                    runCatching {
+                        // Open a local working copy; edits in an external app must not corrupt the offline cache.
+                        val viewDir = File(cached.parentFile, "open").apply { mkdirs() }
+                        val workingCopy = File(viewDir, cached.name)
+                        cached.copyTo(workingCopy, overwrite = true)
+                        check(java.awt.Desktop.isDesktopSupported() && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN)) { "В Windows не настроено открытие файлов" }
+                        java.awt.Desktop.getDesktop().open(workingCopy)
+                    }.onSuccess {
+                        _state.update { it.copy(isPerformingAction = false, statusBanner = "📘 Открыт файл Wiki: ${att.title}") }
+                    }.onFailure { err ->
+                        _state.update { it.copy(isPerformingAction = false, errorBanner = "Не удалось открыть файл Wiki: ${err.message}") }
+                    }
                 }
                 .onFailure { err ->
-                    _state.update { it.copy(isPerformingAction = false, errorBanner = "Ошибка скачивания из Wiki: ${err.message}") }
+                    _state.update { it.copy(isPerformingAction = false, errorBanner = "Нет локальной копии; не удалось загрузить вложение Wiki: ${err.message}") }
                 }
         }
     }

@@ -482,6 +482,10 @@ class SettingsRepository private constructor(context: Context) {
 
     @Synchronized
     fun saveAppSettings(newSettings: AppSettings) {
+        val wikiIdentityChanged = newSettings.confluenceUrl.trim() != _appSettings.value.confluenceUrl.trim() ||
+            newSettings.usernameOrEmail.trim() != _appSettings.value.usernameOrEmail.trim() ||
+            newSettings.confluenceToken != _appSettings.value.confluenceToken ||
+            newSettings.passwordOrToken != _appSettings.value.passwordOrToken || newSettings.authType != _appSettings.value.authType
         val serverChanged = newSettings.serverUrl.trim() != _appSettings.value.serverUrl.trim()
         val zabbixChanged = newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim() ||
             newSettings.zabbixLogin.trim() != _appSettings.value.zabbixLogin.trim()
@@ -552,6 +556,10 @@ class SettingsRepository private constructor(context: Context) {
             if (newSettings.zabbixUrl.trim() != _appSettings.value.zabbixUrl.trim()) {
                 resetZabbixBaseline()
             }
+        }
+        if (wikiIdentityChanged) {
+            wikiOfflineStore.clearOfflineDatabase()
+            wikiClient.clearSessionCache()
         }
         _appSettings.value = newSettings.copy(adminChatIssueKey = newSettings.adminChatIssueKey.trim().uppercase())
         if (serverChanged || !newSettings.isConfigured) resetJiraConnectionAlarm()

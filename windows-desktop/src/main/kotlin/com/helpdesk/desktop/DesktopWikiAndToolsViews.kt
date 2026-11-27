@@ -280,11 +280,11 @@ fun DesktopWikiWorkspace(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "💾 Офлайн: ${state.wikiOfflinePagesCount} стр. · Синхр.: ${state.wikiOfflineSyncedAtLabel} (раз в день)",
+                            text = "💾 Офлайн: ${state.wikiOfflinePagesCount} стр. · ${state.wikiOfflineAttachmentSummary} · Синхр.: ${state.wikiOfflineSyncedAtLabel}",
                             fontSize = 10.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f),
-                            maxLines = 1,
+                            maxLines = 4,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
@@ -1293,7 +1293,7 @@ private fun ConfluenceAttachmentRow(
                 onClick = onOpen,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
             ) {
-                Text("Скачать и открыть", fontSize = 11.5.sp)
+                Text("Открыть", fontSize = 11.5.sp)
             }
         }
     }

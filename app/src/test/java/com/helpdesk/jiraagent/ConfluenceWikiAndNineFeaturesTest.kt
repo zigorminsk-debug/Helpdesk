@@ -409,7 +409,8 @@ class ConfluenceWikiAndNineFeaturesTest {
                 rootPagesBySpace = mapOf("CSL" to listOf(clientSummary)),
                 recentPages = listOf(subPageSummary),
                 childPagesByParent = mapOf("100" to listOf(subPageSummary)),
-                pagesById = mapOf("100" to clientDetail, "101" to subPageDetail)
+                pagesById = mapOf("100" to clientDetail, "101" to subPageDetail),
+                attachmentSyncCompleted = true
             )
             store.persistSnapshot(snapshot)
             store.saveCachedMediaBytes("https://w.csl.by/download/net.png", byteArrayOf(1, 2, 3, 4))
@@ -470,6 +471,7 @@ class ConfluenceWikiAndNineFeaturesTest {
                     relPath.startsWith("content/search") -> """
                         {"results":[{"id":"11","title":"ООО ТестКлиент","space":{"key":"CSL","name":"CSL"}}]}
                     """.trimIndent()
+                    relPath.startsWith("content/11/child/attachment") -> """{"results":[]}"""
                     relPath.startsWith("content/10/child/page") -> """
                         {"results":[{"id":"11","title":"ООО ТестКлиент","space":{"key":"CSL","name":"CSL"}}]}
                     """.trimIndent()

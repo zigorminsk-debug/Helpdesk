@@ -144,7 +144,7 @@ fun ConfluenceWikiScreen(
             }
             Toast.makeText(
                 context,
-                "✅ Офлайн-база w.csl.by загружена (${wikiState.offlinePagesCount} стр.)",
+                "Офлайн-база: ${wikiState.offlinePagesCount} стр. · ${wikiState.offlineAttachmentSummary}",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -444,11 +444,11 @@ private fun ConfluenceAndroidBrowserList(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "💾 Офлайн-база: ${wikiState.offlinePagesCount} стр. · Синхр.: ${wikiState.offlineSyncedAtLabel} (раз в день)",
+                    text = "💾 Офлайн-база: ${wikiState.offlinePagesCount} стр. · ${wikiState.offlineAttachmentSummary} · Синхр.: ${wikiState.offlineSyncedAtLabel}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
-                    maxLines = 1,
+                    maxLines = 4,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(

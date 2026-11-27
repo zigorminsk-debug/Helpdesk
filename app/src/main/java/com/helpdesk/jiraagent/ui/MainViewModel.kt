@@ -168,6 +168,7 @@ data class ConfluenceWikiUiState(
     val syncCompletedStamp: Long = 0L,
     val offlineSyncedAtLabel: String = "",
     val offlinePagesCount: Int = 0,
+    val offlineAttachmentSummary: String = "",
     val requiresWeb2faLogin: Boolean = false,
     val errorMessage: String? = null
 )
@@ -1094,6 +1095,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveAppSettings(updated: AppSettings) {
+        val previous = appSettings.value
+        if (updated.confluenceUrl.trim() != previous.confluenceUrl.trim() || updated.usernameOrEmail.trim() != previous.usernameOrEmail.trim() || updated.confluenceToken != previous.confluenceToken || updated.passwordOrToken != previous.passwordOrToken || updated.authType != previous.authType) {
+            wikiPageDetailCache.clear()
+            _wikiUiState.value = ConfluenceWikiUiState()
+        }
         repository.saveAppSettings(updated)
         JiraMonitorService.syncServiceState(appContext)
         if (updated.isConfigured) {
@@ -3055,6 +3061,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 childPagesByParent = snapshot.childPagesByParent,
                 offlineSyncedAtLabel = snapshot.syncedAtLabel,
                 offlinePagesCount = snapshot.totalPagesCount,
+                offlineAttachmentSummary = snapshot.attachmentSummary,
                 requiresWeb2faLogin = false,
                 errorMessage = null
             )
@@ -3408,22 +3415,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAndShareWikiAttachment(att: ConfluenceAttachment) {
+        if (!wikiOfflineStore.isSafeAttachmentToOpen(att)) {
+            Toast.makeText(appContext, "Исполняемые файлы и скрипты из Wiki не открываются автоматически", Toast.LENGTH_LONG).show()
+            return
+        }
+        val settings = appSettings.value
         viewModelScope.launch {
-            val res = wikiClient.downloadProtectedBytes(att.downloadUrl, appSettings.value)
-            res.onSuccess { bytes ->
-                val saved = withContext(Dispatchers.IO) {
-                    val dir = File(appContext.cacheDir, "shared_attachments").apply { mkdirs() }
-                    val safeName = att.title.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "wiki_file" }
-                    File(dir, safeName).also { it.writeBytes(bytes) }
-                }
-                PdfServiceActGenerator.shareExportedFile(
-                    context = appContext,
-                    file = saved,
-                    mimeType = att.mediaType.ifBlank { "*/*" },
-                    chooserTitle = att.title
-                )
+            val result = wikiOfflineStore.getOrDownloadAttachment(att, wikiClient, settings)
+            result.onSuccess { file ->
+                runCatching {
+                    val uri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", file)
+                    val mime = att.mediaType.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                        ?: android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
+                    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    appContext.startActivity(Intent.createChooser(intent, "Открыть: ${att.title}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.onFailure { Toast.makeText(appContext, "Не удалось открыть файл: ${it.message}", Toast.LENGTH_LONG).show() }
             }.onFailure { err ->
-                Toast.makeText(appContext, "Ошибка скачивания из Wiki: ${err.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(appContext, "Нет локальной копии; не удалось загрузить вложение Wiki: ${err.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
