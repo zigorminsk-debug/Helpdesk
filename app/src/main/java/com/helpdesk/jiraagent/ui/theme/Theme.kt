@@ -240,6 +240,20 @@ internal fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
         error = Color(0xFFF2B6AC), onError = Color(0xFF4D211B),
         errorContainer = Color(0xFF623B36), onErrorContainer = Color(0xFFFFDAD4)
     )
+    DarkThemePreset.WATCHDOG_NAVY -> darkColorScheme(
+        primary = Color(0xFF9BC8FF), onPrimary = Color(0xFF10263D),
+        primaryContainer = Color(0xFF243B55), onPrimaryContainer = Color(0xFFF0F4F9),
+        secondary = Color(0xFFD0D9E4), onSecondary = Color(0xFF111A29),
+        secondaryContainer = Color(0xFF243B55), onSecondaryContainer = Color(0xFFF0F4F9),
+        tertiary = Color(0xFF9BC8FF), onTertiary = Color(0xFF10263D),
+        tertiaryContainer = Color(0xFF243B55), onTertiaryContainer = Color(0xFFF0F4F9),
+        background = Color(0xFF111A29), onBackground = Color(0xFFF0F4F9),
+        surface = Color(0xFF151F30), onSurface = Color(0xFFF0F4F9),
+        surfaceVariant = Color(0xFF243B55), onSurfaceVariant = Color(0xFFD0D9E4),
+        outline = Color(0xFF8295AC), outlineVariant = Color(0xFF273449),
+        error = Color(0xFFFFB4AB), onError = Color(0xFF690005),
+        errorContainer = Color(0xFF70252A), onErrorContainer = Color(0xFFFFDAD6)
+    )
     DarkThemePreset.WARM_ESPRESSO -> darkColorScheme(
         primary = Color(0xFFF59E0B),
         onPrimary = Color.White,

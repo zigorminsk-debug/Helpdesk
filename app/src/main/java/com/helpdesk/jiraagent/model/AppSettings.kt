@@ -148,6 +148,14 @@ enum class DarkThemePreset(
         previewCardHex = 0xFF2C3134L,
         previewAccentHex = 0xFFD6B5A6L
     ),
+    WATCHDOG_NAVY(
+        title = "🌌 Тёмно-синяя Watchdog",
+        shortTitle = "Watchdog",
+        subtitle = "Тёмно-синие панели и синий акцент",
+        previewBgHex = 0xFF111A29L,
+        previewCardHex = 0xFF151F30L,
+        previewAccentHex = 0xFF1F6FEBL
+    ),
     WARM_ESPRESSO(
         title = "☕ Тёплый Мокко",
         shortTitle = "Тёплый Мокко",

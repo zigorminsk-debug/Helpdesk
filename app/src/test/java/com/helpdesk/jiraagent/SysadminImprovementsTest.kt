@@ -13,6 +13,7 @@ import com.helpdesk.jiraagent.domain.SysadminEntityExtractor
 import com.helpdesk.jiraagent.domain.TicketFilterEngine
 import com.helpdesk.jiraagent.model.AdminChatCodec
 import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.ClientDirectoryCodec
 import com.helpdesk.jiraagent.model.ClientDirectoryEntry
 import com.helpdesk.jiraagent.model.FilterSettings
@@ -211,6 +212,7 @@ class SysadminImprovementsTest {
             serverUrl = "https://jira.csl.by",
             usernameOrEmail = "engineer1",
             passwordOrToken = "super-secret-token",
+            darkThemePreset = DarkThemePreset.WATCHDOG_NAVY,
             workStartTime = "08:30"
         )
         val srcFilter = FilterSettings(projectKeys = "CSL, SUP")
@@ -228,6 +230,7 @@ class SysadminImprovementsTest {
         assertFalse(decoded.includesCredentials)
         assertEquals("https://jira.csl.by", decoded.appSettings.serverUrl)
         assertEquals("08:30", decoded.appSettings.workStartTime)
+        assertEquals(DarkThemePreset.WATCHDOG_NAVY, decoded.appSettings.darkThemePreset)
         assertEquals("", decoded.appSettings.passwordOrToken)
         assertEquals("CSL, SUP", decoded.filterSettings.projectKeys)
     }

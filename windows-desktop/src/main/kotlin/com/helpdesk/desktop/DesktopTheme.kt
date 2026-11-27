@@ -176,6 +176,15 @@ fun resolveDesktopDarkPalette(preset: DarkThemePreset): DesktopDarkPalette = whe
         primaryAccent = Color(0xFFD6B5A6), selectedContainer = Color(0xFF60453A),
         textPrimary = Color(0xFFE7E6E2), textSecondary = Color(0xFFD3D7D2), textMuted = Color(0xFFBBC4BE)
     )
+    // Colors sampled from the user's 1C Server Watchdog reference.
+    DarkThemePreset.WATCHDOG_NAVY -> DesktopDarkPalette(
+        headerBg = Color(0xFF151F30), headerSurface = Color(0xFF1D2A3F), headerBorder = Color(0xFF273449),
+        subHeaderBg = Color(0xFF0D1422), workspaceBg = Color(0xFF111A29), listPaneBg = Color(0xFF111A29),
+        cardBg = Color(0xFF151F30), subtleBg = Color(0xFF1C2C3E), surfaceVariantBg = Color(0xFF243B55),
+        borderSubtle = Color(0xFF273449), borderStrong = Color(0xFF526A85),
+        primaryAccent = Color(0xFF9BC8FF), selectedContainer = Color(0xFF243B55),
+        textPrimary = Color(0xFFF0F4F9), textSecondary = Color(0xFFD0D9E4), textMuted = Color(0xFFA9B9CB)
+    )
     DarkThemePreset.WARM_ESPRESSO -> DesktopDarkPalette(
         headerBg = Color(0xFF0F0C0A),
         headerSurface = Color(0xFF211B17),
@@ -245,6 +254,7 @@ object DesktopColors {
     val CslOrange: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             when (LocalDesktopDarkPreset.current) {
+                DarkThemePreset.WATCHDOG_NAVY -> Color(0xFF9BC8FF)
                 DarkThemePreset.SOFT_SLATE -> Color(0xFFD6B5A6)
                 DarkThemePreset.EMERALD_NOC -> Color(0xFF92D1B4)
                 DarkThemePreset.CYBER_PLUM -> Color(0xFFCABAF2)
@@ -260,6 +270,7 @@ object DesktopColors {
     val ButtonAccent: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             when (LocalDesktopDarkPreset.current) {
+                DarkThemePreset.WATCHDOG_NAVY -> Color(0xFF1F6FEB)
                 DarkThemePreset.EMERALD_NOC -> Color(0xFF176B4D)
                 DarkThemePreset.CYBER_PLUM -> Color(0xFF66518E)
                 DarkThemePreset.WARM_ESPRESSO -> Color(0xFF855A2D)
@@ -273,7 +284,11 @@ object DesktopColors {
         }
 
     val HeaderAccent: Color
-        @Composable get() = if (!LocalDesktopDarkTheme.current && LocalDesktopLightPreset.current != LightThemePreset.CLASSIC) Color(0xFFE5EFEC) else Color(0xFFF2C6AD)
+        @Composable get() = when {
+            LocalDesktopDarkTheme.current && LocalDesktopDarkPreset.current == DarkThemePreset.WATCHDOG_NAVY -> Color(0xFFB9D8F8)
+            !LocalDesktopDarkTheme.current && LocalDesktopLightPreset.current != LightThemePreset.CLASSIC -> Color(0xFFE5EFEC)
+            else -> Color(0xFFF2C6AD)
+        }
 
     val CslOrangeContainer: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
@@ -421,7 +436,11 @@ internal val DesktopWarmLightColors = lightColorScheme(
 internal fun buildDesktopDarkColorScheme(preset: DarkThemePreset) = resolveDesktopDarkPalette(preset).let { p ->
     darkColorScheme(
         primary = p.primaryAccent,
-        onPrimary = if (preset == DarkThemePreset.SOFT_SLATE) Color(0xFF35231C) else Color(0xFF21150E),
+        onPrimary = when (preset) {
+            DarkThemePreset.WATCHDOG_NAVY -> Color(0xFF10263D)
+            DarkThemePreset.SOFT_SLATE -> Color(0xFF35231C)
+            else -> Color(0xFF21150E)
+        },
         primaryContainer = p.selectedContainer,
         onPrimaryContainer = Color.White,
         secondary = p.textSecondary,

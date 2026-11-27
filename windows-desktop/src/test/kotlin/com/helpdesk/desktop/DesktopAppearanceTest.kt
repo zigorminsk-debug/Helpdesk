@@ -22,13 +22,18 @@ class DesktopAppearanceTest {
     @Test fun calmPaletteHasLegibleTextAndButtons() {
         val light = DesktopSoftLightColors
         val dark = buildDesktopDarkColorScheme(DarkThemePreset.SOFT_SLATE)
-        for (scheme in listOf(light, DesktopWarmLightColors, dark)) {
+        for (scheme in listOf(light, DesktopWarmLightColors, dark, buildDesktopDarkColorScheme(DarkThemePreset.WATCHDOG_NAVY))) {
             assertTrue(contrast(scheme.onSurface, scheme.surface) >= 4.5f)
             assertTrue(contrast(scheme.onSurfaceVariant, scheme.surfaceVariant) >= 4.5f)
             assertTrue(contrast(scheme.onPrimary, scheme.primary) >= 4.5f)
             assertTrue(contrast(scheme.primary, scheme.surface) >= 4.5f)
         }
         assertTrue(contrast(Color.White, Color(0xFF86513A)) >= 4.5f)
+        assertTrue(contrast(Color.White, Color(0xFF1F6FEB)) >= 4.5f)
+        val watchdog = resolveDesktopDarkPalette(DarkThemePreset.WATCHDOG_NAVY)
+        assertEquals(Color(0xFF111A29), watchdog.workspaceBg)
+        assertEquals(Color(0xFF151F30), watchdog.cardBg)
+        assertTrue(contrast(watchdog.textMuted, watchdog.cardBg) >= 4.5f)
     }
 
     @Test fun workspaceStackClosesOnlyTopThenAllInReverseOrder() {
@@ -58,6 +63,9 @@ class DesktopAppearanceTest {
         val warm = original.copy(lightThemePreset = LightThemePreset.WARM)
         val warmPayload = DesktopQrTransferCodec.encode(warm, FilterSettings(), includeCredentials = false)
         assertEquals(LightThemePreset.WARM, DesktopQrTransferCodec.decode(warmPayload).getOrThrow().appSettings.lightThemePreset)
+        val watchdog = original.copy(darkThemePreset = DarkThemePreset.WATCHDOG_NAVY)
+        val watchdogPayload = DesktopQrTransferCodec.encode(watchdog, FilterSettings(), includeCredentials = false)
+        assertEquals(DarkThemePreset.WATCHDOG_NAVY, DesktopQrTransferCodec.decode(watchdogPayload).getOrThrow().appSettings.darkThemePreset)
     }
 
 }

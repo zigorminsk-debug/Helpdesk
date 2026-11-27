@@ -17,7 +17,7 @@ class CalmThemeContrastTest {
     }
 
     @Test fun calmThemesProvideReadableCoreTextAndControls() {
-        listOf(SoftLightColors, WarmLightColors, buildAndroidDarkColors(DarkThemePreset.SOFT_SLATE)).forEach { colors ->
+        listOf(SoftLightColors, WarmLightColors, buildAndroidDarkColors(DarkThemePreset.SOFT_SLATE), buildAndroidDarkColors(DarkThemePreset.WATCHDOG_NAVY)).forEach { colors ->
             assertTrue(contrast(colors.onSurface, colors.surface) >= 4.5f)
             assertTrue(contrast(colors.onSurfaceVariant, colors.surfaceVariant) >= 4.5f)
             assertTrue(contrast(colors.onPrimary, colors.primary) >= 4.5f)
