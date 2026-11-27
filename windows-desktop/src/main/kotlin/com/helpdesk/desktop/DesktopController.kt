@@ -491,7 +491,7 @@ class DesktopController(
     }
 
     fun setDarkTheme(enabled: Boolean) {
-        _state.update { it.copy(darkTheme = enabled) }
+        _state.update { it.copy(darkTheme = enabled, settings = it.settings.copy(themeMode = if (enabled) com.helpdesk.jiraagent.model.AppThemeMode.DARK else com.helpdesk.jiraagent.model.AppThemeMode.LIGHT)) }
         persistCurrentState()
     }
 
@@ -504,7 +504,7 @@ class DesktopController(
         _state.update {
             it.copy(
                 darkTheme = true,
-                settings = it.settings.copy(darkThemePreset = preset)
+                settings = it.settings.copy(darkThemePreset = preset, themeMode = com.helpdesk.jiraagent.model.AppThemeMode.DARK)
             )
         }
         persistCurrentState()

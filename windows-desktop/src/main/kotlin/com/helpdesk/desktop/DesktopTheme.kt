@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helpdesk.jiraagent.model.DarkThemePreset
 import com.helpdesk.jiraagent.model.LightThemePreset
+import com.helpdesk.jiraagent.shared.LocalSharedConfirmationPresenter
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -426,6 +427,7 @@ fun HelpCslDesktopTheme(
         LocalDesktopDarkTheme provides darkTheme,
         LocalDesktopDarkPreset provides darkPreset,
         LocalDesktopLightPreset provides lightPreset,
+        LocalSharedConfirmationPresenter provides DesktopConfirmationPresenter,
         LocalScrollbarStyle provides scrollbarStyle
     ) {
         val colors = if (darkTheme) buildDesktopDarkColorScheme(darkPreset) else if (lightPreset == LightThemePreset.SOFT) DesktopSoftLightColors else DesktopLightColors

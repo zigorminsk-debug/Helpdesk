@@ -3,6 +3,9 @@ package com.helpdesk.desktop
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.model.LightThemePreset
+import com.helpdesk.jiraagent.model.AppSettings
+import com.helpdesk.jiraagent.model.FilterSettings
 import java.awt.Insets
 import java.awt.Rectangle
 import kotlin.test.Test
@@ -33,4 +36,12 @@ class DesktopAppearanceTest {
         assertEquals(Rectangle(10, 30, 1880, 1030), usableMonitorBounds(Rectangle(0, 0, 1920, 1080), Insets(30, 10, 20, 30)))
         assertEquals(Rectangle(0, 0, 1, 1), usableMonitorBounds(Rectangle(0, 0, 1, 1), Insets(20, 20, 20, 20)))
     }
+    @Test fun calmPalettesSurviveQrSettingsTransfer() {
+        val original = AppSettings(lightThemePreset = LightThemePreset.SOFT, darkThemePreset = DarkThemePreset.SOFT_SLATE)
+        val payload = DesktopQrTransferCodec.encode(original, FilterSettings(), includeCredentials = false, pinCode = "1234")
+        val restored = DesktopQrTransferCodec.decode(payload, "1234").getOrThrow().appSettings
+        assertEquals(LightThemePreset.SOFT, restored.lightThemePreset)
+        assertEquals(DarkThemePreset.SOFT_SLATE, restored.darkThemePreset)
+    }
+
 }

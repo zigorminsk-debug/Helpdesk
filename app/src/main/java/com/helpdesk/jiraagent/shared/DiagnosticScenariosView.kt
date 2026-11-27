@@ -94,7 +94,7 @@ private fun ScenarioDraft(scenario: DiagnosticScenario, onCopy: (String, String)
         OutlinedButton(onClick = { showReset = true }) { Text("Очистить черновик") }
     }
     if (showReset) {
-        AlertDialog(onDismissRequest = { showReset = false }, title = { Text("Очистить этот сценарий?") },
+        SharedConfirmationDialog(onDismissRequest = { showReset = false }, title = { Text("Очистить этот сценарий?") },
             text = { Text("Нескопированные заметки и отметки этого сценария будут потеряны.") },
             confirmButton = { TextButton(onClick = {
                 context = ""; next = ""

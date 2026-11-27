@@ -1421,6 +1421,10 @@ fun DesktopImageLightboxDialog(
     var zoom by remember { mutableStateOf(1.0f) }
     var copied by remember { mutableStateOf(false) }
 
+    val currentDarkTheme = LocalDesktopDarkTheme.current
+    val currentDarkPreset = LocalDesktopDarkPreset.current
+    val currentLightPreset = LocalDesktopLightPreset.current
+
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🔍 $title",
@@ -1428,7 +1432,7 @@ fun DesktopImageLightboxDialog(
         onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
         MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme {
+        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
             Column(modifier = Modifier.fillMaxSize().background(DesktopColors.CslMidnight)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -1522,6 +1526,10 @@ fun DesktopClientPassportDialog(
     var servers by remember { mutableStateOf(initialPassport.serversAndServices) }
     var notes by remember { mutableStateOf(initialPassport.contactsAndNotes) }
 
+    val currentDarkTheme = LocalDesktopDarkTheme.current
+    val currentDarkPreset = LocalDesktopDarkPreset.current
+    val currentLightPreset = LocalDesktopLightPreset.current
+
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🏢 Техпаспорт клиента · ${initialPassport.clientDisplayName}",
@@ -1529,7 +1537,7 @@ fun DesktopClientPassportDialog(
         onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
         MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme {
+        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1648,6 +1656,10 @@ fun DesktopKnowledgeArchiveDialog(
         }
     }
 
+    val currentDarkTheme = LocalDesktopDarkTheme.current
+    val currentDarkPreset = LocalDesktopDarkPreset.current
+    val currentLightPreset = LocalDesktopLightPreset.current
+
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "📚 База решений (поиск по решённым заявкам Jira)",
@@ -1655,7 +1667,7 @@ fun DesktopKnowledgeArchiveDialog(
         onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
         MaximizeDesktopDialog(window)
-        HelpCslDesktopTheme {
+        HelpCslDesktopTheme(darkTheme = currentDarkTheme, darkPreset = currentDarkPreset, lightPreset = currentLightPreset) {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1835,10 +1847,13 @@ fun DesktopSysadminToolboxDialog(
                 ) {
                     tabs.forEach { tab ->
                         val selected = tabIndex == tab.id
-                        TextButton(onClick = { tabIndex = tab.id }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                        TextButton(
+                            onClick = { tabIndex = tab.id },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            colors = ButtonDefaults.textButtonColors(containerColor = if (selected) DesktopColors.ButtonAccent else Color.Transparent, contentColor = Color.White)
+                        ) {
                             Text(tab.desktopTitle, fontSize = 12.sp, maxLines = 1, softWrap = false,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selected) Color(0xFFFFCEB2) else Color.White)
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, color = Color.White)
                         }
                     }
                 }

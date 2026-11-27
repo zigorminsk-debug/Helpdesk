@@ -534,7 +534,7 @@ private fun DesktopTopNavigationHeader(
                                 shape = RoundedCornerShape(99.dp),
                                 color = when {
                                     selected -> Color.White.copy(alpha = 0.24f)
-                                    isUrgentBadge -> DesktopColors.CslOrange
+                                    isUrgentBadge -> DesktopColors.ButtonAccent
                                     else -> Color.White.copy(alpha = 0.14f)
                                 }
                             ) {
@@ -777,7 +777,7 @@ private fun DesktopTopNavigationHeader(
                                 Text(
                                     "v$version",
                                     fontSize = 10.5.sp,
-                                    color = DesktopColors.CslOrange,
+                                    color = DesktopColors.HeaderAccent,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     softWrap = false

@@ -94,7 +94,7 @@ fun DomainDiagnosticCardView(onCopy: (String, String) -> Unit) {
         }
     }
     if (showConfirm && role == DomainDiagnosticRole.MEMBER) {
-        AlertDialog(
+        SharedConfirmationDialog(
             onDismissRequest = { confirmations = List(repairChecks.size) { false }; showConfirm = false },
             title = { Text("Скопировать скрипт восстановления?") },
             text = { Text("Скрипт предназначен только для подтверждённого члена домена. Его ручной запуск изменит защищённый канал и пароль учётной записи компьютера. Сейчас будет только копирование в буфер, не запуск.") },

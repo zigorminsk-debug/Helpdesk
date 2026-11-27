@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindow
 import androidx.compose.ui.window.rememberDialogState
+import com.helpdesk.jiraagent.shared.SharedConfirmationPresenter
 import java.awt.Insets
 import java.awt.Rectangle
 import java.awt.Toolkit
@@ -87,5 +88,14 @@ fun DesktopWorkspaceAlert(
                 confirmButton()
             }
         }
+    }
+}
+
+internal object DesktopConfirmationPresenter : SharedConfirmationPresenter {
+    @Composable
+    override fun Show(onDismiss: () -> Unit, title: @Composable () -> Unit, text: @Composable () -> Unit,
+                      confirm: @Composable () -> Unit, dismiss: @Composable () -> Unit) {
+        DesktopWorkspaceAlert(onDismissRequest = onDismiss, title = title, text = text,
+            confirmButton = confirm, dismissButton = dismiss)
     }
 }
