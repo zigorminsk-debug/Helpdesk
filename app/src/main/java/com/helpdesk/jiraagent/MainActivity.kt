@@ -3,6 +3,7 @@ package com.helpdesk.jiraagent
 import com.helpdesk.jiraagent.shared.JiraConnectionAlarmBanner
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -366,6 +367,9 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
     var hasNotifPermission by rememberSaveable {
         mutableStateOf(NotificationHelper.hasNotificationPermission(context))
     }
+    var hasPhoneStatePermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) }
+    var phonePermissionNoticeDismissed by rememberSaveable { mutableStateOf(false) }
+    val hasTelephony = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) }
     var showShiftAnalytics by rememberSaveable { mutableStateOf(false) }
     var showToolboxDialog by rememberSaveable { mutableStateOf(false) }
     var toolboxInitialTab by rememberSaveable { mutableStateOf(0) }
@@ -420,6 +424,7 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                     lastBackgroundAt = System.currentTimeMillis()
                 }
                 Lifecycle.Event.ON_RESUME -> {
+                    hasPhoneStatePermission = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
                     if (appSettings.biometricLockEnabled &&
                         lastBackgroundAt > 0L &&
                         System.currentTimeMillis() - lastBackgroundAt > 120_000L
@@ -648,6 +653,10 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasNotifPermission = granted
+    }
+
+    val phonePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasPhoneStatePermission = granted
     }
 
     LaunchedEffect(Unit) {
@@ -1125,6 +1134,21 @@ private fun HelpdeskMainRoot(viewModel: MainViewModel) {
                             }
                         ) {
                             Text("Включить")
+                        }
+                    }
+                }
+            }
+
+            if (hasTelephony && !hasPhoneStatePermission && !phonePermissionNoticeDismissed &&
+                appSettings.ttsReadoutMode != com.helpdesk.jiraagent.model.TtsReadoutMode.OFF) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Чтобы не озвучивать заявки при обычном звонке, разрешите доступ к состоянию телефона (без номера и журнала).",
+                            modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { phonePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE) }) { Text("Разрешить") }
+                        IconButton(onClick = { phonePermissionNoticeDismissed = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Скрыть подсказку")
                         }
                     }
                 }

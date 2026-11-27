@@ -224,7 +224,7 @@ object NotificationHelper {
         repo.emitInAppBanner(ticket, titleSuffix)
 
         // 2. Always play the user's selected alert melody & vibrate via AlertSoundPlayer
-        AlertSoundPlayer.playTicketAlert(context, appSettings, forcePreview = false)
+        AlertSoundPlayer.playTicketAlert(context, appSettings, forcePreview = false, protectCalls = true)
         TicketSpeechAnnouncer.announceNewTicketIfEnabled(context, ticket, appSettings)
 
         if (!hasNotificationPermission(context)) return true
@@ -344,7 +344,7 @@ object NotificationHelper {
         val repo = SettingsRepository.getInstance(context)
         val settings = repo.appSettings.value
         if (playSound) {
-            AlertSoundPlayer.playTicketAlert(context, settings)
+            AlertSoundPlayer.playTicketAlert(context, settings, protectCalls = true)
             TicketSpeechAnnouncer.announceStormIfEnabled(context, tickets.size, settings)
         }
         tickets.lastOrNull()?.let { latest ->

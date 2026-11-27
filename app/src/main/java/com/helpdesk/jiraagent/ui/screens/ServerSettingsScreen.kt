@@ -1,9 +1,11 @@
 package com.helpdesk.jiraagent.ui.screens
 
+import android.Manifest
 import android.app.Activity
 import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -13,6 +15,10 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -77,6 +83,8 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -158,6 +166,16 @@ fun ServerSettingsScreen(
 ) {
     val context = LocalContext.current
     var draft by remember { mutableStateOf(currentSettings) }
+    var hasPhonePermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) }
+    val phonePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPhonePermission = it }
+    val permissionLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(permissionLifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) hasPhonePermission = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        }
+        permissionLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { permissionLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     var showSecret by rememberSaveable { mutableStateOf(false) }
     var showZabbixSecret by rememberSaveable { mutableStateOf(false) }
     var samplePhoneInput by rememberSaveable { mutableStateOf("8 (029) 654-32-10") }
@@ -1487,6 +1505,17 @@ fun ServerSettingsScreen(
                             Text(mode.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                }
+
+                Text("Голос заявок и их сигнал отключаются на время определённого звонка; сами уведомления остаются. Для обычных звонков разрешите состояние телефона — номер и журнал не читаются. Не все мессенджеры передают состояние вызова Android.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+                    OutlinedButton(onClick = { phonePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE) }, enabled = !hasPhonePermission, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (hasPhonePermission) "Состояние телефона разрешено" else "Разрешить определение звонка")
+                    }
+                    if (!hasPhonePermission) TextButton(onClick = {
+                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+                    }) { Text("Открыть разрешения приложения") }
                 }
 
                 OutlinedButton(

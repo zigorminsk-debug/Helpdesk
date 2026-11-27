@@ -16,9 +16,14 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import com.helpdesk.jiraagent.model.AlertSoundPreset
 import com.helpdesk.jiraagent.model.AppSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -88,13 +93,16 @@ object AlertSoundPlayer {
     fun playTicketAlert(
         context: Context,
         settings: AppSettings,
-        forcePreview: Boolean = false
+        forcePreview: Boolean = false,
+        protectCalls: Boolean = false
     ) {
         val appContext = context.applicationContext
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
 
         vibrateDevice(appContext)
+
+        if (protectCalls && CallActivityDetector.isCallActive(appContext)) return
 
         if (!forcePreview &&
             (ringerMode == AudioManager.RINGER_MODE_SILENT ||
@@ -123,7 +131,39 @@ object AlertSoundPlayer {
                 else -> null
             }
 
-            if (targets.externalHeadset != null && audioManager != null) {
+            if (protectCalls) {
+                // Ticket alerts must not acquire the communication route: that can disrupt a call
+                // and makes Android's call-mode detector mistake our own chime for a call.
+                val parent = currentCoroutineContext().job
+                val monitor = launch {
+                    while (isActive) {
+                        if (CallActivityDetector.isCallActive(appContext)) { parent.cancel(); break }
+                        delay(200L)
+                    }
+                }
+                try {
+                    val devices = listOfNotNull(targets.externalHeadset, targets.builtInSpeaker).distinct()
+                    val outputs: List<AudioDeviceInfo?> = if (devices.isEmpty()) listOf(null) else devices
+                    for (device in outputs) {
+                        currentCoroutineContext().ensureActive()
+                        if (CallActivityDetector.isCallActive(appContext)) break
+                        if (resolvedUri != null) {
+                            val played = playSingleUri(appContext, resolvedUri, AudioAttributes.USAGE_NOTIFICATION,
+                                AudioAttributes.CONTENT_TYPE_SONIFICATION, device, 3_500L)
+                            if (!played) {
+                                currentCoroutineContext().ensureActive()
+                                val (pcm, totalMs) = synthesizePresetPcm(AlertSoundPreset.CSL_CHIME)
+                                playSinglePcmTrack(pcm, totalMs, AudioAttributes.USAGE_NOTIFICATION,
+                                    AudioAttributes.CONTENT_TYPE_SONIFICATION, device)
+                            }
+                        } else {
+                            val (pcm, totalMs) = synthesizePresetPcm(settings.alertSoundPreset)
+                            playSinglePcmTrack(pcm, totalMs, AudioAttributes.USAGE_NOTIFICATION,
+                                AudioAttributes.CONTENT_TYPE_SONIFICATION, device)
+                        }
+                    }
+                } finally { monitor.cancel() }
+            } else if (targets.externalHeadset != null && audioManager != null) {
                 // Headset is connected -> Play in Headset + Force Phone Built-in Loudspeaker!
                 if (resolvedUri != null) {
                     val ok = playUriInHeadsetThenForcedSpeaker(
@@ -259,7 +299,7 @@ object AlertSoundPlayer {
     ) {
         val prevMode = audioManager.mode
         // Never interrupt an active GSM/VoIP call
-        if (prevMode == AudioManager.MODE_IN_CALL || prevMode == AudioManager.MODE_RINGTONE) {
+        if (prevMode == AudioManager.MODE_IN_CALL || prevMode == AudioManager.MODE_RINGTONE || prevMode == AudioManager.MODE_IN_COMMUNICATION) {
             return
         }
 
@@ -448,6 +488,8 @@ object AlertSoundPlayer {
             mp.start()
             delay(waitMs)
             return true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             return false
         } finally {
