@@ -160,7 +160,7 @@ fun DesktopFilterWorkspace(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = { controller.saveFilterSettings(draft) },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("💾 Сохранить правила фильтра", fontWeight = FontWeight.Bold)
                     }
@@ -343,7 +343,7 @@ fun DesktopSettingsWorkspace(
                 ) {
                     Button(
                         onClick = { controller.saveSettings(draft) },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("💾 Сохранить и синхронизировать", fontWeight = FontWeight.Bold)
                     }
@@ -392,10 +392,22 @@ fun DesktopSettingsWorkspace(
                     }
                 }
 
-                // 6 Dark Theme Visual Presets Selector
+                Text("Светлая палитра:", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.helpdesk.jiraagent.model.LightThemePreset.entries.forEach { preset ->
+                        FilterChip(selected = !state.darkTheme && state.settings.lightThemePreset == preset,
+                            onClick = {
+                                controller.setLightThemePreset(preset)
+                                draft = draft.copy(themeMode = com.helpdesk.jiraagent.model.AppThemeMode.LIGHT, lightThemePreset = preset)
+                            }, label = { Text(preset.title) })
+                    }
+                }
+
+                // Dark theme visual presets
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "🎨 Стиль тёмной темы (выберите один из 6 вариантов палитры):",
+                        text = "🎨 Стиль тёмной темы:",
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -686,7 +698,7 @@ fun DesktopSettingsWorkspace(
                     }
                     Button(
                         onClick = { controller.triggerTestNotification() },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("🔔 Тест баннера + звука", fontSize = 12.sp)
                     }
@@ -745,7 +757,7 @@ fun DesktopSettingsWorkspace(
 
                 Button(
                     onClick = { controller.saveSettings(draft) },
-                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                 ) {
                     Text("💾 Сохранить все настройки", fontWeight = FontWeight.Bold)
                 }
@@ -788,7 +800,7 @@ fun DesktopSettingsWorkspace(
                         Button(
                             onClick = { controller.downloadAndRunWindowsSetup(upd) },
                             enabled = state.updateDownloadProgress == null,
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                         ) {
                             val label = state.updateDownloadProgress?.let { "Скачивание $it%..." }
                                 ?: "⬇ Скачать и запустить setup.exe v${upd.versionName}"
@@ -869,7 +881,8 @@ fun DesktopShiftAnalyticsDialog(
 
     val scrollState = rememberScrollState()
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 860.dp, max = 1080.dp),
@@ -905,7 +918,7 @@ fun DesktopShiftAnalyticsDialog(
             }
         },
         text = {
-            Box(modifier = Modifier.fillMaxWidth().heightIn(max = 650.dp)) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -936,7 +949,7 @@ fun DesktopShiftAnalyticsDialog(
                                     selected = selected,
                                     onClick = { period = p },
                                     colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = DesktopColors.CslOrange,
+                                        selectedContainerColor = DesktopColors.ButtonAccent,
                                         selectedLabelColor = Color.White
                                     ),
                                     label = {
@@ -956,7 +969,7 @@ fun DesktopShiftAnalyticsDialog(
                             Button(
                                 onClick = { controller.exportShiftAnalyticsPdf(summary) },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = DesktopColors.CslOrange,
+                                    containerColor = DesktopColors.ButtonAccent,
                                     contentColor = Color.White
                                 )
                             ) {
@@ -1086,7 +1099,7 @@ fun DesktopShiftAnalyticsDialog(
             Button(
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = DesktopColors.CslOrange,
+                    containerColor = DesktopColors.ButtonAccent,
                     contentColor = Color.White
                 )
             ) { Text("Закрыть", color = Color.White) }
@@ -1397,14 +1410,15 @@ fun DesktopQrTransferDialog(
         DesktopQrTransferCodec.renderQrImageBitmap(encodedPayload, sizePx = 280)
     }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 640.dp, max = 780.dp),
         title = { Text("📲 QR-перенос настроек Help-CSL (Windows ↔ Android)", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 580.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -1450,7 +1464,7 @@ fun DesktopQrTransferDialog(
                             onDismiss()
                         },
                         enabled = importText.startsWith("HELPCSL1:"),
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) { Text("Импортировать") }
                 }
             }
@@ -1471,7 +1485,7 @@ fun DesktopFullGuideDialog(
             "1. Назначение и архитектура (Windows setup.exe + Android APK)" to
                 "Help-CSL v$version — единое корпоративное рабочее место системного администратора и сервисного инженера в стиле csl.by. Версия для Windows устанавливается самодостаточным инсталлятором setup.exe (не требует прав администратора и не требует установки Java), работает в системном трее Windows и на 100% синхронизируется с мобильной Android-версией через ваш сервер Jira Server / Data Center или Jira Cloud.",
             "2. Основной экран «Свежие», очереди и сплит-панель инспектора" to
-                "При запуске программы и при нажатии кнопки «← Назад» (в верхней панели, в карточке тикета, боковой кнопкой мыши Назад, Alt+← или Esc) всегда открывается основной экран: «Заявки → Новые → ● Свежие» (заявки за сегодня). Тикеты с прошлых дней доступны в 1 клик в фильтре «◷ Прошлые». Слева расположены 4 вкладки единой высоты: «Новые», «В работе», «Закрытые» и «Сервисные». Справа открывается инспектор заявки: «▶ В работу», «✅ Завершить», «⏰ Отложить на...», «✖ Отклонить», «👤 Коллеге», «🏢 Техпаспорт» и секундомер работ. В карточке раскройте «Анализ обращений», выберите автора или организацию JSM, затем тему и исходную заявку. Темы группируются по ключевым словам заголовков, а не по причинам. Организация доступна только при наличии ID в поле Organizations; поиск ограничен правами, проектами, фильтрами и 500 результатами. Совпадение по имени приблизительно; ошибки поиска отмечаются.",
+                "При запуске программы и при нажатии кнопки «← Назад» (в верхней панели, в карточке тикета, боковой кнопкой мыши Назад, Alt+← или Esc) всегда открывается основной экран: «Заявки → Новые → ● Свежие» (заявки за сегодня). Тикеты с прошлых дней доступны в 1 клик в фильтре «◷ Прошлые». Слева расположены 4 вкладки единой высоты: «Новые», «В работе», «Закрытые» и «Сервисные». Рабочие окна открываются на доступную область монитора и закрываются крестиком или Esc; вкладки инструментов переносятся. В настройках доступны «Спокойная светлая» и тёмный «Спокойный сланец». Справа открывается инспектор заявки: «▶ В работу», «✅ Завершить», «⏰ Отложить на...», «✖ Отклонить», «👤 Коллеге», «🏢 Техпаспорт» и секундомер работ. В карточке раскройте «Анализ обращений», выберите автора или организацию JSM, затем тему и исходную заявку. Темы группируются по ключевым словам заголовков, а не по причинам. Организация доступна только при наличии ID в поле Organizations; поиск ограничен правами, проектами, фильтрами и 500 результатами. Совпадение по имени приблизительно; ошибки поиска отмечаются.",
             "3. Суперспособность Windows: быстрые подключения, мессенджеры и Win+Shift+S" to
                 "Инспектор автоматически распознаёт в тексте и комментариях заявки:\n• ID AnyDesk / RustDesk — кнопка 1-клик запускает установленный AnyDesk.exe / rustdesk.exe;\n• IP-адреса и домены — кнопки запуска RDP (mstsc.exe /v:host), SSH-терминала и диагностики DNS, TCP, TLS 443, HTTP 80 и HTTPS 443 (MX/TXT/NS автоматически не запрашиваются; отсутствие ответа не доказывает отказ);\n• Телефоны +375 и +7 — вызов SIP-софтфона (tel:) и прямой запуск настольных клиентов Telegram, Viber и WhatsApp в обход браузера;\n• Кнопка «📸 Вставить скриншот (Win+Shift+S)» или Ctrl+V в комментарии отправляет снимок экрана напрямую из буфера обмена в Jira.",
             "4. Вкладки «Zabbix» (z.csl.by) и «Wiki» (w.csl.by)" to
@@ -1491,14 +1505,15 @@ fun DesktopFullGuideDialog(
         else sections.filter { (t, b) -> t.lowercase().contains(q) || b.lowercase().contains(q) }
     }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 720.dp, max = 920.dp),
         title = { Text("📖 Полное руководство по программе Help-CSL v$version", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp),
+                modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedTextField(
@@ -1534,7 +1549,7 @@ fun DesktopFullGuideDialog(
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text("Понятно") }
         }
     )

@@ -268,7 +268,8 @@ fun main(args: Array<String>) = application {
         }
         HelpCslDesktopTheme(
             darkTheme = state.darkTheme,
-            darkPreset = state.settings.darkThemePreset
+            darkPreset = state.settings.darkThemePreset,
+            lightPreset = state.settings.lightThemePreset
         ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 DesktopTopNavigationHeader(
@@ -326,7 +327,7 @@ fun main(args: Array<String>) = application {
 
                 // Manual Jira Transition Selector (if Jira workflow has ambiguous transitions)
                 state.pendingTransitionPrompt?.let { prompt ->
-                    AlertDialog(
+                    DesktopWorkspaceAlert(
                         onDismissRequest = { controller.cancelTransitionPrompt() },
                         title = { Text("Выберите переход Jira для ${prompt.ticketKey}", fontWeight = FontWeight.Bold) },
                         text = {
@@ -354,7 +355,7 @@ fun main(args: Array<String>) = application {
                                             }
                                         },
                                         modifier = Modifier.fillMaxWidth(),
-                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                     ) {
                                         Text("${tr.name} → ${tr.toStatusName}")
                                     }
@@ -483,7 +484,7 @@ private fun DesktopTopNavigationHeader(
                             text = "← Назад",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = DesktopColors.CslOrange,
+                            color = DesktopColors.HeaderAccent,
                             maxLines = 1,
                             softWrap = false
                         )
@@ -506,7 +507,7 @@ private fun DesktopTopNavigationHeader(
 
                 Surface(
                     shape = RoundedCornerShape(9.dp),
-                    color = if (selected) DesktopColors.CslOrange else DesktopColors.CslNavySurface,
+                    color = if (selected) DesktopColors.ButtonAccent else DesktopColors.CslNavySurface,
                     border = BorderStroke(
                         1.dp,
                         if (selected) DesktopColors.CslOrange else DesktopColors.CslNavyBorder
@@ -667,7 +668,7 @@ private fun DesktopTopNavigationHeader(
             enabled = !state.isRefreshing,
             shape = RoundedCornerShape(8.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = DesktopColors.CslOrange,
+                containerColor = DesktopColors.ButtonAccent,
                 disabledContainerColor = DesktopColors.CslOrange.copy(alpha = 0.5f)
             ),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
@@ -723,7 +724,7 @@ private fun DesktopTopNavigationHeader(
                                 "v$version",
                                 fontSize = 10.sp,
                                 lineHeight = 11.sp,
-                                color = DesktopColors.CslOrange,
+                                color = DesktopColors.HeaderAccent,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 softWrap = false
@@ -876,7 +877,7 @@ private fun DesktopStatusBannerStrip(
                         onClick = { onInstallUpdate(upd) },
                         enabled = state.updateDownloadProgress == null,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = DesktopColors.CslOrange,
+                            containerColor = DesktopColors.ButtonAccent,
                             contentColor = Color.White
                         ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 3.dp)

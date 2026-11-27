@@ -1121,7 +1121,7 @@ private fun DesktopWelcomeOverviewPane(
                             ) {
                                 Button(
                                     onClick = onCreateTicket,
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                                     shape = RoundedCornerShape(9.dp),
                                     modifier = Modifier.height(36.dp)
                                 ) {
@@ -1157,7 +1157,7 @@ private fun DesktopWelcomeOverviewPane(
                             ) {
                                 Button(
                                     onClick = onCreateTicket,
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                                     shape = RoundedCornerShape(9.dp),
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                     modifier = Modifier.weight(1.08f).height(36.dp)
@@ -2097,7 +2097,7 @@ private fun DesktopHabrArticleReader(
                                     Spacer(Modifier.width(8.dp))
                                     Button(
                                         onClick = onRetry,
-                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                     ) {
                                         Text("🔄 Повторить", fontSize = 12.sp)
                                     }
@@ -2460,7 +2460,7 @@ private fun DesktopTicketInspector(
                     Button(
                         onClick = { controller.performTicketAction(ticket.key, TicketWorkflowAction.TAKE_IN_WORK) },
                         enabled = !state.isPerformingAction,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("▶ В работу", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
@@ -2715,7 +2715,7 @@ private fun DesktopTicketInspector(
                                                 controller.showStatusMessage(msg)
                                             },
                                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                         ) { Text("⚡ AnyDesk", fontSize = 11.5.sp) }
                                         FilledTonalButton(
                                             onClick = {
@@ -3225,7 +3225,7 @@ private fun DesktopTicketInspector(
                     Button(
                         onClick = sendCommentNow,
                         enabled = commentDraft.isNotBlank() && !state.isPerformingAction,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("Отправить (Ctrl+Enter)")
                     }
@@ -3373,7 +3373,7 @@ private fun WorkflowCommentDialog(
     var comment by remember { mutableStateOf("") }
     var autoLogTime by remember { mutableStateOf(suggestedWorklogMinutes != null) }
     var minutesText by remember { mutableStateOf((suggestedWorklogMinutes ?: 15).toString()) }
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
@@ -3411,7 +3411,7 @@ private fun WorkflowCommentDialog(
                         onConfirm?.invoke(clean)
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text(confirmText) }
         },
         dismissButton = {
@@ -3431,7 +3431,7 @@ private fun PostponeScheduleDialog(
     var timeText by remember { mutableStateOf("09:30") }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         title = { Text("⏰ Отложить заявку ${ticket.key}", fontWeight = FontWeight.Bold) },
         text = {
@@ -3468,7 +3468,7 @@ private fun PostponeScheduleDialog(
                         onConfirm(parsed.first, parsed.second)
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text("Закрыть и запланировать") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
@@ -3491,13 +3491,14 @@ private fun AssignColleagueDialog(
         loading = false
     }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 480.dp, max = 620.dp),
         title = { Text("👤 Передать заявку $ticketKey коллеге", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = filter,
                     onValueChange = { filter = it },
@@ -3545,7 +3546,7 @@ private fun WorklogEntryDialog(
     var minutesText by remember { mutableStateOf(initialMinutes.toString()) }
     var note by remember { mutableStateOf("") }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 480.dp, max = 600.dp),
@@ -3582,7 +3583,7 @@ private fun WorklogEntryDialog(
         confirmButton = {
             Button(
                 onClick = { onSave(minutesText.toIntOrNull() ?: 30, note.ifBlank { null }) },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text("Списать в Jira") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
@@ -3601,7 +3602,7 @@ private fun CompletionActPdfDialog(
     var timeSpent by remember { mutableStateOf(initialTimeSpent) }
     var attachToJira by remember { mutableStateOf(true) }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 540.dp, max = 680.dp),
@@ -3638,7 +3639,7 @@ private fun CompletionActPdfDialog(
         confirmButton = {
             Button(
                 onClick = { onGenerate(workSummary, partsUsed, timeSpent, attachToJira) },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text("Сформировать и открыть PDF") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
@@ -3657,11 +3658,11 @@ private fun CreateTicketDialog(
     var description by remember { mutableStateOf("") }
     var assignSelf by remember { mutableStateOf(true) }
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         title = { Text("➕ Новая заявка в Jira", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.width(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = project,
@@ -3702,7 +3703,7 @@ private fun CreateTicketDialog(
             Button(
                 onClick = { onCreate(project, issueType, summary, description, assignSelf) },
                 enabled = summary.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) { Text("Создать в Jira") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
@@ -3718,11 +3719,12 @@ private fun SerialArchiveSearchDialog(
     onDismiss: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         title = { Text("🔎 Поиск истории оборудования по S/N или инв. номеру", fontWeight = FontWeight.Bold) },
         text = {
-            Column(modifier = Modifier.width(520.dp).heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = query,
@@ -3734,7 +3736,7 @@ private fun SerialArchiveSearchDialog(
                     Button(
                         onClick = { onSearch(query) },
                         enabled = query.isNotBlank() && !isSearching,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) { Text(if (isSearching) "..." else "Найти") }
                 }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3766,11 +3768,12 @@ private fun PostponedTicketsDialog(
     onCancelItem: (com.helpdesk.jiraagent.model.PostponedTicket) -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
+    DesktopWorkspaceAlert(
+        scrollBody = false,
         onDismissRequest = onDismiss,
         title = { Text("⏰ Запланированные к возврату заявки (${items.size})", fontWeight = FontWeight.Bold) },
         text = {
-            LazyColumn(modifier = Modifier.width(500.dp).heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(items, key = { it.id }) { item ->
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -3883,12 +3886,12 @@ private fun DesktopQuickRepliesManagerDialog(
 ) {
     var newTemplateDraft by remember { mutableStateOf("") }
 
-    Dialog(onDismissRequest = onDismiss) {
+    DesktopWorkspaceWindow(onDismissRequest = onDismiss, title = "⚡ Шаблоны ответа · Help-CSL") {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
-            modifier = Modifier.width(600.dp)
+            modifier = Modifier.fillMaxSize()
         ) {
             Column(
                 modifier = Modifier.padding(18.dp),
@@ -3948,7 +3951,7 @@ private fun DesktopQuickRepliesManagerDialog(
                             newTemplateDraft = ""
                         },
                         enabled = newTemplateDraft.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("➕ Добавить")
                     }
@@ -3959,7 +3962,7 @@ private fun DesktopQuickRepliesManagerDialog(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 260.dp),
+                        .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(templates) { tpl ->

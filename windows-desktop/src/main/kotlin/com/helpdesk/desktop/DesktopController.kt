@@ -495,6 +495,11 @@ class DesktopController(
         persistCurrentState()
     }
 
+    fun setLightThemePreset(preset: com.helpdesk.jiraagent.model.LightThemePreset) {
+        _state.update { it.copy(darkTheme = false, settings = it.settings.copy(lightThemePreset = preset, themeMode = com.helpdesk.jiraagent.model.AppThemeMode.LIGHT)) }
+        persistCurrentState()
+    }
+
     fun setDarkThemePreset(preset: com.helpdesk.jiraagent.model.DarkThemePreset) {
         _state.update {
             it.copy(

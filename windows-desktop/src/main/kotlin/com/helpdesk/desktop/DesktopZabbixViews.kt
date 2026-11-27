@@ -83,7 +83,7 @@ fun DesktopZabbixWorkspace(
     }
 
     ackTarget?.let { prob ->
-        AlertDialog(
+        DesktopWorkspaceAlert(
             onDismissRequest = { ackTarget = null },
             title = { Text("Подтвердить проблему Zabbix", fontWeight = FontWeight.Bold) },
             text = {
@@ -118,7 +118,8 @@ fun DesktopZabbixWorkspace(
     }
 
     activeDiagHost?.let { hostLabel ->
-        AlertDialog(
+        DesktopWorkspaceAlert(
+            scrollBody = false,
             onDismissRequest = { activeDiagHost = null },
             title = { Text("Диагностика узла $hostLabel", fontWeight = FontWeight.Bold) },
             text = {
@@ -308,7 +309,7 @@ fun DesktopZabbixWorkspace(
                     Button(
                         onClick = { controller.refreshZabbix(silent = false) },
                         enabled = !state.isLoadingZabbix,
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("🔄 Обновить", maxLines = 1, softWrap = false)
                     }
@@ -434,7 +435,7 @@ fun DesktopZabbixWorkspace(
                                     showAuthPanel = false
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                         ) {
                             Text("Войти и загрузить данные", maxLines = 1, softWrap = false)
                         }

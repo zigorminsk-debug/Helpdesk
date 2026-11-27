@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -31,11 +32,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.model.LightThemePreset
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 val LocalDesktopDarkTheme = compositionLocalOf { false }
 val LocalDesktopDarkPreset = compositionLocalOf { DarkThemePreset.CSL_NAVY }
+val LocalDesktopLightPreset = compositionLocalOf { LightThemePreset.CLASSIC }
 
 val CslMidnight = Color(0xFF070E24)
 val CslNavySurface = Color(0xFF111C38)
@@ -164,6 +167,14 @@ fun resolveDesktopDarkPalette(preset: DarkThemePreset): DesktopDarkPalette = whe
         textSecondary = Color(0xFFE0DAFA),
         textMuted = Color(0xFFB1A6D4)
     )
+    DarkThemePreset.SOFT_SLATE -> DesktopDarkPalette(
+        headerBg = Color(0xFF1B2021), headerSurface = Color(0xFF303638), headerBorder = Color(0xFF4C5553),
+        subHeaderBg = Color(0xFF252B2C), workspaceBg = Color(0xFF202427), listPaneBg = Color(0xFF262C2D),
+        cardBg = Color(0xFF2C3134), subtleBg = Color(0xFF343A3C), surfaceVariantBg = Color(0xFF3A4142),
+        borderSubtle = Color(0xFF515A57), borderStrong = Color(0xFF77817C),
+        primaryAccent = Color(0xFFD6B5A6), selectedContainer = Color(0xFF60453A),
+        textPrimary = Color(0xFFE7E6E2), textSecondary = Color(0xFFD3D7D2), textMuted = Color(0xFFBBC4BE)
+    )
     DarkThemePreset.WARM_ESPRESSO -> DesktopDarkPalette(
         headerBg = Color(0xFF0F0C0A),
         headerSurface = Color(0xFF211B17),
@@ -213,17 +224,30 @@ object DesktopColors {
             Color(0xFF0A132C)
         }
 
+    // Foreground accent and filled-button accent are separate to preserve contrast in both modes.
     val CslOrange: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
-            val p = LocalDesktopDarkPreset.current
-            if (p == DarkThemePreset.EMERALD_NOC || p == DarkThemePreset.CYBER_PLUM || p == DarkThemePreset.WARM_ESPRESSO) {
-                resolveDesktopDarkPalette(p).primaryAccent
-            } else {
-                com.helpdesk.desktop.CslOrange
+            when (LocalDesktopDarkPreset.current) {
+                DarkThemePreset.SOFT_SLATE -> Color(0xFFD6B5A6)
+                DarkThemePreset.EMERALD_NOC -> Color(0xFF92D1B4)
+                DarkThemePreset.CYBER_PLUM -> Color(0xFFCABAF2)
+                DarkThemePreset.WARM_ESPRESSO -> Color(0xFFE9BD82)
+                else -> Color(0xFFFFAF83)
             }
-        } else {
-            com.helpdesk.desktop.CslOrange
-        }
+        } else if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFF8C4D35) else Color(0xFFA94F29)
+
+    val ButtonAccent: Color
+        @Composable get() = if (LocalDesktopDarkTheme.current) {
+            when (LocalDesktopDarkPreset.current) {
+                DarkThemePreset.EMERALD_NOC -> Color(0xFF176B4D)
+                DarkThemePreset.CYBER_PLUM -> Color(0xFF66518E)
+                DarkThemePreset.WARM_ESPRESSO -> Color(0xFF855A2D)
+                DarkThemePreset.SOFT_SLATE -> Color(0xFF86513A)
+                else -> Color(0xFFA94F29)
+            }
+        } else if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFF8C4D35) else Color(0xFFA94F29)
+
+    val HeaderAccent: Color get() = Color(0xFFF2C6AD)
 
     val CslOrangeContainer: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
@@ -253,21 +277,21 @@ object DesktopColors {
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).listPaneBg
         } else {
-            Color(0xFFF8FAFC)
+            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFF1EEE8) else Color(0xFFF8FAFC)
         }
 
     val WorkspaceBg: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).workspaceBg
         } else {
-            Color(0xFFF1F5F9)
+            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFF6F3EE) else Color(0xFFF1F5F9)
         }
 
     val CardBg: Color
         @Composable get() = if (LocalDesktopDarkTheme.current) {
             resolveDesktopDarkPalette(LocalDesktopDarkPreset.current).cardBg
         } else {
-            Color.White
+            if (LocalDesktopLightPreset.current == LightThemePreset.SOFT) Color(0xFFFFFBF7) else Color.White
         }
 
     val SubtleBg: Color
@@ -314,7 +338,7 @@ object DesktopColors {
 }
 
 private val DesktopLightColors = lightColorScheme(
-    primary = com.helpdesk.desktop.CslOrange,
+    primary = Color(0xFFA94F29),
     onPrimary = Color.White,
     primaryContainer = CslOrangeContainerLight,
     onPrimaryContainer = Color(0xFF7C2D12),
@@ -338,10 +362,25 @@ private val DesktopLightColors = lightColorScheme(
     onError = Color.White
 )
 
-private fun buildDesktopDarkColorScheme(preset: DarkThemePreset) = resolveDesktopDarkPalette(preset).let { p ->
+internal val DesktopSoftLightColors = lightColorScheme(
+    primary = Color(0xFF8C4D35), onPrimary = Color.White,
+    primaryContainer = Color(0xFFF2E1D7), onPrimaryContainer = Color(0xFF4C281B),
+    secondary = Color(0xFF52635D), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDFE8E1), onSecondaryContainer = Color(0xFF263B31),
+    tertiary = Color(0xFF52635D), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFDFE8E1), onTertiaryContainer = Color(0xFF263B31),
+    background = Color(0xFFF6F3EE), onBackground = Color(0xFF292B29),
+    surface = Color(0xFFFFFBF7), onSurface = Color(0xFF292B29),
+    surfaceVariant = Color(0xFFECE8E1), onSurfaceVariant = Color(0xFF4E5551),
+    outline = Color(0xFF858C86), outlineVariant = Color(0xFFD1D5CE),
+    error = Color(0xFF9A3634), onError = Color.White,
+    errorContainer = Color(0xFFF8DCD8), onErrorContainer = Color(0xFF501C1B)
+)
+
+internal fun buildDesktopDarkColorScheme(preset: DarkThemePreset) = resolveDesktopDarkPalette(preset).let { p ->
     darkColorScheme(
         primary = p.primaryAccent,
-        onPrimary = Color.White,
+        onPrimary = if (preset == DarkThemePreset.SOFT_SLATE) Color(0xFF35231C) else Color(0xFF21150E),
         primaryContainer = p.selectedContainer,
         onPrimaryContainer = Color.White,
         secondary = p.textSecondary,
@@ -371,6 +410,7 @@ private fun buildDesktopDarkColorScheme(preset: DarkThemePreset) = resolveDeskto
 fun HelpCslDesktopTheme(
     darkTheme: Boolean = LocalDesktopDarkTheme.current,
     darkPreset: DarkThemePreset = LocalDesktopDarkPreset.current,
+    lightPreset: LightThemePreset = LocalDesktopLightPreset.current,
     content: @Composable () -> Unit
 ) {
     val palette = resolveDesktopDarkPalette(darkPreset)
@@ -385,12 +425,14 @@ fun HelpCslDesktopTheme(
     CompositionLocalProvider(
         LocalDesktopDarkTheme provides darkTheme,
         LocalDesktopDarkPreset provides darkPreset,
+        LocalDesktopLightPreset provides lightPreset,
         LocalScrollbarStyle provides scrollbarStyle
     ) {
-        MaterialTheme(
-            colorScheme = if (darkTheme) buildDesktopDarkColorScheme(darkPreset) else DesktopLightColors,
-            content = content
-        )
+        val colors = if (darkTheme) buildDesktopDarkColorScheme(darkPreset) else if (lightPreset == LightThemePreset.SOFT) DesktopSoftLightColors else DesktopLightColors
+        MaterialTheme(colorScheme = colors) {
+            // background() does not provide a content color; set a safe default for every window.
+            CompositionLocalProvider(LocalContentColor provides colors.onSurface, content = content)
+        }
     }
 }
 

@@ -312,9 +312,9 @@ class BelarusWorkCalendarTest {
     }
 
     @Test
-    fun darkThemePresetsProvideSixDistinctPalettesAndSafeFallback() {
-        assertEquals(6, DarkThemePreset.entries.size)
-        assertEquals(6, DarkThemePreset.entries.map { it.previewBgHex }.toSet().size)
+    fun darkThemePresetsProvideDistinctPalettesAndSafeFallback() {
+        assertEquals(7, DarkThemePreset.entries.size)
+        assertEquals(7, DarkThemePreset.entries.map { it.previewBgHex }.toSet().size)
         DarkThemePreset.entries.forEach { preset ->
             assertTrue(preset.title.isNotBlank())
             assertTrue(preset.shortTitle.isNotBlank())

@@ -86,6 +86,11 @@ enum class AppThemeMode(val title: String) {
     DARK("🌙 Тёмная")
 }
 
+enum class LightThemePreset(val title: String) {
+    CLASSIC("Классическая"),
+    SOFT("Спокойная светлая")
+}
+
 enum class DarkThemePreset(
     val title: String,
     val shortTitle: String,
@@ -133,6 +138,14 @@ enum class DarkThemePreset(
         previewBgHex = 0xFF110E1CL,
         previewCardHex = 0xFF1B162CL,
         previewAccentHex = 0xFFA78BFAL
+    ),
+    SOFT_SLATE(
+        title = "🌙 Спокойный сланец",
+        shortTitle = "Спокойный сланец",
+        subtitle = "Мягкий нейтральный фон и приглушённые акценты",
+        previewBgHex = 0xFF202427L,
+        previewCardHex = 0xFF2C3134L,
+        previewAccentHex = 0xFFD6B5A6L
     ),
     WARM_ESPRESSO(
         title = "☕ Тёплый Мокко",
@@ -193,7 +206,8 @@ data class AppSettings(
     val customCountryCode: String = "+375",
     val customPhoneFieldNames: String = "Телефон, Phone, Номер телефона, Контактный телефон, Mobile",
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
-    val darkThemePreset: DarkThemePreset = DarkThemePreset.CSL_NAVY
+    val darkThemePreset: DarkThemePreset = DarkThemePreset.CSL_NAVY,
+    val lightThemePreset: LightThemePreset = LightThemePreset.CLASSIC
 ) {
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank() && passwordOrToken.isNotBlank() &&

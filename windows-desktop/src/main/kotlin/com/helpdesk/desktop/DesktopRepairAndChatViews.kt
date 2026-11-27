@@ -200,7 +200,7 @@ fun DesktopRepairWorkspace(
                     )
                     showEditor = true
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) {
                 Text("+ Принять в ремонт", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
             }
@@ -473,7 +473,7 @@ private fun RepairItemDesktopCard(
                                     onClick = { onAdvanceStatus(next) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = DesktopColors.CslOrange,
+                                        containerColor = DesktopColors.ButtonAccent,
                                         contentColor = Color.White
                                     )
                                 ) {
@@ -579,7 +579,7 @@ private fun RepairItemEditorWorkspace(
     val chipColors = FilterChipDefaults.filterChipColors(
         containerColor = DesktopColors.SubtleBg,
         labelColor = DesktopColors.TextPrimary,
-        selectedContainerColor = DesktopColors.CslOrange,
+        selectedContainerColor = DesktopColors.ButtonAccent,
         selectedLabelColor = Color.White
     )
 
@@ -632,7 +632,7 @@ private fun RepairItemEditorWorkspace(
                         onClick = submitSave,
                         enabled = canSave,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = DesktopColors.CslOrange,
+                            containerColor = DesktopColors.ButtonAccent,
                             contentColor = Color.White,
                             disabledContainerColor = DesktopColors.BorderStrong.copy(alpha = 0.45f),
                             disabledContentColor = DesktopColors.TextMuted
@@ -926,7 +926,7 @@ private fun SoftDeleteRepairConfirmDialog(
     onConfirm: (String) -> Unit
 ) {
     var reason by remember { mutableStateOf("") }
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         title = { Text("🗑 Переместить ${item.intakeNumber} в «Удалённые»?", fontWeight = FontWeight.Bold) },
         text = {
@@ -1317,7 +1317,7 @@ fun DesktopChatWorkspace(
                     controller.sendChatMessage(textToSend, rt?.authorDisplayName, rt?.text)
                 },
                 enabled = draft.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
             ) {
                 Text("Отправить ➤", fontWeight = FontWeight.Bold)
             }
@@ -1334,7 +1334,7 @@ fun DesktopChatWorkspace(
 
     if (showEditPinDialog) {
         var noteDraft by remember { mutableStateOf(state.chatPinnedNote) }
-        AlertDialog(
+        DesktopWorkspaceAlert(
             onDismissRequest = { showEditPinDialog = false },
             title = { Text("📌 Закреп дежурной смены", fontWeight = FontWeight.Bold) },
             text = {
@@ -1352,7 +1352,7 @@ fun DesktopChatWorkspace(
                         showEditPinDialog = false
                         controller.savePinnedShiftNote(noteDraft)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                 ) { Text("Сохранить закреп") }
             },
             dismissButton = { TextButton(onClick = { showEditPinDialog = false }) { Text("Отмена") } }
@@ -1371,7 +1371,7 @@ private fun RepairReadyNotifyDialog(
     var message by remember(item.id) { mutableStateOf(RepairEquipmentCodec.buildClientReadyMessage(item)) }
     val phone = item.clientPhone.trim()
 
-    AlertDialog(
+    DesktopWorkspaceAlert(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.widthIn(min = 560.dp, max = 720.dp),
@@ -1426,7 +1426,7 @@ private fun RepairReadyNotifyDialog(
                         Button(
                             onClick = onSendToJiraTicket,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = DesktopColors.CslOrange,
+                                containerColor = DesktopColors.ButtonAccent,
                                 contentColor = Color.White
                             )
                         ) {
@@ -1443,7 +1443,7 @@ private fun RepairReadyNotifyDialog(
                     onDismiss()
                 },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = DesktopColors.CslOrange,
+                    containerColor = DesktopColors.ButtonAccent,
                     contentColor = Color.White
                 )
             ) {

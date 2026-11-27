@@ -302,8 +302,18 @@ fun ServerSettingsScreen(
                     }
                 }
 
+                Text("Светлая палитра:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    com.helpdesk.jiraagent.model.LightThemePreset.entries.forEach { preset ->
+                        FilterChip(selected = draft.lightThemePreset == preset, onClick = {
+                            val updated = draft.copy(themeMode = AppThemeMode.LIGHT, lightThemePreset = preset)
+                            draft = updated
+                            onSaveSettings(updated)
+                        }, label = { Text(preset.title) })
+                    }
+                }
                 Text(
-                    text = "🎨 Вариант оформления тёмной темы (6 палитр):",
+                    text = "🎨 Вариант оформления тёмной темы:",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant

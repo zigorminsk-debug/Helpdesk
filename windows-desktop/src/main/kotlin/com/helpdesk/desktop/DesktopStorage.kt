@@ -139,6 +139,7 @@ class DesktopStorage {
                     offHoursPollIntervalMinutes = s.normalizedOffHoursPollMinutes,
                     themeMode = (s.themeMode as AppThemeMode?) ?: AppThemeMode.SYSTEM,
                     darkThemePreset = (s.darkThemePreset as DarkThemePreset?) ?: DarkThemePreset.CSL_NAVY,
+                    lightThemePreset = (s.lightThemePreset as com.helpdesk.jiraagent.model.LightThemePreset?) ?: com.helpdesk.jiraagent.model.LightThemePreset.CLASSIC,
                     quickReplyTemplates = s.quickReplyTemplates
                         ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
                 )
@@ -356,6 +357,8 @@ object DesktopQrTransferCodec {
                 zabbixPassword = (parsed.appSettings.zabbixPassword as String?).orEmpty(),
                 zabbixMinAlertSeverity = parsed.appSettings.normalizedZabbixMinSeverity,
                 offHoursPollIntervalMinutes = parsed.appSettings.normalizedOffHoursPollMinutes,
+                darkThemePreset = (parsed.appSettings.darkThemePreset as com.helpdesk.jiraagent.model.DarkThemePreset?) ?: com.helpdesk.jiraagent.model.DarkThemePreset.CSL_NAVY,
+                lightThemePreset = (parsed.appSettings.lightThemePreset as com.helpdesk.jiraagent.model.LightThemePreset?) ?: com.helpdesk.jiraagent.model.LightThemePreset.CLASSIC,
                 quickReplyTemplates = parsed.appSettings.quickReplyTemplates
                     ?: AppSettings.DEFAULT_QUICK_REPLY_TEMPLATES
             )

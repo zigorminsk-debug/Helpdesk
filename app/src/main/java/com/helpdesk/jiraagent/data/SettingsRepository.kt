@@ -498,6 +498,7 @@ class SettingsRepository private constructor(context: Context) {
             .putString(KEY_CUSTOM_PHONE_FIELDS, newSettings.customPhoneFieldNames)
             .putString(KEY_THEME_MODE, newSettings.themeMode.name)
             .putString(KEY_DARK_THEME_PRESET, newSettings.darkThemePreset.name)
+            .putString(KEY_LIGHT_THEME_PRESET, newSettings.lightThemePreset.name)
             .apply()
 
         if (serverChanged) {
@@ -1465,7 +1466,8 @@ class SettingsRepository private constructor(context: Context) {
                 "Телефон, Phone, Номер телефона, Контактный телефон, Mobile"
             ).orEmpty(),
             themeMode = enumOrDefault(prefs.getString(KEY_THEME_MODE, null), AppThemeMode.SYSTEM),
-            darkThemePreset = enumOrDefault(prefs.getString(KEY_DARK_THEME_PRESET, null), DarkThemePreset.CSL_NAVY)
+            darkThemePreset = enumOrDefault(prefs.getString(KEY_DARK_THEME_PRESET, null), DarkThemePreset.CSL_NAVY),
+            lightThemePreset = enumOrDefault(prefs.getString(KEY_LIGHT_THEME_PRESET, null), com.helpdesk.jiraagent.model.LightThemePreset.CLASSIC)
         )
     }
 
@@ -1665,6 +1667,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_CLIENT_PASSPORTS_JSON = "client_tech_passports_json"
         private const val KEY_SYSTEM_ROOMS_AUTO_CLEANED_V70 = "system_rooms_auto_cleaned_v70"
         private const val KEY_DARK_THEME_PRESET = "dark_theme_preset"
+        private const val KEY_LIGHT_THEME_PRESET = "light_theme_preset"
         private const val KEY_WATCHLIST_HOSTS_JSON = "watchlist_hosts_json"
         private const val KEY_WATCHLIST_LABELS_JSON = "watchlist_labels_json"
         private const val KEY_TICKET_STOPWATCHES_JSON = "ticket_stopwatches_json"

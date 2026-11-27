@@ -2,16 +2,19 @@ package com.helpdesk.jiraagent.ui.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.helpdesk.jiraagent.model.DarkThemePreset
+import com.helpdesk.jiraagent.model.LightThemePreset
 
 // Corporate palette inspired directly by https://csl.by ("Компьютерная безопасность")
 val CslOrange = Color(0xFFF7631B)          // $primary-color: #f7631b
@@ -68,7 +71,22 @@ private val LightColors = lightColorScheme(
     onErrorContainer = Color(0xFF7D1610)
 )
 
-private fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
+internal val SoftLightColors = lightColorScheme(
+    primary = Color(0xFF8C4D35), onPrimary = Color.White,
+    primaryContainer = Color(0xFFF2E1D7), onPrimaryContainer = Color(0xFF4C281B),
+    secondary = Color(0xFF52635D), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFDFE8E1), onSecondaryContainer = Color(0xFF263B31),
+    tertiary = Color(0xFF52635D), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFDFE8E1), onTertiaryContainer = Color(0xFF263B31),
+    background = Color(0xFFF6F3EE), onBackground = Color(0xFF292B29),
+    surface = Color(0xFFFFFBF7), onSurface = Color(0xFF292B29),
+    surfaceVariant = Color(0xFFECE8E1), onSurfaceVariant = Color(0xFF4E5551),
+    outline = Color(0xFF858C86), outlineVariant = Color(0xFFD1D5CE),
+    error = Color(0xFF9A3634), onError = Color.White,
+    errorContainer = Color(0xFFF8DCD8), onErrorContainer = Color(0xFF501C1B)
+)
+
+internal fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
     DarkThemePreset.CSL_NAVY -> darkColorScheme(
         primary = CslOrangeLight,
         onPrimary = Color.White,
@@ -199,6 +217,20 @@ private fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
         errorContainer = Color(0xFF541826),
         onErrorContainer = Color(0xFFFEE2E2)
     )
+    DarkThemePreset.SOFT_SLATE -> darkColorScheme(
+        primary = Color(0xFFD6B5A6), onPrimary = Color(0xFF35231C),
+        primaryContainer = Color(0xFF60453A), onPrimaryContainer = Color(0xFFF9E6DB),
+        secondary = Color(0xFFB8C7BD), onSecondary = Color(0xFF25362D),
+        secondaryContainer = Color(0xFF3D4A43), onSecondaryContainer = Color(0xFFE1EAE3),
+        tertiary = Color(0xFFB8C7BD), onTertiary = Color(0xFF25362D),
+        tertiaryContainer = Color(0xFF3D4A43), onTertiaryContainer = Color(0xFFE1EAE3),
+        background = Color(0xFF202427), onBackground = Color(0xFFE7E6E2),
+        surface = Color(0xFF2C3134), onSurface = Color(0xFFE7E6E2),
+        surfaceVariant = Color(0xFF3A4142), onSurfaceVariant = Color(0xFFD3D7D2),
+        outline = Color(0xFF88918D), outlineVariant = Color(0xFF515A57),
+        error = Color(0xFFF2B6AC), onError = Color(0xFF4D211B),
+        errorContainer = Color(0xFF623B36), onErrorContainer = Color(0xFFFFDAD4)
+    )
     DarkThemePreset.WARM_ESPRESSO -> darkColorScheme(
         primary = Color(0xFFF59E0B),
         onPrimary = Color.White,
@@ -231,9 +263,10 @@ private fun buildAndroidDarkColors(preset: DarkThemePreset) = when (preset) {
 fun JiraHelpdeskTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     darkPreset: DarkThemePreset = DarkThemePreset.CSL_NAVY,
+    lightPreset: LightThemePreset = LightThemePreset.CLASSIC,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) buildAndroidDarkColors(darkPreset) else LightColors
+    val colorScheme = if (darkTheme) buildAndroidDarkColors(darkPreset) else if (lightPreset == LightThemePreset.SOFT) SoftLightColors else LightColors
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -246,8 +279,7 @@ fun JiraHelpdeskTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        content = content
-    )
+    MaterialTheme(colorScheme = colorScheme) {
+        CompositionLocalProvider(LocalContentColor provides colorScheme.onSurface, content = content)
+    }
 }

@@ -213,7 +213,8 @@ class MainActivity : FragmentActivity() {
             }
             JiraHelpdeskTheme(
                 darkTheme = useDark,
-                darkPreset = currentAppSettings.darkThemePreset
+                darkPreset = currentAppSettings.darkThemePreset,
+                lightPreset = currentAppSettings.lightThemePreset
             ) {
                 HelpdeskMainRoot(viewModel = viewModel)
             }

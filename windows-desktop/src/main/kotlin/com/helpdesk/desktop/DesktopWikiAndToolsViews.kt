@@ -127,7 +127,7 @@ fun DesktopWikiWorkspace(
                                 }
                                 Button(
                                     onClick = { controller.openWikiInBrowserWithSso() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                                     contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
                                 ) {
                                     Text("🌐 В браузере", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -177,7 +177,7 @@ fun DesktopWikiWorkspace(
                     )
                     Button(
                         onClick = { controller.searchWikiPages(searchInput) },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         Text("Найти", fontSize = 12.sp, maxLines = 1, softWrap = false)
@@ -313,7 +313,7 @@ fun DesktopWikiWorkspace(
                             Button(
                                 onClick = { controller.openWikiInBrowserWithSso() },
                                 modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
                                 Text("🌐 Открыть w.csl.by в браузере", fontSize = 11.5.sp, maxLines = 1)
@@ -347,7 +347,7 @@ fun DesktopWikiWorkspace(
                                 Button(
                                     onClick = { controller.saveConfluencePatToken(patInput) },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = DesktopColors.CslOrange,
+                                        containerColor = DesktopColors.ButtonAccent,
                                         contentColor = Color.White
                                     ),
                                     modifier = Modifier.fillMaxWidth()
@@ -390,7 +390,7 @@ fun DesktopWikiWorkspace(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = if (selectedLetter == null) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant,
+                            color = if (selectedLetter == null) DesktopColors.ButtonAccent else MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.clickable { selectedLetter = null }
                         ) {
                             Text(
@@ -407,7 +407,7 @@ fun DesktopWikiWorkspace(
                             val isSel = selectedLetter == letter
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = if (isSel) DesktopColors.CslOrange else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                color = if (isSel) DesktopColors.ButtonAccent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
                                 modifier = Modifier.clickable { selectedLetter = if (isSel) null else letter }
                             ) {
                                 Text(
@@ -518,7 +518,7 @@ fun DesktopWikiWorkspace(
                             )
                             Button(
                                 onClick = { controller.openWikiInBrowserWithSso() },
-                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                             ) {
                                 Text("🌐 Открыть w.csl.by в браузере (с автовходом)")
                             }
@@ -767,7 +767,7 @@ private fun ConfluencePageReaderPane(
                         }
                         Button(
                             onClick = { controller.openWikiInBrowserWithSso(detail.webUrl) },
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text("🌐 Открыть в w.csl.by", fontSize = 11.5.sp)
@@ -1424,8 +1424,10 @@ fun DesktopImageLightboxDialog(
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🔍 $title",
-        state = rememberDialogState(width = 1040.dp, height = 760.dp)
+        state = rememberDialogState(width = 1040.dp, height = 760.dp),
+        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
+        MaximizeDesktopDialog(window)
         HelpCslDesktopTheme {
             Column(modifier = Modifier.fillMaxSize().background(DesktopColors.CslMidnight)) {
                 Row(
@@ -1458,7 +1460,7 @@ fun DesktopImageLightboxDialog(
                                 WindowsExternalLaunchers.copyImageToClipboard(bufferedImage)
                                 copied = true
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text(if (copied) "✓ В буфере" else "📋 Копировать картинку", fontSize = 11.5.sp)
@@ -1523,8 +1525,10 @@ fun DesktopClientPassportDialog(
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🏢 Техпаспорт клиента · ${initialPassport.clientDisplayName}",
-        state = rememberDialogState(width = 720.dp, height = 650.dp)
+        state = rememberDialogState(width = 720.dp, height = 650.dp),
+        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
+        MaximizeDesktopDialog(window)
         HelpCslDesktopTheme {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(18.dp),
@@ -1611,7 +1615,7 @@ fun DesktopClientPassportDialog(
                             )
                             onDismiss()
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("💾 Сохранить и синхронизировать")
                     }
@@ -1647,8 +1651,10 @@ fun DesktopKnowledgeArchiveDialog(
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "📚 База решений (поиск по решённым заявкам Jira)",
-        state = rememberDialogState(width = 860.dp, height = 640.dp)
+        state = rememberDialogState(width = 860.dp, height = 640.dp),
+        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
+        MaximizeDesktopDialog(window)
         HelpCslDesktopTheme {
             Column(
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(16.dp),
@@ -1675,7 +1681,7 @@ fun DesktopKnowledgeArchiveDialog(
                     )
                     Button(
                         onClick = { controller.searchKnowledgeArchive(query, excludeTicketKey) },
-                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                     ) {
                         Text("🔍 Найти решения")
                     }
@@ -1766,7 +1772,7 @@ fun DesktopKnowledgeArchiveDialog(
                                                         onInsertSolution(lastComment.body)
                                                         onDismiss()
                                                     },
-                                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White),
                                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                                 ) {
                                                     Text("Вставить решение в ответ", fontSize = 11.5.sp)
@@ -1788,6 +1794,7 @@ fun DesktopKnowledgeArchiveDialog(
 //  5. SYSADMIN TOOLBOX DIALOG (Wake-on-LAN, Subnet, Password Gen, Watchlist)
 // =============================================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DesktopSysadminToolboxDialog(
     state: DesktopUiState,
@@ -1810,34 +1817,29 @@ fun DesktopSysadminToolboxDialog(
     DialogWindow(
         onCloseRequest = onDismiss,
         title = "🛠 Инструменты системного администратора · Help-CSL",
-        state = rememberDialogState(width = 920.dp, height = 650.dp)
+        state = rememberDialogState(width = 920.dp, height = 650.dp),
+        onPreviewKeyEvent = { if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) { onDismiss(); true } else false }
     ) {
+        MaximizeDesktopDialog(window)
         HelpCslDesktopTheme(
             darkTheme = state.darkTheme,
-            darkPreset = state.settings.darkThemePreset
+            darkPreset = state.settings.darkThemePreset,
+            lightPreset = state.settings.lightThemePreset
         ) {
             Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-                ScrollableTabRow(
-                    selectedTabIndex = SysadminToolboxTabs.positionFor(tabIndex),
-                    edgePadding = 0.dp,
-                    containerColor = DesktopColors.CslMidnight,
-                    contentColor = Color.White
+                // Wrap tabs instead of hiding the first/last item behind horizontal scrolling.
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().background(DesktopColors.CslMidnight).padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     tabs.forEach { tab ->
-                        Tab(
-                            selected = tabIndex == tab.id,
-                            onClick = { tabIndex = tab.id },
-                            text = {
-                                Text(
-                                    tab.desktopTitle,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    fontWeight = if (tabIndex == tab.id) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (tabIndex == tab.id) DesktopColors.CslOrange else Color.White
-                                )
-                            }
-                        )
+                        val selected = tabIndex == tab.id
+                        TextButton(onClick = { tabIndex = tab.id }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                            Text(tab.desktopTitle, fontSize = 12.sp, maxLines = 1, softWrap = false,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selected) Color(0xFFFFCEB2) else Color.White)
+                        }
                     }
                 }
 
@@ -1891,7 +1893,7 @@ fun DesktopSysadminToolboxDialog(
                                                 }
                                         }
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                    colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                 ) {
                                     Text("⚡ Разбудить компьютер (Wake-on-LAN)")
                                 }
@@ -2031,7 +2033,7 @@ fun DesktopSysadminToolboxDialog(
                                             WindowsExternalLaunchers.copyToClipboard(card)
                                             copiedCard = true
                                         },
-                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                        colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                     ) {
                                         Text(if (copiedCard) "✓ Карточка скопирована" else "📋 Скопировать карточку доступа для клиента")
                                     }
@@ -2111,7 +2113,7 @@ fun DesktopSysadminToolboxDialog(
                                             )
                                             Button(
                                                 onClick = { controller.updateWatchlistHostLabel(activeHost, labelDraft) },
-                                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                                colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                             ) {
                                                 Text("💾 Сохранить подпись")
                                             }
@@ -2242,7 +2244,7 @@ fun DesktopSysadminToolboxDialog(
                                                     newLabel = ""
                                                 }
                                             },
-                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.CslOrange)
+                                            colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.ButtonAccent, contentColor = Color.White)
                                         ) {
                                             Text("+ Добавить")
                                         }
@@ -2356,7 +2358,7 @@ fun DesktopSysadminToolboxDialog(
                                 val normKey = SysadminToolboxEngine.normalizeHostKey(targetHost)
                                 val lbl = state.watchlistLabels[normKey].orEmpty()
                                 val titleHost = if (lbl.isNotBlank()) "«$targetHost» ($lbl)" else "«$targetHost»"
-                                AlertDialog(
+                                DesktopWorkspaceAlert(
                                     onDismissRequest = { pendingDeleteHost = null },
                                     title = { Text("Удалить узел?", fontWeight = FontWeight.Bold) },
                                     text = {
