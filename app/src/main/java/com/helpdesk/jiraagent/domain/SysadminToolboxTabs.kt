@@ -12,11 +12,13 @@ object SysadminToolboxTabs {
     const val PORTS = 5
     const val DNS = 6
     const val SCENARIOS = 7
+    const val AD = 8
 
     // Commands first, so they remain visible without horizontally scrolling on phones.
     val ordered = listOf(
         SysadminToolboxTab(COMMANDS, "⌨ Команды", "⌨ Команды"),
         SysadminToolboxTab(SCENARIOS, "📋 Сценарии", "📋 Сценарии"),
+        SysadminToolboxTab(AD, "🏢 Домен AD", "🏢 Домен AD"),
         SysadminToolboxTab(PORTS, "🔌 Порты", "🔌 Порты"),
         SysadminToolboxTab(DNS, "🌐 DNS", "🌐 DNS"),
         SysadminToolboxTab(WAKE_ON_LAN, "⚡ WOL", "⚡ Wake-on-LAN"),

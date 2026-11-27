@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
+import com.helpdesk.jiraagent.shared.DomainDiagnosticCardView
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
@@ -87,9 +88,12 @@ fun SysadminToolboxAndroidDialog(
     }
 
     fun copyToClipboard(label: String, text: String) {
-        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        cm?.setPrimaryClip(ClipData.newPlainText(label, text))
-        Toast.makeText(context, "Скопировано в буфер обмена", Toast.LENGTH_SHORT).show()
+        val copied = runCatching {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                ?: error("Буфер обмена недоступен")
+            cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        }.isSuccess
+        Toast.makeText(context, if (copied) "Скопировано в буфер обмена" else "Буфер обмена недоступен", Toast.LENGTH_SHORT).show()
     }
 
     Dialog(
@@ -615,6 +619,7 @@ fun SysadminToolboxAndroidDialog(
                     SysadminToolboxTabs.COMMANDS -> SysadminCommandsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.PORTS -> ServicePortsAndroidView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.DNS -> DnsLookupAndroidView(onCopy = { text -> copyToClipboard("DNS", text) })
+                    SysadminToolboxTabs.AD -> DomainDiagnosticCardView(onCopy = { label, text -> copyToClipboard(label, text) })
                     SysadminToolboxTabs.SCENARIOS -> scenarioDraftHolder.SaveableStateProvider("scenarios") {
                         DiagnosticScenariosView(onCopy = { label, text -> copyToClipboard(label, text) })
                     }

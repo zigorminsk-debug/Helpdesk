@@ -22,7 +22,7 @@ object SysadminServerCommands {
                 try {
                     ${'$'}computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
                     if (-not ${'$'}computer.PartOfDomain) { Write-Warning 'Компьютер не состоит в домене AD.'; return }
-                    if ([int]${'$'}computer.DomainRole -ge 4) { Write-Warning 'Это контроллер домена: применяйте диагностику AD/DC, а не этот тест.'; return }
+                    if (${'$'}null -eq ${'$'}computer.DomainRole -or [int]${'$'}computer.DomainRole -notin @(1, 3)) { Write-Warning 'Роль не является подтверждённой ролью участника домена. Для контроллера применяйте диагностику AD/DC.'; return }
                     Write-Host "Компьютер: ${'$'}(${'$'}computer.Name); домен: ${'$'}(${'$'}computer.Domain)"
                     ${'$'}ok = Test-ComputerSecureChannel -ErrorAction Stop
                     if (${'$'}ok) { Write-Host 'Защищённый канал исправен.' }
@@ -35,7 +35,7 @@ object SysadminServerCommands {
                 try {
                     ${'$'}computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
                     if (-not ${'$'}computer.PartOfDomain) { Write-Warning 'Компьютер не состоит в домене AD.'; return }
-                    if ([int]${'$'}computer.DomainRole -ge 4) { Write-Warning 'Контроллер домена: этот способ запрещён. Используйте диагностику AD/DC.'; return }
+                    if (${'$'}null -eq ${'$'}computer.DomainRole -or [int]${'$'}computer.DomainRole -notin @(1, 3)) { Write-Warning 'Роль не является подтверждённой ролью участника домена. Для контроллера этот способ запрещён.'; return }
                     Write-Host "Компьютер: ${'$'}(${'$'}computer.Name); домен: ${'$'}(${'$'}computer.Domain)"
                     Write-Warning 'Будет изменён пароль учётной записи компьютера в AD. Проверьте сеть, DNS, время и локальный доступ.'
                     ${'$'}confirm = Read-Host 'Восстановить защищённый канал? Введите YES для подтверждения'

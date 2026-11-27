@@ -60,7 +60,8 @@ class SysadminCommandCatalogTest {
         val entry = SysadminCommandCatalog.entries.single { it.id == "ad-trust-repair" }
         assertTrue(entry.changesSystem)
         assertTrue(entry.command.contains("PartOfDomain"))
-        assertTrue(entry.command.contains("DomainRole -ge 4"))
+        assertTrue(entry.command.contains("computer.DomainRole -notin @(1, 3)"))
+        assertTrue(entry.command.contains("null -eq"))
         assertTrue(entry.command.contains("Get-Credential"))
         assertTrue(entry.command.contains("Test-ComputerSecureChannel -Repair -Credential"))
         assertTrue(entry.impact.contains("НЕ для контроллеров домена"))

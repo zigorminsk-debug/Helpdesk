@@ -47,6 +47,7 @@ import com.helpdesk.jiraagent.data.ConfluencePageDetail
 import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
+import com.helpdesk.jiraagent.shared.DomainDiagnosticCardView
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.model.ClientTechPassport
@@ -2379,6 +2380,17 @@ fun DesktopSysadminToolboxDialog(
                         SysadminToolboxTabs.COMMANDS -> DesktopCommandsView()
                         SysadminToolboxTabs.PORTS -> DesktopServicePortsView()
                         SysadminToolboxTabs.DNS -> DesktopDnsLookupView()
+                        SysadminToolboxTabs.AD -> {
+                            var adCopyStatus by remember { mutableStateOf("") }
+                            Column {
+                                if (adCopyStatus.isNotBlank()) Text(adCopyStatus, style = MaterialTheme.typography.bodySmall)
+                                Box(Modifier.weight(1f)) {
+                                    DomainDiagnosticCardView(onCopy = { _, text ->
+                                        adCopyStatus = if (runCatching { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) }.isSuccess) "Скопировано в буфер обмена" else "Буфер обмена недоступен"
+                                    })
+                                }
+                            }
+                        }
                         SysadminToolboxTabs.SCENARIOS -> scenarioDraftHolder.SaveableStateProvider("scenarios") {
                             Column {
                                 if (scenarioCopyStatus.isNotBlank()) Text(scenarioCopyStatus, style = MaterialTheme.typography.bodySmall)
