@@ -561,7 +561,7 @@ fun HostDiagnosticDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(26.dp), color = CslOrange)
-                    Text("Проверка ICMP и TCP-портов (80, 443, 3389, 22, 8291, 445)…")
+                    Text("Проверка доступности и TCP-портов (80, 443, 3389, 22, 8291, 445)…")
                 }
             } else {
                 val rep = state.report!!
@@ -573,6 +573,9 @@ fun HostDiagnosticDialog(
                         text = "DNS: системный резолвер устройства (его настройки могут использовать внешний DNS). MX / TXT / NS не запрашиваются.",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    rep.stages?.lines()?.forEach { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall)
+                    }
                     if (rep.errorMessage != null) {
                         Text(
                             text = rep.errorMessage,
@@ -587,9 +590,9 @@ fun HostDiagnosticDialog(
                         )
                         Text(
                             text = if (rep.icmpReachable) {
-                                "ICMP / Эхо: ДОСТУПЕН (${rep.icmpLatencyMs ?: 0} мс)"
+                                "Проверка доступности: получен ответ (${rep.icmpLatencyMs ?: 0} мс)"
                             } else {
-                                "ICMP / Эхо: нет ответа (возможно закрыт файрволом)"
+                                "Проверка доступности: нет ответа (это не доказывает отказ)"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (rep.icmpReachable) CslSuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
@@ -654,7 +657,7 @@ fun HostDiagnosticDialog(
                                     text = if (port.isOpen) {
                                         "ОТКРЫТ · ${port.latencyMs ?: 0} мс"
                                     } else {
-                                        "нет соединения"
+                                        port.failureDescription ?: "нет соединения"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = if (port.isOpen) FontWeight.Bold else FontWeight.Normal,

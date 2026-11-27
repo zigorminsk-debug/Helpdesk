@@ -44,6 +44,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
 import com.helpdesk.jiraagent.shared.DomainDiagnosticCardView
+import com.helpdesk.jiraagent.domain.ProbeStageState
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.domain.WatchlistHostStatus
@@ -511,7 +512,7 @@ fun SysadminToolboxAndroidDialog(
                                     val border = when {
                                         st == null -> MaterialTheme.colorScheme.outlineVariant
                                         !st.isOnline -> CslDangerRed
-                                        st.isSslExpiringSoon -> Color(0xFFD97706)
+                                        st.isSslExpiringSoon || st.stages?.tls?.state == ProbeStageState.FAILED -> Color(0xFFD97706)
                                         else -> CslSuccessGreen
                                     }
 
@@ -545,9 +546,10 @@ fun SysadminToolboxAndroidDialog(
                                                 }
                                                 val statusBadge = when {
                                                     st == null -> "⏳ Ожидает"
-                                                    !st.isOnline -> "🔴 Недоступен"
+                                                    !st.isOnline -> "🔴 Нет ответа"
                                                     st.isSslExpiringSoon -> "🟠 SSL: ${st.sslDaysRemaining} дн.!"
-                                                    else -> "🟢 Онлайн"
+                                                    st.stages?.tls?.state == ProbeStageState.FAILED -> "🟠 Ошибка TLS"
+                                                    else -> "🟢 Есть ответ"
                                                 }
                                                 Text(
                                                     text = "$host · $statusBadge",
@@ -723,7 +725,7 @@ private fun WatchlistHostFullScreenAndroidDialog(
                     val bannerColor = when {
                         status == null -> MaterialTheme.colorScheme.outlineVariant
                         !status.isOnline -> CslDangerRed
-                        status.isSslExpiringSoon -> Color(0xFFD97706)
+                        status.isSslExpiringSoon || status.stages?.tls?.state == ProbeStageState.FAILED -> Color(0xFFD97706)
                         else -> CslSuccessGreen
                     }
                     Surface(
@@ -738,18 +740,23 @@ private fun WatchlistHostFullScreenAndroidDialog(
                         ) {
                             val badge = when {
                                 status == null -> "⏳ Ожидает проверки"
-                                !status.isOnline -> "🔴 Узел недоступен"
+                                !status.isOnline -> "🔴 Нет ответа на проверки"
                                 status.isSslExpiringSoon -> "🟠 SSL истекает через ${status.sslDaysRemaining} дн.!"
-                                else -> "🟢 Узел онлайн"
+                                status.stages?.tls?.state == ProbeStageState.FAILED -> "🟠 Проверка TLS не удалась"
+                                else -> "🟢 Получен ответ на проверку"
                             }
                             Text(badge, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
                             if (status != null) {
                                 val line = buildList {
                                     status.resolvedIp?.let { add("IP: $it") }
-                                    status.latencyMs?.let { add("Пинг: $it мс") }
+                                    status.latencyMs?.let { add("Проверка доступности: $it мс") }
                                     add("Проверено: ${status.checkedAtDisplay}")
                                 }.joinToString(" · ")
                                 Text(line, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                status.stages?.lines()?.forEach { line ->
+                                    Text(line, fontSize = 12.sp)
+                                }
+                                Text("Доступность проверяется системным методом (ICMP или TCP Echo, зависит от ОС). Отсутствие ответа не доказывает отказ узла.", fontSize = 11.sp)
                                 status.httpServerSummary?.let {
                                     Text("🌐 Веб-ответ: $it", fontSize = 12.sp)
                                 }
@@ -849,7 +856,7 @@ private fun WatchlistHostFullScreenAndroidDialog(
                                                 text = if (p.isOpen) {
                                                     "ОТКРЫТ${p.latencyMs?.let { " · $it мс" }.orEmpty()}"
                                                 } else {
-                                                    "закрыт"
+                                                    p.failureDescription ?: "нет соединения"
                                                 },
                                                 fontSize = 12.sp,
                                                 fontWeight = if (p.isOpen) FontWeight.Bold else FontWeight.Normal,

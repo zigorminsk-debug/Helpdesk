@@ -339,25 +339,25 @@ class DesktopController(
                                 val shortName = SysadminToolboxEngine.resolveWatchlistShortTitle(off.host, labels)
                                 val fullName = SysadminToolboxEngine.resolveWatchlistDisplayName(off.host, labels)
                                 onSystemTrayNotify?.invoke(
-                                    "🔴 Узел недоступен: $shortName",
-                                    "Узел «$fullName» не доступен (офлайн)."
+                                    "🔴 Нет ответа от узла: $shortName",
+                                    "Узел «$fullName» не ответил на фоновые проверки; это не доказывает его недоступность."
                                 )
                             }
                             val firstOff = newlyOfflineStatuses.first()
                             val firstShort = SysadminToolboxEngine.resolveWatchlistShortTitle(firstOff.host, labels)
                             val popupSubtitle = if (newlyOfflineStatuses.size == 1) {
                                 val full = SysadminToolboxEngine.resolveWatchlistDisplayName(firstOff.host, labels)
-                                "Узел «$full» не доступен (офлайн — нет ответа на фоновую проверку)."
+                                "Узел «$full» не ответил на фоновые проверки; это не доказывает его недоступность."
                             } else {
                                 val allNames = newlyOfflineStatuses.joinToString(", ") {
                                     SysadminToolboxEngine.resolveWatchlistDisplayName(it.host, labels)
                                 }
-                                "Недоступны узлы (${newlyOfflineStatuses.size}): $allNames"
+                                "Нет ответа от узлов (${newlyOfflineStatuses.size}): $allNames"
                             }
                             val popupTitle = if (newlyOfflineStatuses.size == 1) {
-                                "🔴 Узел недоступен: $firstShort"
+                                "🔴 Нет ответа от узла: $firstShort"
                             } else {
-                                "🔴 Узлы недоступны (${newlyOfflineStatuses.size})"
+                                "🔴 Нет ответа от узлов (${newlyOfflineStatuses.size})"
                             }
                             val toast = DesktopToastAlert(
                                 id = "host_offline_${System.currentTimeMillis()}",

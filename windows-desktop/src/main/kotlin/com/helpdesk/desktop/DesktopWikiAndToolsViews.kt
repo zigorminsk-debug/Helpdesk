@@ -48,6 +48,7 @@ import com.helpdesk.jiraagent.data.ConfluencePageSummary
 import com.helpdesk.jiraagent.data.ConfluenceWikiClient
 import com.helpdesk.jiraagent.shared.DiagnosticScenariosView
 import com.helpdesk.jiraagent.shared.DomainDiagnosticCardView
+import com.helpdesk.jiraagent.domain.ProbeStageState
 import com.helpdesk.jiraagent.domain.SysadminToolboxEngine
 import com.helpdesk.jiraagent.domain.SysadminToolboxTabs
 import com.helpdesk.jiraagent.model.ClientTechPassport
@@ -2128,17 +2129,20 @@ fun DesktopSysadminToolboxDialog(
                                                         verticalArrangement = Arrangement.spacedBy(3.dp)
                                                     ) {
                                                         val badge = when {
-                                                            !st.isOnline -> "🔴 Недоступен"
+                                                            !st.isOnline -> "🔴 Нет ответа"
                                                             st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
-                                                            else -> "🟢 Онлайн"
+                                                            st.stages?.tls?.state == ProbeStageState.FAILED -> "🟠 Ошибка TLS"
+                                                            else -> "🟢 Есть ответ"
                                                         }
                                                         val summaryLine = buildList {
                                                             add(badge)
                                                             st.resolvedIp?.let { add("IP: $it") }
-                                                            st.latencyMs?.let { add("Пинг: $it мс") }
+                                                            st.latencyMs?.let { add("Проверка доступности: $it мс") }
                                                             add("Проверка: ${st.checkedAtDisplay}")
                                                         }.joinToString("  ·  ")
                                                         Text(summaryLine, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                        st.stages?.lines()?.forEach { line -> Text(line, fontSize = 12.sp) }
+                                                        Text("Доступность: системная проверка (ICMP или TCP Echo); отсутствие ответа не доказывает отказ узла.", fontSize = 11.sp)
                                                         st.httpServerSummary?.let {
                                                             Text("🌐 Веб-ответ: $it", fontSize = 12.sp)
                                                         }
@@ -2186,7 +2190,7 @@ fun DesktopSysadminToolboxDialog(
                                                                 text = if (p.isOpen) {
                                                                     "ОТКРЫТ${p.latencyMs?.let { " · $it мс" }.orEmpty()}"
                                                                 } else {
-                                                                    "закрыт / фильтруется"
+                                                                    p.failureDescription ?: "нет соединения"
                                                                 },
                                                                 fontSize = 12.sp,
                                                                 fontWeight = if (p.isOpen) FontWeight.Bold else FontWeight.Normal,
@@ -2278,7 +2282,7 @@ fun DesktopSysadminToolboxDialog(
                                                     when {
                                                         st == null -> MaterialTheme.colorScheme.outlineVariant
                                                         !st.isOnline -> DesktopColors.StatusRed
-                                                        st.isSslExpiringSoon -> DesktopColors.StatusAmber
+                                                        st.isSslExpiringSoon || st.stages?.tls?.state == ProbeStageState.FAILED -> DesktopColors.StatusAmber
                                                         else -> DesktopColors.StatusGreen.copy(alpha = 0.5f)
                                                     }
                                                 ),
@@ -2309,9 +2313,10 @@ fun DesktopSysadminToolboxDialog(
                                                         }
                                                         val badge = when {
                                                             st == null -> "⏳ Ожидает проверки"
-                                                            !st.isOnline -> "🔴 Недоступен"
+                                                            !st.isOnline -> "🔴 Нет ответа"
                                                             st.isSslExpiringSoon -> "🟠 SSL истекает через ${st.sslDaysRemaining} дн.!"
-                                                            else -> "🟢 Онлайн"
+                                                            st.stages?.tls?.state == ProbeStageState.FAILED -> "🟠 Ошибка TLS"
+                                                            else -> "🟢 Есть ответ"
                                                         }
                                                         Text("$host  ·  $badge", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                                         if (st != null) {

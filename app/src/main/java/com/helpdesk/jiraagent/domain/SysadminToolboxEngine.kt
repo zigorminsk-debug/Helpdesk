@@ -60,7 +60,8 @@ data class WatchlistHostStatus(
     val httpServerSummary: String? = null,
     val healthLevel: WatchlistHealthLevel,
     val statusSummary: String,
-    val checkedAtDisplay: String
+    val checkedAtDisplay: String,
+    val stages: HostProbeStages? = null
 ) {
     val isOnline: Boolean get() = isAlive
     val isSslExpiringSoon: Boolean get() = sslDaysRemaining != null && sslDaysRemaining <= 14L
@@ -409,7 +410,7 @@ object SysadminToolboxEngine {
                 when {
                     !rep.isHostAlive -> {
                         level = WatchlistHealthLevel.CRITICAL
-                        summary = "НЕДОСТУПЕН (${rep.errorMessage ?: "нет ответа ICMP/TCP"})"
+                        summary = "Нет ответа на проверки (${rep.errorMessage ?: "доступность и TCP"}); состояние узла не установлено"
                     }
                     ssl != null && (ssl.isExpired || ssl.daysRemaining <= 3) -> {
                         level = WatchlistHealthLevel.CRITICAL
@@ -423,13 +424,19 @@ object SysadminToolboxEngine {
                         level = WatchlistHealthLevel.WARNING
                         summary = "Внимание: SSL истекает через ${ssl.daysRemaining} дн. (${ssl.expiresFormatted})"
                     }
+                    rep.stages?.tls?.state == ProbeStageState.FAILED -> {
+                        level = WatchlistHealthLevel.WARNING
+                        summary = "TCP 443 отвечает, но проверка TLS не удалась"
+                    }
                     ssl != null -> {
                         level = WatchlistHealthLevel.OK
-                        summary = "ОК · SSL ещё ${ssl.daysRemaining} дн. (до ${ssl.expiresFormatted})"
+                        summary = if (rep.stages?.tls?.state == ProbeStageState.CACHED)
+                            "SSL из кэша до ${ssl.expiresFormatted}; текущее TLS не проверено"
+                        else "TLS проверен · SSL до ${ssl.expiresFormatted} (${ssl.daysRemaining} дн.)"
                     }
                     else -> {
                         level = WatchlistHealthLevel.OK
-                        summary = "ОК · Узел доступен (${rep.icmpLatencyMs?.let { "$it мс" } ?: openPorts})"
+                        summary = "Получен ответ на проверку (${rep.icmpLatencyMs?.let { "$it мс" } ?: openPorts}); состояние службы не установлено"
                     }
                 }
 
@@ -448,7 +455,8 @@ object SysadminToolboxEngine {
                     httpServerSummary = httpSummary,
                     healthLevel = level,
                     statusSummary = summary,
-                    checkedAtDisplay = stamp
+                    checkedAtDisplay = stamp,
+                    stages = rep.stages
                 )
             }
         }.awaitAll().sortedWith(

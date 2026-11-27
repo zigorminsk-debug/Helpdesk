@@ -14,6 +14,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -242,7 +243,7 @@ fun ZabbixMonitorScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), color = CslOrange)
-                        Text("Проверка ICMP / TCP-портов…")
+                        Text("Проверка доступности и TCP-портов…")
                     }
                 } else {
                     val rep = hostDiagnosticState.report
@@ -250,18 +251,21 @@ fun ZabbixMonitorScreen(
                         Text("Нет данных диагностики для указанного узла")
                     } else {
                         val openPorts = rep.portStatuses.filter { it.isOpen }
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("IP: ${rep.resolvedIp ?: "не определён"}", fontWeight = FontWeight.SemiBold)
+                            rep.stages?.lines()?.forEach { line -> Text(line, style = MaterialTheme.typography.bodySmall) }
                             Text(
                                 text = if (rep.icmpReachable) {
-                                    "🟢 Пинг (ICMP): доступен (${rep.icmpLatencyMs ?: 0} мс)"
+                                    "🟢 Проверка доступности: получен ответ (${rep.icmpLatencyMs ?: 0} мс)"
                                 } else {
-                                    "🔴 Пинг (ICMP): нет ответа"
+                                    "⚪ Проверка доступности: нет ответа (узел может быть доступен)"
                                 }
                             )
                             Text(
-                                text = if (openPorts.isEmpty()) {
-                                    "Открытые TCP-порты не обнаружены"
+                                text = if (rep.portStatuses.isEmpty()) {
+                                    "TCP-порты не проверялись"
+                                } else if (openPorts.isEmpty()) {
+                                    "На проверенных TCP-портах соединений нет"
                                 } else {
                                     "Открытые порты: " + openPorts.joinToString(", ") { "${it.port}/${it.serviceName} (${it.latencyMs ?: 0}мс)" }
                                 },

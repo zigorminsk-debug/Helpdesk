@@ -6,6 +6,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -15,7 +18,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
-import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import kotlin.system.measureTimeMillis
@@ -24,7 +27,8 @@ data class TcpPortStatus(
     val port: Int,
     val serviceName: String,
     val isOpen: Boolean,
-    val latencyMs: Long? = null
+    val latencyMs: Long? = null,
+    val failureDescription: String? = null
 )
 
 data class SslCertificateReport(
@@ -52,6 +56,30 @@ data class DnsRecordSet(
         get() = mxRecords.isNotEmpty() || txtSpfRecords.isNotEmpty() || nsRecords.isNotEmpty()
 }
 
+enum class ProbeStageState { SUCCESS, FAILED, NOT_CHECKED, CACHED }
+
+data class ProbeStage(val state: ProbeStageState, val detail: String) {
+    fun display(): String = when (state) {
+        ProbeStageState.SUCCESS -> "Получен результат: $detail"
+        ProbeStageState.FAILED -> "Ошибка: $detail"
+        ProbeStageState.NOT_CHECKED -> "Не проверено: $detail"
+        ProbeStageState.CACHED -> "Данные из кэша: $detail"
+    }
+}
+
+data class HostProbeStages(
+    val dns: ProbeStage,
+    val tcp: ProbeStage,
+    val tls: ProbeStage,
+    val http: ProbeStage,
+    val https: ProbeStage
+) {
+    fun lines(): List<String> = listOf(
+        "DNS: ${dns.display()}", "TCP: ${tcp.display()}", "TLS 443: ${tls.display()}",
+        "HTTP 80: ${http.display()}", "HTTPS 443: ${https.display()}"
+    )
+}
+
 data class HostDiagnosticReport(
     val targetHost: String,
     val resolvedIp: String?,
@@ -61,7 +89,8 @@ data class HostDiagnosticReport(
     val sslCertificate: SslCertificateReport? = null,
     val httpProbe: HttpProbeReport? = null,
     val dnsRecords: DnsRecordSet = DnsRecordSet(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val stages: HostProbeStages? = null
 ) {
     val isHostAlive: Boolean
         get() = icmpReachable || portStatuses.any { it.isOpen } || httpProbe != null
@@ -133,7 +162,8 @@ object NetworkDiagnosticsTool {
                 icmpReachable = false,
                 icmpLatencyMs = null,
                 portStatuses = emptyList(),
-                errorMessage = "Пустой адрес хоста"
+                errorMessage = "Пустой адрес хоста",
+                stages = skippedStages(ProbeStage(ProbeStageState.NOT_CHECKED, "пустой адрес"), "пустой адрес")
             )
         }
 
@@ -149,7 +179,8 @@ object NetworkDiagnosticsTool {
                 icmpReachable = false,
                 icmpLatencyMs = null,
                 portStatuses = emptyList(),
-                errorMessage = "Системный резолвер не разрешил адрес для $cleanHost"
+                errorMessage = "Системный резолвер не разрешил адрес для $cleanHost",
+                stages = skippedStages(ProbeStage(ProbeStageState.FAILED, "системный резолвер не разрешил имя"), "адрес не разрешён")
             )
         }
 
@@ -181,20 +212,18 @@ object NetworkDiagnosticsTool {
             suspend fun probePortList(portEntries: List<Pair<Int, String>>): List<TcpPortStatus> = coroutineScope {
                 portEntries.map { (port, label) ->
                     async {
-                        var open = false
+                        var failure: Throwable? = null
                         val rtt = measureTimeMillis {
-                            open = runCatching {
-                                Socket().use { socket ->
-                                    socket.connect(InetSocketAddress(resolvedAddress, port), timeoutMs)
-                                    true
-                                }
-                            }.getOrDefault(false)
+                            try {
+                                Socket().use { socket -> socket.connect(InetSocketAddress(resolvedAddress, port), timeoutMs) }
+                            } catch (e: Exception) { failure = e }
                         }
                         TcpPortStatus(
                             port = port,
                             serviceName = label,
-                            isOpen = open,
-                            latencyMs = if (open) rtt else null
+                            isOpen = failure == null,
+                            latencyMs = if (failure == null) rtt else null,
+                            failureDescription = failure?.let { describeNetworkFailure(it) }
                         )
                     }
                 }.awaitAll()
@@ -224,101 +253,131 @@ object NetworkDiagnosticsTool {
             val port443Open = ports.any { it.port == 443 && it.isOpen }
             val port80Open = ports.any { it.port == 80 && it.isOpen }
 
+            val skipped443 = if (ports.any { it.port == 443 }) "TCP 443 не установлено" else "TCP 443 не проверялся"
+            val skipped80 = if (ports.any { it.port == 80 }) "TCP 80 не установлено" else "TCP 80 не проверялся"
             val sslDeferred = async {
                 if (!port443Open) {
-                    null
+                    null to ProbeStage(ProbeStageState.NOT_CHECKED, skipped443)
                 } else {
                     val cached = cachedSslProvider?.invoke(cleanHost)
                     if (cached != null) {
-                        cached
+                        cached to ProbeStage(ProbeStageState.CACHED, "сертификат до ${cached.expiresFormatted}; текущее рукопожатие не проверено")
                     } else {
-                        inspectSslCertificate(cleanHost, timeoutMs + 700)?.also { fresh ->
-                            onSslFetched?.invoke(cleanHost, fresh)
+                        probeTls(cleanHost, resolvedAddress, 443, timeoutMs + 700).also { (cert, _) ->
+                            if (cert != null) onSslFetched?.invoke(cleanHost, cert)
                         }
                     }
                 }
             }
-            val httpDeferred = async {
-                if (!includeHttpProbe) {
-                    null
-                } else {
-                    when {
-                        port443Open -> probeHttp("https", cleanHost, timeoutMs + 700)
-                            ?: if (port80Open) probeHttp("http", cleanHost, timeoutMs + 500) else null
-                        port80Open -> probeHttp("http", cleanHost, timeoutMs + 500)
-                        else -> null
-                    }
+            val httpsDeferred = async {
+                when {
+                    !includeHttpProbe -> null to ProbeStage(ProbeStageState.NOT_CHECKED, "HTTP-проверки отключены")
+                    !port443Open -> null to ProbeStage(ProbeStageState.NOT_CHECKED, skipped443)
+                    else -> probeHttp("https", cleanHost, 443, timeoutMs + 700)
                 }
             }
-
+            val httpDeferred = async {
+                when {
+                    !includeHttpProbe -> null to ProbeStage(ProbeStageState.NOT_CHECKED, "HTTP-проверки отключены")
+                    !port80Open -> null to ProbeStage(ProbeStageState.NOT_CHECKED, skipped80)
+                    else -> probeHttp("http", cleanHost, 80, timeoutMs + 500)
+                }
+            }
+            val (ssl, tlsStage) = sslDeferred.await()
+            val (http, httpStage) = httpDeferred.await()
+            val (https, httpsStage) = httpsDeferred.await()
+            val dnsStage = if (isIpLiteral) {
+                ProbeStage(ProbeStageState.NOT_CHECKED, "введён IP-адрес, разрешение имени не требовалось")
+            } else {
+                ProbeStage(ProbeStageState.SUCCESS, "системный резолвер: ${localAs.joinToString(", ")}; MX/TXT/NS не проверялись")
+            }
+            val tcpStage = if (ports.isEmpty()) {
+                ProbeStage(ProbeStageState.NOT_CHECKED, "порты не запрашивались")
+            } else {
+                val partial = if (ports.size < effectivePorts.size) "; фоновая проверка пропустила ${effectivePorts.size - ports.size} портов" else ""
+                ProbeStage(ProbeStageState.SUCCESS, "соединение: ${ports.count { it.isOpen }} из ${ports.size} проверенных$partial")
+            }
             HostDiagnosticReport(
                 targetHost = cleanHost,
                 resolvedIp = resolvedIp,
                 icmpReachable = icmpOk,
                 icmpLatencyMs = icmpRtt,
                 portStatuses = ports,
-                sslCertificate = sslDeferred.await(),
-                httpProbe = httpDeferred.await(),
+                sslCertificate = ssl,
+                httpProbe = https ?: http,
                 dnsRecords = runCatching { dnsDeferred.await() }.getOrDefault(DnsRecordSet()),
-                errorMessage = null
+                errorMessage = null,
+                stages = HostProbeStages(dnsStage, tcpStage, tlsStage, httpStage, httpsStage)
             )
         }
     }
 
-    private fun inspectSslCertificate(host: String, timeoutMs: Int): SslCertificateReport? {
-        return runCatching {
-            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
-            (factory.createSocket() as SSLSocket).use { sslSocket ->
-                sslSocket.soTimeout = timeoutMs
-                sslSocket.connect(InetSocketAddress(host, 443), timeoutMs)
-                sslSocket.startHandshake()
-                val cert = sslSocket.session.peerCertificates.firstOrNull() as? X509Certificate
-                    ?: return null
-                val notAfterInstant = cert.notAfter.toInstant()
-                val now = Instant.now()
-                val daysLeft = ChronoUnit.DAYS.between(now, notAfterInstant)
-                SslCertificateReport(
-                    subjectCn = extractCn(cert.subjectX500Principal.name).ifBlank { host },
-                    issuerCn = extractCn(cert.issuerX500Principal.name).ifBlank { "CA" },
-                    expiresFormatted = DATE_FMT.format(notAfterInstant),
-                    daysRemaining = daysLeft,
-                    isExpired = now.isAfter(notAfterInstant)
-                )
-            }
-        }.getOrNull()
+    private fun skippedStages(dns: ProbeStage, reason: String): HostProbeStages {
+        val skipped = ProbeStage(ProbeStageState.NOT_CHECKED, reason)
+        return HostProbeStages(dns, skipped, skipped, skipped, skipped)
     }
 
-    private fun probeHttp(scheme: String, host: String, timeoutMs: Int): HttpProbeReport? {
-        return runCatching {
+    private fun describeNetworkFailure(error: Throwable): String = when (error) {
+        is SocketTimeoutException -> "тайм-аут"
+        is NoRouteToHostException -> "нет маршрута или узел недоступен из этой сети"
+        is ConnectException -> "соединение не установлено (отказ или ошибка сети)"
+        is SSLException -> "ошибка TLS, сертификата или проверки имени"
+        else -> "сетевая ошибка (${error.javaClass.simpleName})"
+    }
+
+    /** Trust validation and HTTPS identity checking are never bypassed. Host is kept for SNI. */
+    internal fun probeTls(host: String, address: InetAddress, port: Int, timeoutMs: Int,
+        factory: SSLSocketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+    ): Pair<SslCertificateReport?, ProbeStage> {
+        return try {
+            val certificate = Socket().use { tcp ->
+                tcp.connect(InetSocketAddress(address, port), timeoutMs)
+                (factory.createSocket(tcp, host, port, true) as SSLSocket).use { ssl ->
+                    ssl.soTimeout = timeoutMs
+                    ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                    ssl.startHandshake()
+                    val cert = ssl.session.peerCertificates.firstOrNull() as? X509Certificate
+                        ?: error("No peer certificate")
+                    val expiration = cert.notAfter.toInstant()
+                    val now = Instant.now()
+                    SslCertificateReport(
+                        subjectCn = extractCn(cert.subjectX500Principal.name).ifBlank { host },
+                        issuerCn = extractCn(cert.issuerX500Principal.name).ifBlank { "CA" },
+                        expiresFormatted = DATE_FMT.format(expiration),
+                        daysRemaining = ChronoUnit.DAYS.between(now, expiration),
+                        isExpired = now.isAfter(expiration)
+                    )
+                }
+            }
+            certificate to ProbeStage(ProbeStageState.SUCCESS, "рукопожатие, доверие и имя проверены; сертификат до ${certificate.expiresFormatted}")
+        } catch (e: Exception) {
+            null to ProbeStage(ProbeStageState.FAILED, "${describeNetworkFailure(e)}; сертификат не оценён")
+        }
+    }
+
+    internal fun probeHttp(scheme: String, host: String, port: Int, timeoutMs: Int): Pair<HttpProbeReport?, ProbeStage> {
+        return try {
             var code = 0
             var serverHdr: String? = null
             val rtt = measureTimeMillis {
-                val conn = (URL("$scheme://$host/").openConnection() as HttpURLConnection).apply {
+                val conn = (URL(scheme, host, port, "/").openConnection() as HttpURLConnection).apply {
                     requestMethod = "HEAD"
                     connectTimeout = timeoutMs
                     readTimeout = timeoutMs
                     instanceFollowRedirects = false
                     setRequestProperty("User-Agent", "Help-CSL-SysadminProbe/1.0")
                 }
-                if (conn is HttpsURLConnection) {
-                    // Standard verification; if self-signed fails, SSL cert check above still inspected or HTTP fallback reports
-                }
                 try {
                     code = conn.responseCode
                     serverHdr = conn.getHeaderField("Server")?.take(32)
-                } finally {
-                    conn.disconnect()
-                }
+                } finally { conn.disconnect() }
             }
-            if (code > 0) {
-                HttpProbeReport(
-                    scheme = scheme.uppercase(),
-                    statusCode = code,
-                    serverHeader = serverHdr,
-                    latencyMs = rtt
-                )
-            } else null
-        }.getOrNull()
+            check(code > 0) { "No HTTP response" }
+            val report = HttpProbeReport(scheme.uppercase(), code, serverHdr, rtt)
+            report to ProbeStage(ProbeStageState.SUCCESS, "HEAD: код $code, $rtt мс; ответ не означает исправность приложения")
+        } catch (e: Exception) {
+            null to ProbeStage(ProbeStageState.FAILED, "HEAD: ${describeNetworkFailure(e)}")
+        }
     }
 
     private fun extractCn(dn: String): String {

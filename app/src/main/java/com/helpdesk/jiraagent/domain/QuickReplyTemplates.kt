@@ -79,13 +79,11 @@ object QuickReplyTemplates {
             appendLine("🌐 Сетевая экспресс-диагностика Help-CSL ($stamp):")
             appendLine("• Узел: ${report.targetHost} (IP: ${report.resolvedIp ?: "не разрешён"})")
             appendLine(
-                "• ICMP / Доступность: " +
-                    if (report.isHostAlive) {
-                        "ДОСТУПЕН" + (report.icmpLatencyMs?.let { " (${it} мс)" } ?: "")
-                    } else {
-                        "НЕТ ОТВЕТА"
-                    }
+                "• Проверка доступности системы: " +
+                    if (report.icmpReachable) "получен ответ" + (report.icmpLatencyMs?.let { " (${it} мс)" } ?: "")
+                    else "нет ответа; это не доказывает недоступность узла"
             )
+            report.stages?.lines()?.forEach { appendLine("• $it") }
             if (openPorts.isNotEmpty()) {
                 appendLine(
                     "• Открытые TCP-порты: " + openPorts.joinToString(", ") { p ->

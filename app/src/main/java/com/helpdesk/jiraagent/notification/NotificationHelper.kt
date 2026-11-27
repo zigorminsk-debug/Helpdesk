@@ -510,8 +510,8 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = "🔴 Узел недоступен: $shortTitle"
-        val body = "Узел «$fullDisplayName» не доступен (офлайн — нет ответа на фоновую проверку)."
+        val title = "🔴 Нет ответа от узла: $shortTitle"
+        val body = "Узел «$fullDisplayName» не ответил на фоновые проверки. Это не доказывает его недоступность."
 
         val notification = NotificationCompat.Builder(context, CHANNEL_HOST_MONITOR)
             .setSmallIcon(R.drawable.ic_notification_ticket)
